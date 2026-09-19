@@ -64,11 +64,46 @@ _show_cb: Optional[Callable[[str, str], None]] = None
 _hide_cb: Optional[Callable[[], None]] = None
 _log_cb:  Optional[Callable[[str], None]] = None
 
+# Told about every ending a confirmation can have. Set by core/permissions.py so
+# the audit log can answer "was this approved?" — which it cannot learn by
+# watching the run callable alone, because a cancel and an expiry both look like
+# "nothing happened" from there.
+#
+# Signature: (key, title, outcome) -> None, where outcome is one of
+# "approved" | "cancelled" | "expired" | "superseded".
+_observer: Optional[Callable[[str, str, str], None]] = None
+
 
 def bind(show, hide, log=None) -> None:
     """Wire this module to the HUD. Called once from main.py at startup."""
     global _show_cb, _hide_cb, _log_cb
     _show_cb, _hide_cb, _log_cb = show, hide, log
+
+
+def is_available() -> bool:
+    """Can a human actually be asked right now?
+
+    False when nothing is bound — headless, a unit test, or a call made before
+    main.py wires the UI up. Callers use this to fail closed *before* doing the
+    work, rather than discovering it from the wording of a returned string."""
+    return _show_cb is not None
+
+
+def set_observer(fn: Optional[Callable[[str, str, str], None]]) -> None:
+    """Register the single listener for confirmation outcomes. None clears it."""
+    global _observer
+    _observer = fn
+
+
+def _notify(key: str, title: str, outcome: str) -> None:
+    """Tell the observer, and never let it break a confirmation."""
+    obs = _observer
+    if obs is None:
+        return
+    try:
+        obs(key, title, outcome)
+    except Exception:
+        pass
 
 
 def _log(msg: str) -> None:
@@ -94,8 +129,15 @@ def request(key: str, title: str, detail: str, run: Callable[[], str]) -> str:
                 f"not available, so I have not done it.")
 
     with _lock:
-        _pending = _Pending(key=key, title=title, detail=detail,
-                            run=run, at=time.monotonic())
+        # A second request replaces the first, which is what has always
+        # happened. Say so out loud now, so an abandoned confirmation leaves a
+        # record instead of vanishing.
+        superseded, _pending = _pending, _Pending(
+            key=key, title=title, detail=detail, run=run, at=time.monotonic()
+        )
+
+    if superseded is not None and time.monotonic() - superseded.at <= TIMEOUT_SECONDS:
+        _notify(superseded.key, superseded.title, "superseded")
 
     try:
         _show_cb(title, detail)
@@ -134,11 +176,15 @@ def resolve(accepted: bool) -> None:
 
     if time.monotonic() - p.at > TIMEOUT_SECONDS:
         _log(f"SYS: Confirmation expired — {p.title}")
+        _notify(p.key, p.title, "expired")
         return
 
     if not accepted:
         _log(f"SYS: Cancelled — {p.title}")
+        _notify(p.key, p.title, "cancelled")
         return
+
+    _notify(p.key, p.title, "approved")
 
     def _worker():
         try:
