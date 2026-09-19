@@ -1,6 +1,7 @@
 #computer_control.py
 import io
 import json
+import os
 import platform
 import re
 import string
@@ -14,6 +15,8 @@ else:
 import time
 import random
 from pathlib import Path
+
+from core import capabilities, exec_safe
 
 try:
     import pyautogui
@@ -255,60 +258,70 @@ def _clear_field() -> str:
     pyautogui.press("delete")
     return "Field cleared"
 
+# A window title is model-supplied text. It used to be interpolated straight
+# into a PowerShell expression —
+#     (New-Object -ComObject WScript.Shell).AppActivate("{title}")
+# — so a title containing `"); <anything>; ("` ran that anything as PowerShell.
+# The AppleScript branch had the same shape. Neither needs interpolation: both
+# languages can read the value from somewhere that is not the script text.
+_TITLE_MAX = 120
+_TITLE_BAD = re.compile(r'[\x00-\x1f\x7f"\'`$;&|<>()\\]')
+
+
+def _clean_title(raw: str) -> str:
+    """Strip what would end a string literal or start a new statement."""
+    return _TITLE_BAD.sub(" ", str(raw or "")).strip()[:_TITLE_MAX]
+
+
 def _focus_window(title: str) -> str:
     os_name = _get_os()
+    clean   = _clean_title(title)
+    if not clean:
+        return "No window title given."
 
     if os_name == "windows":
-        try:
-            script = f'(New-Object -ComObject WScript.Shell).AppActivate("{title}")'
-            subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True, timeout=5, **_WIN_HIDE,
-            )
+        # The title arrives as an environment variable and is read back with
+        # $env:, so it is data to PowerShell no matter what it contains.
+        script = ('$t = $env:JARVIS_WINDOW_TITLE; '
+                  '(New-Object -ComObject WScript.Shell).AppActivate($t)')
+        env = dict(os.environ)
+        env["JARVIS_WINDOW_TITLE"] = clean
+        result = exec_safe.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            timeout=10, env=env,
+        )
+        if result.ok:
             time.sleep(0.3)
-            return f"Focused window: {title}"
-        except Exception as e:
-            return f"focus_window (Windows) failed: {e}"
+            return f"Focused window: {clean}"
+        return f"Could not focus '{clean}'. {result.failure_detail(120)}".strip()
 
     if os_name == "mac":
-        script = (
-            f'tell application "System Events" to '
-            f'set frontmost of (first process whose name contains "{title}") to true'
-        )
-        try:
-            subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True, timeout=5,
-            )
+        # Same idea: the value is passed as an argv parameter and read with
+        # `item 1 of argv`, never spliced into the script source.
+        script = ('on run argv\n'
+                  '  tell application "System Events" to set frontmost of '
+                  '(first process whose name contains (item 1 of argv)) to true\n'
+                  'end run')
+        result = exec_safe.run(["osascript", "-e", script, clean], timeout=10)
+        if result.ok:
             time.sleep(0.3)
-            return f"Focused window: {title}"
-        except Exception as e:
-            return f"focus_window (macOS) failed: {e}"
+            return f"Focused window: {clean}"
+        return f"Could not focus '{clean}'. {result.failure_detail(120)}".strip()
 
     if os_name == "linux":
-        try:
-            result = subprocess.run(
-                ["wmctrl", "-a", title],
-                capture_output=True, timeout=5,
-            )
-            if result.returncode == 0:
+        for argv in (["wmctrl", "-a", clean],
+                     ["xdotool", "search", "--name", clean, "windowactivate"]):
+            if not exec_safe.resolve_program(argv[0]):
+                continue
+            result = exec_safe.run(argv, timeout=10)
+            if result.ok:
                 time.sleep(0.3)
-                return f"Focused window: {title}"
-        except FileNotFoundError:
-            pass
-        try:
-            result = subprocess.run(
-                ["xdotool", "search", "--name", title, "windowactivate"],
-                capture_output=True, timeout=5,
-            )
-            time.sleep(0.3)
-            return f"Focused window: {title}"
-        except FileNotFoundError:
-            return "focus_window (Linux) requires wmctrl or xdotool"
-        except Exception as e:
-            return f"focus_window (Linux) failed: {e}"
+                return f"Focused window: {clean}"
+        return (f"Could not focus '{clean}'. On Linux this needs wmctrl or "
+                f"xdotool installed.")
 
     return f"focus_window: unknown OS '{os_name}'"
+
 
 def _screen_find(description: str) -> tuple[int, int] | None:
     api_key = _get_api_key()
@@ -513,6 +526,28 @@ def computer_control(
         return f"computer_control '{action}' failed: {e}"
 
 
+# ── Capability resolution ────────────────────────────────────────────────────
+
+_READ_ACTIONS = {"screenshot", "screen_find", "random_data", "user_data", "wait"}
+
+
+def _cc_capability(params: dict) -> str:
+    action = str((params or {}).get("action", "")).lower().strip()
+    if action == "screenshot":
+        return capabilities.SCREEN_CAPTURE
+    if action in _READ_ACTIONS:
+        return capabilities.READ_ONLY
+    # Everything else is a synthetic keystroke, click or scroll. Ungated by
+    # policy — see core/capabilities.INPUT_SYNTHETIC for why — but audited, and
+    # the audit never records what was typed.
+    return capabilities.INPUT_SYNTHETIC
+
+
+def _cc_guard(params: dict) -> dict:
+    action = str((params or {}).get("action", "")).lower().strip()
+    return {"summary": f"Computer control: {action or 'unknown'}"}
+
+
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "computer_control",
@@ -586,4 +621,6 @@ TOOL = {
         ]
     },
     "handler": computer_control,
+    "capability": _cc_capability,
+    "guard": _cc_guard,
 }

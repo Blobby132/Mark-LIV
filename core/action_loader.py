@@ -13,7 +13,42 @@ same one-file operation as writing a plugin: define ``TOOL`` and a handler.
         "description":  "...",                   # what Gemini reads to route the call
         "parameters":  {"type": "OBJECT", ...}, # Gemini function-declaration schema
         "handler":      open_app,                # the callable to run
+        "capability":   capabilities.APP_LAUNCH, # REQUIRED — see below
+        "guard":        _guard_hints,            # optional, see below
     }
+
+CAPABILITY IS MANDATORY, AND THAT IS THE POINT
+    Every action declares what kind of side effect it has, using a name from
+    ``core/capabilities.py``. ``run()`` then puts that capability in front of
+    ``core/permissions.py`` before the handler is called — so an action cannot
+    reach the user's files, the network or a subprocess without having said so
+    first, and there is no code path from the dispatcher to a handler that
+    skips the broker.
+
+    An action file with no ``capability`` is REJECTED at discovery, with the
+    reason logged. That is deliberate: a missing declaration fails visibly at
+    startup rather than silently becoming an unguarded action at 2am. The same
+    applies to a capability string that is not in the policy table.
+
+    ``capability`` is either a plain string, or a callable ``(params) -> str``
+    for a tool whose risk depends on what it was asked to do — ``file_controller``
+    is the live example: ``list`` is ``file.read`` and ``delete`` is
+    ``file.delete``, and one tool declaration covers both honestly.
+
+THE OPTIONAL ``guard`` HOOK
+    ``guard`` is ``(params) -> dict`` and supplies what the confirmation banner
+    and the audit log should say:
+
+        {"summary": "Delete 'notes.txt'",        # the banner's title
+         "detail":  "It goes to the Trash.",     # the banner's second line
+         "target":  "/home/you/Desktop/notes.txt",   # audited, redacted
+         "url":     "https://...",               # audited, reduced to host
+         "undo_provider": fn,                    # see core/permissions.guard
+         "verify":  fn}                          # did it actually work?
+
+    Without it the banner falls back to the tool's name, which is honest but
+    not informative — so any action that can require confirmation should
+    provide one.
 
 The handler is invoked through signature introspection: it receives ``parameters``
 plus whichever of ``player`` / ``speak`` / ``response`` / ``session_memory`` it
@@ -33,6 +68,8 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+
+from core import audit, capabilities, permissions
 
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 _DEFAULT_PARAMS = {"type": "OBJECT", "properties": {}}
@@ -65,6 +102,35 @@ class ActionRecord:
     error: str = ""
     behavior: Optional[str] = None     # None = the API's default (blocking)
     scheduling: Optional[str] = None   # None = the API's default (WHEN_IDLE)
+    capability: object = None          # str, or (params) -> str
+    guard: Optional[Callable] = None   # (params) -> dict of banner/audit hints
+
+    def capability_for(self, params: dict) -> str:
+        """Which capability this specific call needs.
+
+        A resolver that raises, or returns something that is not a string,
+        yields '' — which `core/capabilities.py` treats as unknown, which is
+        DENY. A broken resolver therefore refuses the call rather than letting
+        it through unclassified."""
+        cap = self.capability
+        if callable(cap):
+            try:
+                cap = cap(params or {})
+            except Exception as e:
+                print(f"[Actions] '{self.name}' capability resolver failed: {e}")
+                return ""
+        return cap if isinstance(cap, str) else ""
+
+    def guard_hints(self, params: dict) -> dict:
+        """Banner text and audit detail for this call. Never raises."""
+        if self.guard is None:
+            return {}
+        try:
+            hints = self.guard(params or {})
+            return hints if isinstance(hints, dict) else {}
+        except Exception as e:
+            print(f"[Actions] '{self.name}' guard hints failed: {e}")
+            return {}
 
 
 class ActionRegistry:
@@ -97,15 +163,72 @@ class ActionRegistry:
 
     # -- called by main.py from _execute_tool --
     def run(self, name: str, parameters: dict, ctx: dict | None = None) -> str:
+        """Authorise, then run. There is no other way in.
+
+        This is the single chokepoint the whole permission layer depends on:
+        main.py dispatches every bundled tool through here, and here every call
+        goes to `core/permissions.guard()` before the handler is reached. An
+        action cannot opt out, because the opt-out would have to be written in
+        this method."""
         rec = self._actions.get(name)
         if rec is None or not rec.valid:
             return f"Action '{name}' is not available."
-        try:
-            return _call_handler(rec.handler, parameters, ctx or {}) or "Done."
-        except Exception as e:
-            self._logger(f"Action '{name}' crashed during run(): {e}")
-            traceback.print_exc()
-            return f"Tool '{name}' failed: {e}"
+
+        raw = parameters if isinstance(parameters, dict) else {}
+
+        # The model does not get to write its own permission slip. These keys
+        # have never meant anything to any handler in this repo; removing them
+        # here means they cannot start meaning something by accident later.
+        forged = permissions.had_forged_approval(raw)
+        params = permissions.strip_forged_approval(raw)
+        if forged:
+            self._logger(
+                f"Action '{name}': ignoring self-granted approval key(s): "
+                f"{', '.join(forged)}"
+            )
+            audit.record("permission", action=name,
+                         note=f"ignored self-granted key(s): {', '.join(forged)}")
+
+        capability = rec.capability_for(params)
+        hints = rec.guard_hints(params)
+
+        def _work():
+            try:
+                return _call_handler(rec.handler, params, ctx or {}) or "Done."
+            except Exception as e:
+                # Logged here, where the tool name and traceback are both in
+                # hand; re-raised so the broker records it as a real failure
+                # rather than as a string that happens to mention an error.
+                self._logger(f"Action '{name}' crashed during run(): {e}")
+                traceback.print_exc()
+                raise
+
+        result = permissions.guard(
+            action=name,
+            capability=capability,
+            summary=hints.get("summary") or _default_summary(name, params),
+            detail=hints.get("detail", ""),
+            target=hints.get("target", "") or "",
+            url=hints.get("url", "") or "",
+            run=_work,
+            undo_provider=hints.get("undo_provider"),
+            undo_label=hints.get("undo_label", ""),
+            verify=hints.get("verify"),
+            key=name,
+        )
+        return result.message or "Done."
+
+
+def _default_summary(name: str, params: dict) -> str:
+    """A banner title for an action that did not supply one.
+
+    Uses the tool name plus its `action` sub-command when there is one, which
+    is the shape most tools in this repo have. Never includes a value the model
+    wrote beyond that sub-command name — a summary is not a place to render
+    free text onto the user's screen."""
+    sub = str((params or {}).get("action", "")).strip()[:40]
+    pretty = name.replace("_", " ")
+    return f"{pretty}: {sub}" if sub else pretty
 
 
 def _call_handler(fn: Callable, parameters: dict, ctx: dict) -> str:
@@ -148,10 +271,39 @@ def _validate(module, filename: str) -> ActionRecord:
         return ActionRecord(name=name, file=filename,
                             error="TOOL['handler'] missing or not callable.")
 
+    # ── The capability declaration ───────────────────────────────────────────
+    # Rejected here rather than defaulted, because every default is wrong: a
+    # permissive one is an unguarded action, and a restrictive one is a
+    # confirmation prompt nobody can explain. An action that has not said what
+    # it does does not load, and the reason is printed at startup.
+    capability = tool.get("capability")
+    if capability is None:
+        return ActionRecord(
+            name=name, file=filename,
+            error="TOOL['capability'] missing — every action must declare one "
+                  "from core/capabilities.py (e.g. capabilities.READ_ONLY).")
+    if not callable(capability):
+        if not isinstance(capability, str):
+            return ActionRecord(
+                name=name, file=filename,
+                error="TOOL['capability'] must be a capability string or a "
+                      "callable (params) -> str.")
+        if not capabilities.is_known(capability):
+            return ActionRecord(
+                name=name, file=filename,
+                error=f"TOOL['capability'] '{capability}' is not in the policy "
+                      f"table in core/capabilities.py.")
+
+    guard = tool.get("guard")
+    if guard is not None and not callable(guard):
+        return ActionRecord(name=name, file=filename,
+                            error="TOOL['guard'] must be callable (params) -> dict.")
+
     return ActionRecord(name=name, description=description.strip(), parameters=parameters,
                         handler=handler, file=filename, valid=True, error="",
                         behavior=_opt_upper(tool.get("behavior"), _BEHAVIORS),
-                        scheduling=_opt_upper(tool.get("scheduling"), _SCHEDULING))
+                        scheduling=_opt_upper(tool.get("scheduling"), _SCHEDULING),
+                        capability=capability, guard=guard)
 
 
 def discover_actions(actions_dir: Path, reserved_names: set[str] | None = None,

@@ -154,5 +154,57 @@ class TestVerdicts(unittest.TestCase):
         self.assertFalse(caps.requires_confirmation("nonsense"))
 
 
+class TestNamespaces(unittest.TestCase):
+    """Capability names are namespaced so a whole subsystem can be reasoned
+    about as a group — and so a planned one (minecraft.*) can be added without
+    inventing a second security framework for it."""
+
+    def test_every_capability_is_namespaced(self):
+        unnamespaced = [c for c in caps.ALL_CAPABILITIES if "." not in c]
+        self.assertEqual(unnamespaced, [],
+                         f"capabilities with no namespace: {unnamespaced}")
+
+    def test_the_expected_namespaces_exist(self):
+        for prefix in ("file", "code", "browser", "computer", "messaging",
+                       "app", "info", "net"):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(caps.in_namespace(prefix),
+                                f"no capabilities under {prefix}.*")
+
+    def test_namespace_extraction(self):
+        self.assertEqual(caps.namespace("file.delete"), "file")
+        self.assertEqual(caps.namespace("minecraft.observe"), "minecraft")
+        self.assertEqual(caps.namespace("nodots"), "")
+        self.assertEqual(caps.namespace(None), "")
+
+    def test_in_namespace_returns_only_that_namespace(self):
+        files = caps.in_namespace("file")
+        self.assertIn(caps.FILE_DELETE, files)
+        self.assertNotIn(caps.BROWSER_SUBMIT, files)
+        for capability in files:
+            self.assertTrue(capability.startswith("file."))
+
+    def test_an_unused_namespace_is_empty_rather_than_an_error(self):
+        # minecraft.* is designed but not built. It must be empty, not absent,
+        # and asking about it must not raise.
+        self.assertEqual(caps.in_namespace("minecraft"), ())
+
+    def test_a_future_namespace_cannot_be_registered_at_runtime(self):
+        # A subsystem added later declares its capabilities in the table, as a
+        # source change. There is no registration API, and adding one would
+        # reopen exactly the hole this layer closed.
+        self.assertFalse(hasattr(caps, "register"))
+        self.assertFalse(hasattr(caps, "add_namespace"))
+        with self.assertRaises(TypeError):
+            caps.POLICY["minecraft.move"] = caps.ALLOW
+
+
+class TestPluginDefault(unittest.TestCase):
+
+    def test_an_undeclared_plugin_is_not_assumed_harmless(self):
+        self.assertEqual(caps.decision_for(caps.PLUGIN_UNCLASSIFIED), caps.CONFIRM)
+        self.assertTrue(caps.requires_confirmation(caps.PLUGIN_UNCLASSIFIED))
+
+
 if __name__ == "__main__":
     unittest.main()

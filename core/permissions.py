@@ -210,6 +210,7 @@ def guard(
     url: str = "",
     run: Optional[Callable[[], Any]] = None,
     undo: Optional[Callable[[], Any]] = None,
+    undo_provider: Optional[Callable[[], Any]] = None,
     undo_label: str = "",
     verify: Optional[Callable[[Any], bool]] = None,
     key: str = "",
@@ -226,6 +227,21 @@ def guard(
     `undo`        a callable that reverses `run`. Supplying one is what makes a
                   CONFIRM_IF_IRREVERSIBLE capability run without asking, and the
                   broker registers it on `core/undo.py` after a successful run.
+    `undo_provider`
+                  for the common case where the reversal can only be built by
+                  looking at the world first — you cannot write the undo for
+                  "overwrite notes.txt" without reading notes.txt. The broker
+                  calls this BEFORE deciding; whatever callable it returns is
+                  used as `undo`, and returning None means "this particular
+                  operation is not reversible after all", which asks.
+
+                  This is still demonstrate-don't-claim: the provider has to
+                  actually produce a working reversal. `file_controller` uses it
+                  to snapshot a file it is about to overwrite, and to return
+                  None when the file is too large to hold in memory — so the
+                  cheap write goes straight through and the one that cannot be
+                  taken back asks first, decided by the facts rather than by
+                  anybody's assertion.
     `verify`      given `run`'s return value, says whether it really worked. Use
                   it wherever a function can fail by returning rather than by
                   raising — which, in this codebase, is most of them.
@@ -234,8 +250,23 @@ def guard(
     Never raises. Every failure is a GuardResult."""
 
     key = key or action or capability
-    reversible = callable(undo)
     verdict = capabilities.decision_for(capability)
+
+    # Build the reversal before deciding, when the caller needs the world to
+    # build it. A provider that raises is treated as "no reversal available" —
+    # failing to snapshot is exactly the case where we should be asking, not
+    # the case where we should be crashing.
+    if undo is None and undo_provider is not None and verdict != capabilities.DENY:
+        try:
+            produced = undo_provider()
+        except Exception as e:
+            produced = None
+            audit.record("permission", action=action, capability=capability,
+                         note="undo provider failed", error_class=type(e).__name__)
+        if callable(produced):
+            undo = produced
+
+    reversible = callable(undo)
     needs_human = capabilities.requires_confirmation(capability, reversible=reversible)
 
     # ── Denied outright ──────────────────────────────────────────────────────

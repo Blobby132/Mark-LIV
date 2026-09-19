@@ -18,7 +18,8 @@ MAX_BUILD_ATTEMPTS = 3
 # Model choice lives in core/gemini.py, and so does the timeout and the
 # fallback ladder. Writing a model name here is what left this file hanging
 # forever whenever that one alias was unwell.
-from core import gemini
+from core import capabilities, exec_safe, gemini, safe_path
+from core.safe_path import PathEscape
 
 
 def _get_api_key() -> str:
@@ -47,6 +48,12 @@ def _clean_code(text: str) -> str:
 
 
 def _resolve_save_path(output_path: str, language: str) -> Path:
+    """Where generated code may be written.
+
+    `output_path` is model-supplied and used to be honoured verbatim when it
+    was absolute — so "write me a script at ~/.bashrc" wrote there, and so did
+    /etc/anything the user could write to. Everything now lands inside the home
+    directory, and a path that resolves outside it raises."""
     ext_map = {
         "python": ".py", "py": ".py",
         "javascript": ".js", "js": ".js",
@@ -57,18 +64,26 @@ def _resolve_save_path(output_path: str, language: str) -> Path:
         "sql": ".sql", "json": ".json", "rust": ".rs", "go": ".go",
     }
     if output_path:
-        p = Path(output_path)
-        return p if p.is_absolute() else DESKTOP / p
+        candidate = Path(output_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = DESKTOP / candidate
+        return safe_path.resolve_within(Path.home(), candidate)
     ext = ext_map.get((language or "python").lower(), ".py")
-    return DESKTOP / f"jarvis_code{ext}"
+    return safe_path.resolve_within(Path.home(), DESKTOP / f"jarvis_code{ext}")
 
 
 def _read_file(file_path: str) -> tuple[str, str]:
     if not file_path:
         return "", "No file path provided."
-    p = Path(file_path)
+    try:
+        p = safe_path.resolve_within_any(safe_path.default_roots(), file_path)
+    except PathEscape:
+        return "", (f"I can only read files inside your home folder. "
+                    f"'{file_path}' is outside it.")
+    except ValueError:
+        return "", "No file path provided."
     if not p.exists():
-        return "", f"File not found: {file_path}"
+        return "", f"File not found: {p.name}"
     try:
         return p.read_text(encoding="utf-8"), ""
     except Exception as e:
@@ -209,12 +224,18 @@ Fixed code:"""
 
 
 def _run_file(path: Path, args: list, timeout: int) -> str:
+    """Run a generated file with the right interpreter.
+
+    Reached only after `code.execute` has been confirmed by a human — this
+    includes running generated shell and PowerShell scripts, which is as
+    consequential as it sounds. exec_safe supplies the timeout, the
+    process-group kill and an exit code that is actually checked."""
     interpreters = {
-        ".py":  [sys.executable],
+        ".py":  [exec_safe.python_executable()],
         ".js":  ["node"],
         ".ts":  ["ts-node"],
         ".sh":  ["bash"],
-        ".ps1": ["powershell", "-File"],
+        ".ps1": ["powershell", "-NoProfile", "-NonInteractive", "-File"],
         ".rb":  ["ruby"],
         ".php": ["php"],
     }
@@ -222,26 +243,30 @@ def _run_file(path: Path, args: list, timeout: int) -> str:
     if not interp:
         return f"No interpreter for {path.suffix}."
 
-    try:
-        result = subprocess.run(
-            interp + [str(path)] + (args or []),
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=timeout, cwd=str(path.parent)
-        )
-        output = result.stdout.strip()
-        error  = result.stderr.strip()
-        parts  = []
-        if output: parts.append(f"Output:\n{output}")
-        if error:  parts.append(f"Stderr:\n{error}")
-        return "\n\n".join(parts) if parts else "Executed with no output."
+    # Arguments come from the model. They never touch a shell, but a lone "-"
+    # or a flag-shaped argument can still confuse an interpreter, so anything
+    # that is not plain text is dropped rather than passed on.
+    clean_args = [str(a) for a in (args or [])
+                  if isinstance(a, (str, int, float)) and "\x00" not in str(a)]
 
-    except subprocess.TimeoutExpired:
-        return f"Timed out after {timeout}s."
-    except FileNotFoundError:
-        return f"Interpreter not found: {interp[0]}."
-    except Exception as e:
-        return f"Execution error: {e}"
+    result = exec_safe.run(
+        interp + [str(path)] + clean_args,
+        timeout=max(1, int(timeout)), cwd=str(path.parent),
+    )
+
+    if result.timed_out:
+        return f"Timed out after {timeout}s, so I stopped it."
+    if result.error:
+        return f"Could not run it: {result.summary()}"
+
+    parts = []
+    if result.stdout.strip():
+        parts.append(f"Output:\n{result.stdout.strip()}")
+    if result.stderr.strip():
+        parts.append(f"Stderr:\n{result.stderr.strip()}")
+    if not result.ok:
+        parts.append(f"Exit code: {result.returncode}")
+    return "\n\n".join(parts) if parts else "Executed with no output."
 
 
 def _build(description, language, output_path, args, timeout, speak=None, player=None) -> str:
@@ -585,6 +610,40 @@ def code_helper(
         return f"Unknown action: '{action}'. Use write, edit, explain, run, build, optimize, or screen_debug."
 
 
+# ── Capability resolution ────────────────────────────────────────────────────
+
+def _ch_capability(params: dict) -> str:
+    action = str((params or {}).get("action", "")).lower().strip()
+    if action in ("run", "build"):
+        return capabilities.CODE_EXEC
+    if action in ("write", "edit", "optimize"):
+        return capabilities.FILE_WRITE
+    if action in ("explain", "screen_debug"):
+        return capabilities.FILE_READ
+    # "auto" and anything unrecognised can end up writing or running.
+    return capabilities.CODE_EXEC
+
+
+def _ch_guard(params: dict) -> dict:
+    action = str((params or {}).get("action", "")).lower().strip()
+    target = str((params or {}).get("file_path", "")
+                 or (params or {}).get("output_path", "")).strip()
+    what   = Path(target).name if target else "a file"
+
+    if action == "run":
+        return {"summary": f"Run '{what}'",
+                "detail": "It runs with your full user account.",
+                "target": target}
+    if action == "build":
+        return {"summary": "Write a program and run it until it works",
+                "detail": ("I will generate code, run it, and keep fixing and "
+                           "re-running it — with your full user account."),
+                "target": target}
+    if action in ("write", "edit", "optimize"):
+        return {"summary": f"{action.title()} '{what}'", "target": target}
+    return {"summary": f"code_helper: {action or 'auto'}", "target": target}
+
+
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "code_helper",
@@ -630,4 +689,6 @@ TOOL = {
         ]
     },
     "handler": code_helper,
+    "capability": _ch_capability,
+    "guard": _ch_guard,
 }

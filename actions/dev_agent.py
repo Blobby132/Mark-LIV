@@ -17,7 +17,33 @@ API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
 PROJECTS_DIR     = Path.home() / "Desktop" / "JarvisProjects"
 MAX_FIX_ATTEMPTS = 5
 # Model choice, timeout and fallback ladder all live in core/gemini.py.
-from core import gemini
+from core import capabilities, exec_safe, gemini, safe_path
+from core.safe_path import PathEscape
+
+# A pip requirement that is actually a requirement, not a flag. "-i" reaching
+# `pip install` is `--index-url`, which repoints the whole install at a server
+# of the attacker's choosing; "-e ." and "--find-links" are the same shape of
+# problem. Anchored, so the whole string has to match.
+_PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SPEC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+                      r"(\[[A-Za-z0-9,._-]{1,64}\])?"
+                      r"((==|>=|<=|~=|!=|>|<)[A-Za-z0-9._*+-]{1,32})?$")
+
+
+def _safe_requirement(raw: str) -> str:
+    """Return `raw` if it is a plain requirement, else ''."""
+    text = str(raw or "").strip()
+    return text if _SPEC_RE.match(text) else ""
+
+
+def _safe_project_file(project_dir: Path, relative: str) -> Path:
+    """Where a planned file may be written.
+
+    `relative` comes out of the model's JSON plan, so it is exactly as
+    trustworthy as the rest of the plan — which is to say, not. The planner
+    prompt asks for relative paths; this is what makes that a rule rather than
+    a request. `{"path": "../../.bashrc"}` raises instead of being written."""
+    return safe_path.resolve_within(project_dir, relative, allow_absolute=False)
 
 MODEL_PLANNER    = gemini.SMART
 MODEL_WRITER     = gemini.SMART
@@ -227,7 +253,7 @@ Code for {file_path}:"""
         response = model.generate_content(prompt)
         code = _strip_fences(response.text)
 
-        full_path = project_dir / file_path
+        full_path = _safe_project_file(project_dir, file_path)
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(code, encoding="utf-8")
 
@@ -240,115 +266,136 @@ Code for {file_path}:"""
         raise
 
 def _install_dependencies(dependencies: list[str], project_dir: Path) -> str:
+    """Install what the plan asked for — and say plainly when it did not work.
+
+    The old version had no timeout on `pip show`, and reported a failed install
+    as "Install warning (non-fatal)" before carrying on to report the project
+    as built. A missing dependency is not non-fatal; it is the reason the next
+    step fails."""
     if not dependencies:
         return "No external dependencies."
 
-    to_install = []
+    requested, rejected = [], []
     for dep in dependencies:
-        pkg_name = re.split(r"[>=<!]", dep)[0].strip()
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "show", pkg_name],
-            capture_output=True, text=True
+        clean = _safe_requirement(dep)
+        (requested if clean else rejected).append(clean or str(dep)[:40])
+
+    to_install = []
+    for spec in requested:
+        pkg_name = re.split(r"[>=<!~\[]", spec)[0].strip()
+        probe = exec_safe.run(
+            [exec_safe.python_executable(), "-m", "pip", "show", pkg_name],
+            timeout=30,
         )
-        if result.returncode != 0:
-            to_install.append(dep)
+        if not probe.ok:
+            to_install.append(spec)
         else:
             print(f"[DevAgent] ✓ Already installed: {pkg_name}")
 
+    notes = []
+    if rejected:
+        notes.append(f"Refused {len(rejected)} dependency name(s) that did not "
+                     f"look like plain package names: {', '.join(rejected[:3])}")
+
     if not to_install:
-        return f"All dependencies already installed: {', '.join(dependencies)}"
+        return " ".join(notes) or f"All dependencies already installed."
 
     print(f"[DevAgent] 📦 Installing: {to_install}")
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install"] + to_install,
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=120, cwd=str(project_dir)
-        )
-        if result.returncode == 0:
-            return f"Installed: {', '.join(to_install)}"
-        return f"Install warning (non-fatal): {result.stderr[:200]}"
-    except subprocess.TimeoutExpired:
-        return "Dependency install timed out (non-fatal)."
-    except Exception as e:
-        return f"Install error (non-fatal): {e}"
+    result = exec_safe.run(
+        [exec_safe.python_executable(), "-m", "pip", "install",
+         "--disable-pip-version-check", *to_install],
+        timeout=300, cwd=str(project_dir),
+    )
+    if result.timed_out:
+        notes.append(f"Installing {', '.join(to_install)} timed out after five "
+                     f"minutes and was stopped.")
+    elif not result.ok:
+        notes.append(f"Could NOT install {', '.join(to_install)}: "
+                     f"{result.failure_detail(200)}")
+    else:
+        notes.append(f"Installed: {', '.join(to_install)}")
+    return " ".join(notes)
+
 
 def _open_vscode(project_dir: Path) -> bool:
-    vscode_candidates = [
-        "code",
-        rf"C:\Users\{Path.home().name}\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd",
-        r"C:\Program Files\Microsoft VS Code\bin\code.cmd",
-    ]
-    for cmd in vscode_candidates:
-        try:
-            subprocess.Popen(
-                [cmd, str(project_dir)],
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            time.sleep(1.5)
-            print(f"[DevAgent] 💻 VSCode opened: {project_dir}")
-            return True
-        except Exception:
+    """Open the finished project in an editor, if one is installed.
+
+    The old version passed a list with `shell=True`, which on POSIX runs only
+    `code` and silently throws the project path away, and on Windows hands the
+    whole thing to cmd. Best effort either way — a missing editor is not a
+    failure of the build."""
+    for name in ("code", "code-insiders", "codium"):
+        path = exec_safe.resolve_program(name)
+        if not path:
             continue
+        started, _detail = exec_safe.spawn([path, str(project_dir)])
+        if started:
+            time.sleep(1.0)
+            print(f"[DevAgent] 💻 Editor opened: {project_dir}")
+            return True
     return False
 
+
 def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
+    """Run the generated project's entry point.
+
+    `run_command` comes out of the model's plan. It is split on whitespace and
+    never sees a shell, so there is no metacharacter to exploit — but it is
+    still an arbitrary program name, which is why the whole tool sits behind
+    `code.execute` and a human. The working directory is the project folder,
+    and the process group is killed on timeout rather than orphaned."""
     print(f"[DevAgent] 🚀 Running: {run_command}")
-    try:
-        parts = run_command.split()
-        if parts[0].lower() == "python":
-            parts[0] = sys.executable
+    parts = str(run_command or "").split()
+    if not parts:
+        return "The plan did not say how to run the project."
 
-        result = subprocess.run(
-            parts,
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=timeout,
-            cwd=str(project_dir)
-        )
+    if parts[0].lower() in ("python", "python3", "py"):
+        parts[0] = exec_safe.python_executable()
 
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
+    result = exec_safe.run(parts, timeout=max(1, int(timeout)),
+                           cwd=str(project_dir))
 
-        combined_parts = []
-        if stdout:
-            combined_parts.append(f"STDOUT:\n{stdout}")
-        if stderr:
-            combined_parts.append(f"STDERR:\n{stderr}")
+    if result.timed_out:
+        return (f"Timed out after {timeout}s — a long-running app (server or "
+                f"GUI) is likely working; I stopped it to carry on.")
+    if result.error:
+        return f"Command not found or could not start: {result.summary()}"
 
-        return "\n\n".join(combined_parts) if combined_parts else "Ran with no output."
+    chunks = []
+    if result.stdout.strip():
+        chunks.append(f"STDOUT:\n{result.stdout.strip()}")
+    if result.stderr.strip():
+        chunks.append(f"STDERR:\n{result.stderr.strip()}")
+    if result.returncode:
+        chunks.append(f"EXIT CODE: {result.returncode}")
+    return "\n\n".join(chunks) if chunks else "Ran with no output."
 
-    except subprocess.TimeoutExpired:
-        return f"Timed out after {timeout}s — long-running app (server/GUI) is likely working."
-    except FileNotFoundError as e:
-        return f"Command not found: {e}"
-    except Exception as e:
-        return f"Run error: {e}"
 
 def _try_auto_install(error_output: str, project_dir: Path) -> bool:
-    """If there is a ModuleNotFoundError, tries to auto-install the missing package."""
-    pattern = re.compile(
-        r"No module named ['\"]([a-zA-Z0-9_\-\.]+)['\"]", re.IGNORECASE
-    )
-    match = pattern.search(error_output)
+    """Install the package a ModuleNotFoundError named, if it names one safely.
+
+    The package name is taken from a traceback, which is program output rather
+    than a trusted source, so it has to match a plain package name. Without
+    that check a crafted error message saying `No module named '-i'` would put
+    `-i` on a pip command line, and `-i` is `--index-url`."""
+    match = re.search(r"No module named ['\"]([A-Za-z0-9_.\-]{1,64})['\"]",
+                      error_output, re.IGNORECASE)
     if not match:
         return False
 
-    pkg = match.group(1).replace("_", "-").split(".")[0]
-    print(f"[DevAgent] 🔧 Auto-installing missing package: {pkg}")
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", pkg],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=60, cwd=str(project_dir)
-        )
-        return result.returncode == 0
-    except Exception:
+    pkg = match.group(1).split(".")[0].replace("_", "-")
+    if not _PKG_RE.match(pkg):
+        print(f"[DevAgent] refusing to install suspicious package name: {pkg!r}")
         return False
+
+    print(f"[DevAgent] 🔧 Auto-installing missing package: {pkg}")
+    result = exec_safe.run(
+        [exec_safe.python_executable(), "-m", "pip", "install",
+         "--disable-pip-version-check", pkg],
+        timeout=180, cwd=str(project_dir),
+    )
+    return result.ok
+
 
 def _fix_files(
     error_output: str,
@@ -425,13 +472,16 @@ Fixed code for {fix_path}:"""
             response = model.generate_content(prompt)
             fixed = _strip_fences(response.text)
 
-            full_path = project_dir / fix_path
+            full_path = _safe_project_file(project_dir, fix_path)
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(fixed, encoding="utf-8")
 
             updated_codes[fix_path] = fixed
             print(f"[DevAgent] 🔧 Fixed: {fix_path}")
 
+        except PathEscape:
+            print(f"[DevAgent] ⚠️ Refused to write {fix_path}: outside the "
+                  f"project folder.")
         except Exception as e:
             if _is_rate_limit(e):
                 raise RateLimitError(str(e))
@@ -509,6 +559,10 @@ def _build_project(
                     time.sleep(20)
                 else:
                     log(f"Rate limit retry failed for {file_path}, skipping.")
+            except PathEscape:
+                log(f"REFUSED {file_path}: the plan asked for a file outside "
+                    f"the project folder. Skipping it.")
+                break
             except Exception as e:
                 log(f"Failed to write {file_path}: {e}")
                 break
@@ -518,9 +572,16 @@ def _build_project(
         if speak: speak(msg)
         return msg
 
+    install_note = ""
     if dependencies:
-        install_result = _install_dependencies(dependencies, project_dir)
-        log(install_result)
+        install_note = _install_dependencies(dependencies, project_dir)
+        log(install_note)
+        if "Could NOT install" in install_note or "timed out" in install_note:
+            # Carried forward into the final message instead of being dropped:
+            # the build very likely fails next, and this is why.
+            install_note = f"\n\nNote: {install_note}"
+        else:
+            install_note = ""
 
     _open_vscode(project_dir)
 
@@ -539,7 +600,7 @@ def _build_project(
                 f"Saved to: {project_dir}"
             )
             if speak: speak(msg)
-            return f"{msg}\n\nOutput:\n{last_output}"
+            return f"{msg}{install_note}\n\nOutput:\n{last_output}"
 
         if attempt == MAX_FIX_ATTEMPTS:
             break
@@ -578,7 +639,7 @@ def _build_project(
         f"Project is saved at {project_dir} — open it in VSCode and check manually."
     )
     if speak: speak(msg)
-    return f"{msg}\n\nLast error:\n{last_output[:600]}"
+    return f"{msg}{install_note}\n\nLast error:\n{last_output[:600]}"
 
 
 def dev_agent(
@@ -605,6 +666,25 @@ def dev_agent(
         speak        = speak,
         player       = player,
     )
+
+
+# ── Capability ───────────────────────────────────────────────────────────────
+#
+# This tool writes files, installs packages from the internet and runs code it
+# just generated. Three consequential things, and the honest way to present
+# that is one confirmation that names all three — not three prompts in a row,
+# and certainly not none, which is what it had.
+
+def _dev_guard(params: dict) -> dict:
+    description = str((params or {}).get("description", "")).strip()[:120]
+    name        = str((params or {}).get("project_name", "")).strip()
+    return {
+        "summary": f"Build a project{f' called {name}' if name else ''}",
+        "detail": (f"I will write Python for \"{description}\", install any "
+                   f"packages it needs with pip, and run it — with your full "
+                   f"user account, in {PROJECTS_DIR.name}."),
+        "target": str(PROJECTS_DIR / (name or "")),
+    }
 
 
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
@@ -636,4 +716,6 @@ TOOL = {
         ]
     },
     "handler": dev_agent,
+    "capability": capabilities.CODE_EXEC,
+    "guard": _dev_guard,
 }

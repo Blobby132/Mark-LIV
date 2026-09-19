@@ -76,6 +76,7 @@ from memory.config_manager     import (
 from core.plugin_loader        import discover_plugins
 from core                      import undo as undo_stack
 from core                      import confirm as confirm_gate
+from core                      import audit, capabilities, permissions
 from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
@@ -1110,12 +1111,55 @@ class JarvisLive:
 
         return out
 
+    # The tools implemented inline in this file never reach the action
+    # registry, so the enforcement in core/action_loader.py does not cover
+    # them. They are low-risk — the assistant's own memory, its monitor list, a
+    # screenshot, quitting when asked — but "low-risk" is a judgement that
+    # belongs in the policy table like every other, not in an exemption.
+    _INLINE_CAPABILITIES = {
+        "save_memory":     capabilities.APP_STATE,
+        "recall_memory":   capabilities.READ_ONLY,
+        "undo":            capabilities.APP_STATE,
+        "screen_process":  capabilities.SCREEN_CAPTURE,
+        "close_camera":    capabilities.READ_ONLY,
+        "system_status":   capabilities.READ_ONLY,
+        "manage_monitor":  capabilities.APP_STATE,
+        "shutdown_jarvis": capabilities.APP_STATE,
+    }
+
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
-        args = dict(fc.args or {})
+        raw_args = dict(fc.args or {})
 
-        print(f"[JARVIS] 🔧 {name}  {args}")
+        # The model does not get to write its own permission slip here either.
+        _forged = permissions.had_forged_approval(raw_args)
+        args = permissions.strip_forged_approval(raw_args)
+        if _forged:
+            self.ui.write_log(f"SYS: ignored self-granted approval on {name}")
+            audit.record("permission", action=name,
+                         note=f"ignored self-granted key(s): {', '.join(_forged)}")
+
+        # Argument VALUES are no longer printed. A console scrollback is not a
+        # private place, and these values include typed passwords and message
+        # bodies. The key names are enough to follow what happened.
+        print(f"[JARVIS] 🔧 {name}  keys={sorted(args)}")
         self.ui.set_state("THINKING")
+
+        # Inline tools consult the policy table before doing anything; actions
+        # and plugins are gated inside their registries instead.
+        if name in self._INLINE_CAPABILITIES:
+            _decision = permissions.guard(
+                action=name,
+                capability=self._INLINE_CAPABILITIES[name],
+                summary=name.replace("_", " "),
+            )
+            if not _decision.allowed:
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+                return types.FunctionResponse(
+                    id=fc.id, name=name,
+                    response={"result": _decision.message},
+                )
 
 
         if name == "save_memory":
@@ -2055,6 +2099,11 @@ class JarvisLive:
             hide = self.ui.hide_confirm,
             log  = self.ui.write_log,
         )
+        # Every permission decision and every consequential action is written
+        # to ~/.jarvis/audit.jsonl; the mirror puts a one-line summary on the
+        # HUD so the record is visible as it happens, not only afterwards.
+        audit.configure(mirror=self.ui.write_log)
+        permissions.install()
         set_trim_notifier(self.ui.write_log)
 
         # Tell the device picker the exact rates the streams open at, from the

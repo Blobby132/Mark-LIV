@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import threading
 import webbrowser
+
+from core import capabilities
 from pathlib import Path
 from typing import Optional
 
@@ -1053,6 +1055,77 @@ def browser_control(
     return result
 
 
+# ── Capability resolution ────────────────────────────────────────────────────
+#
+# Browsing is free; acting as the signed-in user is not. These sessions run on
+# the user's REAL browser profile — `_real_profile_dir` is the whole point of
+# the file — so a submitted form is a real purchase, a real post, a real
+# password change.
+
+_READ_ACTIONS = {
+    "get_text", "get_url", "screenshot", "list_browsers", "scroll",
+    "back", "forward", "reload", "close_tab", "close", "close_all", "switch",
+}
+_NAVIGATE_ACTIONS = {"go_to", "search", "new_tab"}
+
+# Words that mean the click is the irreversible one. Matched case-insensitively
+# against whatever the model is aiming at.
+_SUBMIT_WORDS = (
+    "submit", "buy", "purchase", "order", "pay", "checkout", "confirm",
+    "place order", "send", "post", "publish", "tweet", "delete", "remove",
+    "deactivate", "close account", "log out", "logout", "sign out",
+    "transfer", "withdraw", "donate", "subscribe", "accept", "agree",
+)
+
+
+def _looks_like_submit(params: dict) -> bool:
+    haystack = " ".join(str(params.get(k, "")) for k in
+                        ("description", "text", "selector", "key")).lower()
+    if not haystack.strip():
+        return False
+    return any(word in haystack for word in _SUBMIT_WORDS)
+
+
+def _bc_capability(params: dict) -> str:
+    action = str((params or {}).get("action", "")).lower().strip()
+
+    if action in _READ_ACTIONS:
+        return capabilities.READ_ONLY
+    if action in _NAVIGATE_ACTIONS:
+        return capabilities.BROWSER_NAVIGATE
+    if action == "fill_form":
+        return capabilities.BROWSER_SUBMIT
+    if action in ("click", "smart_click", "press"):
+        # Enter in a focused field is a submit as surely as clicking the button.
+        if action == "press" and str(params.get("key", "")).lower() == "enter":
+            return capabilities.BROWSER_SUBMIT
+        return (capabilities.BROWSER_SUBMIT if _looks_like_submit(params)
+                else capabilities.BROWSER_NAVIGATE)
+    if action in ("type", "smart_type"):
+        return capabilities.BROWSER_NAVIGATE
+    return capabilities.BROWSER_NAVIGATE
+
+
+def _bc_guard(params: dict) -> dict:
+    action = str((params or {}).get("action", "")).lower().strip()
+    if action == "fill_form":
+        fields = (params or {}).get("fields", {})
+        count  = len(fields) if isinstance(fields, dict) else 0
+        return {
+            "summary": f"Fill in {count} form field(s) in your browser",
+            "detail": ("This is your real browser, signed in as you. I am not "
+                       "showing the values here."),
+        }
+    target = str((params or {}).get("description", "")
+                 or (params or {}).get("text", "")).strip()[:60]
+    if action in ("click", "smart_click", "press"):
+        return {"summary": f"Click '{target}' in your browser" if target
+                           else "Click in your browser",
+                "detail": "This is your real browser, signed in as you."}
+    return {"summary": f"Browser: {action}",
+            "url": str((params or {}).get("url", ""))}
+
+
 def _log(player, text: str):
     short = str(text)[:80]
     print(f"[Browser] {short}")
@@ -1129,4 +1202,6 @@ TOOL = {
         ]
     },
     "handler": browser_control,
+    "capability": _bc_capability,
+    "guard": _bc_guard,
 }

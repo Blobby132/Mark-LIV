@@ -26,7 +26,21 @@ from pathlib import Path
 from datetime import datetime
 
 # Model choice, timeout and fallback ladder all live in core/gemini.py.
-from core import gemini
+from core import capabilities, exec_safe, gemini, safe_path
+from core.safe_path import ArchiveTooLarge, PathEscape, UnsafeArchiveMember
+
+# Where this tool is allowed to work. It previously had no containment at all:
+# `file_path` was used exactly as given, so any absolute path on the machine was
+# fair game for reading, for writing an `_converted` sibling next to, and — for
+# a .py file — for executing. Home plus the system temp directory covers every
+# legitimate case, because that is where the interface drops what you hand it.
+def _allowed_roots():
+    return safe_path.default_roots()
+
+
+def _contained(raw: str) -> Path:
+    """Resolve `raw` and refuse anything outside the allowed roots."""
+    return safe_path.resolve_within_any(_allowed_roots(), raw)
 
 def _get_api_key() -> str:
     config_path = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
@@ -463,19 +477,27 @@ def _process_code(path: Path, action: str, params: dict, speak=None) -> str:
     ext     = path.suffix.lstrip(".")
 
     if action == "run":
-        if ext == "py":
-            try:
-                result = subprocess.run(
-                    ["python", str(path)],
-                    capture_output=True, text=True, timeout=30
-                )
-                out = result.stdout or result.stderr
-                return f"Output:\n{out[:2000]}" if out else "No output."
-            except subprocess.TimeoutExpired:
-                return "Execution timed out (30s)."
-            except Exception as e:
-                return f"Run failed: {e}"
-        return f"Direct execution not supported for .{ext} files."
+        if ext != "py":
+            return f"Direct execution not supported for .{ext} files."
+        # `["python", path]` ran whatever `python` happened to mean on the
+        # machine — a different virtualenv, Python 2, or nothing at all.
+        # exec_safe uses this interpreter, kills the whole process group on
+        # timeout, and reports a non-zero exit as a failure instead of printing
+        # the stderr as if it were output.
+        result = exec_safe.run(
+            [exec_safe.python_executable(), str(path)],
+            timeout=30, cwd=str(path.parent),
+        )
+        if result.timed_out:
+            return "Execution timed out after 30 seconds, so I stopped it."
+        if result.error:
+            return f"Could not run it: {result.summary()}"
+        if not result.ok:
+            detail = result.failure_detail(600)
+            return (f"The script exited with code {result.returncode}."
+                    + (f"\n{detail}" if detail else ""))
+        out = (result.stdout or "").strip()
+        return f"Output:\n{out[:2000]}" if out else "It ran, with no output."
 
     if action == "info":
         lines = content.count("\n")
@@ -592,7 +614,7 @@ def _process_video(path: Path, action: str, params: dict, speak=None) -> str:
 
     def _ffmpeg_available() -> bool:
         try:
-            subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=3)
+            exec_safe.run(["ffmpeg", "-version"], timeout=5)
             return True
         except Exception:
             return False
@@ -737,15 +759,45 @@ def _process_archive(path: Path, action: str, params: dict, speak=None) -> str:
             return f"List failed: {e}"
 
     if action == "extract":
-        dest = Path(params.get("destination", str(path.parent / path.stem)))
-        dest.mkdir(parents=True, exist_ok=True)
+        # WHAT THIS REPLACES
+        #     `shutil.unpack_archive(path, dest)` with an unvalidated `dest`.
+        #     For a tar on Python 3.11 — which is what this repo runs — that is
+        #     `tarfile.extractall` with no filter, so a member named
+        #     "../../.ssh/authorized_keys" is written exactly there, and a
+        #     symlink member pointing at / lets every later member write
+        #     through it. `destination` was model-supplied and unchecked, so
+        #     the extraction root was arbitrary as well.
+        #
+        #     core/safe_path.safe_extract validates every member before writing
+        #     anything and refuses the whole archive if one is bad.
+        raw_dest = params.get("destination") or str(path.parent / path.stem)
         try:
-            shutil.unpack_archive(path, dest)
-            return f"Extracted to: {dest}"
+            dest = _contained(raw_dest)
+        except PathEscape:
+            return (f"I will not extract to '{raw_dest}' — it is outside the "
+                    f"folders I am allowed to write to.")
+        except ValueError:
+            return "No destination given for the extraction."
+
+        try:
+            result = safe_path.safe_extract(path, dest)
+        except UnsafeArchiveMember as e:
+            return (f"I refused to unpack this archive: {e} Nothing was "
+                    f"extracted.")
+        except ArchiveTooLarge as e:
+            return f"I refused to unpack this archive: {e}"
+        except PathEscape as e:
+            return str(e)
+        except (ValueError, FileNotFoundError) as e:
+            return f"Extract failed: {e}"
         except Exception as e:
             return f"Extract failed: {e}"
 
+        return (f"Extracted {result.files} file(s) into {result.destination.name}/ "
+                f"({result.total_bytes // 1024} KB).")
+
     return f"Unknown archive action: '{action}'. Try: list, extract"
+
 
 def _process_pptx(path: Path, action: str, params: dict, speak=None) -> str:
     action = action or "summarize"
@@ -782,15 +834,27 @@ def _process_pptx(path: Path, action: str, params: dict, speak=None) -> str:
     return f"Unknown PPTX action: '{action}'. Try: summarize, extract_text, analyze"
 
 def file_processor(parameters: dict, player=None, speak=None) -> str:
-    file_path_str = parameters.get("file_path", "").strip()
+    file_path_str = str(parameters.get("file_path", "")).strip()
     if not file_path_str:
         return "No file path provided."
 
-    path = Path(file_path_str)
+    # Containment, which this tool had none of. Everything below — reading the
+    # file, writing an `_converted` sibling beside it, running it if it is
+    # Python — happens to whatever this resolves to, so it resolves inside the
+    # home directory or the temp folder the interface drops uploads into, or
+    # not at all.
+    try:
+        path = _contained(file_path_str)
+    except PathEscape:
+        return (f"I can only work on files in your home folder or the temporary "
+                f"upload folder. '{file_path_str}' is outside both.")
+    except ValueError:
+        return "No file path provided."
+
     if not path.exists():
-        return f"File not found: {file_path_str}"
+        return f"File not found: {path.name}"
     if not path.is_file():
-        return f"Path is not a file: {file_path_str}"
+        return f"That is a folder, not a file: {path.name}"
 
     file_type   = _detect_type(path)
     action      = (parameters.get("action") or "").lower().strip()
@@ -820,7 +884,7 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
         "csv":     lambda p, a, pm, s: _process_data(p, "csv",   a, pm, s),
         "excel":   lambda p, a, pm, s: _process_data(p, "excel", a, pm, s),
         "json":    _process_json,
-        "xml":     lambda p, a, pm, s: _process_json(p, a, pm, s),  
+        "xml":     lambda p, a, pm, s: _process_json(p, a, pm, s),
         "code":    _process_code,
         "audio":   _process_audio,
         "video":   _process_video,
@@ -835,10 +899,56 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
     try:
         result = handler(path, action, params, speak)
         return result or "Done."
+    except PathEscape as e:
+        return str(e)
     except Exception as e:
         import traceback
         traceback.print_exc()
         return f"Processing failed: {e}"
+
+
+# ── Capability resolution ────────────────────────────────────────────────────
+
+def _fp_capability(params: dict) -> str:
+    action = str((params or {}).get("action", "")).lower().strip()
+    raw    = str((params or {}).get("file_path", "")).strip()
+    ext    = Path(raw).suffix.lower().lstrip(".") if raw else ""
+
+    if action == "run":
+        return capabilities.CODE_EXEC
+    if action == "extract":
+        return capabilities.FILE_ARCHIVE_EXTRACT
+    # These write a new file next to the original.
+    if action in ("resize", "compress", "convert", "to_csv", "to_word",
+                  "trim", "extract_audio", "extract_frame", "fix",
+                  "optimize", "document", "reformat", "extract_pages"):
+        return capabilities.FILE_WRITE
+    if action in ("", "info", "describe", "ocr", "summarize", "extract_text",
+                  "analyze", "stats", "validate", "format", "explain",
+                  "review", "transcribe", "word_count", "to_bullet", "test",
+                  "translate_hint", "filter", "sort", "list"):
+        return capabilities.FILE_READ
+    # An instruction we do not recognise still reaches a model and can still
+    # end in a written file, so it is not a read.
+    return capabilities.FILE_WRITE
+
+
+def _fp_guard(params: dict) -> dict:
+    action = str((params or {}).get("action", "")).lower().strip()
+    raw    = str((params or {}).get("file_path", "")).strip()
+    name   = Path(raw).name if raw else "the uploaded file"
+
+    if action == "run":
+        return {"summary": f"Run the script '{name}'",
+                "detail": ("It runs with your full user account, with a "
+                           "30-second limit."),
+                "target": raw}
+    if action == "extract":
+        return {"summary": f"Unpack the archive '{name}'",
+                "detail": ("Members that try to escape the destination, links "
+                           "and device entries are refused."),
+                "target": raw}
+    return {"summary": f"{action or 'process'}: {name}", "target": raw}
 
 
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
@@ -920,4 +1030,6 @@ TOOL = {
         "required": []
     },
     "handler": file_processor,
+    "capability": _fp_capability,
+    "guard": _fp_guard,
 }
