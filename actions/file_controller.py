@@ -10,6 +10,8 @@ try:
 except ImportError:
     _SEND2TRASH = False
 
+from core import capabilities, safe_path
+from core.safe_path import PathEscape
 from core.undo import push_undo
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -94,16 +96,33 @@ _SAFE_ROOTS: list[Path] = [
     Path.home(),
 ]
 
+
 def _is_safe_path(target: Path) -> bool:
-    """Is the given path inside _SAFE_ROOTS? If not, reject the operation."""
-    try:
-        resolved = target.resolve()
-        return any(
-            resolved == root.resolve() or resolved.is_relative_to(root.resolve())
-            for root in _SAFE_ROOTS
-        )
-    except Exception:
-        return False
+    """Is the given path inside _SAFE_ROOTS?
+
+    Now one line over `core/safe_path.py` rather than its own resolve-and-
+    compare. The old implementation was correct; the problem was that it was
+    private to this file, so `core/file_processor.py` grew a different one (in
+    its case, none at all) and `rename_file` forgot to call it on the path it
+    actually used."""
+    return any(safe_path.is_within(root, target) for root in _SAFE_ROOTS)
+
+
+def _guard_destination(candidate: Path) -> Path:
+    """Resolve `candidate` and refuse it if it leaves the safe roots.
+
+    Called on every path an operation is about to *act on*, after the final
+    path has been built. That "after" is the whole point: `rename_file` used to
+    validate `target`, then construct `target.parent / new_name` from
+    model-supplied text and act on that without a second look, so
+
+        rename(name="notes.txt", new_name="../../../../tmp/owned")
+
+    walked straight out of the home directory."""
+    resolved = safe_path.real(candidate)
+    if not _is_safe_path(resolved):
+        raise PathEscape(str(candidate), str(_SAFE_ROOTS[0]))
+    return resolved
 
 def _get_desktop() -> Path:
     if _OS == "Linux":
@@ -230,8 +249,7 @@ def create_file(path: str, name: str = "", content: str = "") -> str:
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
-        if not _is_safe_path(target):
-            return f"Access denied: {target}"
+        target = _guard_destination(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         existed = target.exists()
         previous = None
@@ -244,6 +262,8 @@ def create_file(path: str, name: str = "", content: str = "") -> str:
         push_undo(f"created {target.name}",
                   _undo_write(target, previous) if existed else _undo_create(target))
         return f"File created: {target.name}"
+    except PathEscape as e:
+        return str(e)
     except Exception as e:
         return f"Could not create file: {e}"
 
@@ -252,8 +272,7 @@ def create_folder(path: str, name: str = "") -> str:
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
-        if not _is_safe_path(target):
-            return f"Access denied: {target}"
+        target = _guard_destination(target)
         already = target.exists()
         target.mkdir(parents=True, exist_ok=True)
         # Only offer to undo a folder we actually made. "mkdir -p" on something
@@ -262,6 +281,8 @@ def create_folder(path: str, name: str = "") -> str:
         if not already:
             push_undo(f"created folder {target.name}", _undo_create(target))
         return f"Folder created: {target.name}"
+    except PathEscape as e:
+        return str(e)
     except Exception as e:
         return f"Could not create folder: {e}"
 
@@ -270,8 +291,7 @@ def delete_file(path: str, name: str = "") -> str:
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
-        if not _is_safe_path(target):
-            return f"Access denied: {target}"
+        target = _guard_destination(target)
         if not target.exists():
             return f"Not found: {target.name}"
 
@@ -290,6 +310,8 @@ def delete_file(path: str, name: str = "") -> str:
                       lambda p=original: _restore_from_trash(p))
         return result
 
+    except PathEscape as e:
+        return str(e)
     except PermissionError:
         return f"Permission denied: {path}"
     except Exception as e:
@@ -313,6 +335,7 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
 
         if dst.is_dir():
             dst = dst / src.name
+        dst = _guard_destination(dst)          # re-checked after construction
 
         dst.parent.mkdir(parents=True, exist_ok=True)
         origin = src.resolve()
@@ -321,6 +344,8 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
                   _undo_move(origin, dst.resolve()))
         return f"Moved: {src.name} → {dst.parent.name}/"
 
+    except PathEscape as e:
+        return str(e)
     except Exception as e:
         return f"Could not move: {e}"
 
@@ -342,6 +367,7 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
 
         if dst.is_dir():
             dst = dst / src.name
+        dst = _guard_destination(dst)          # re-checked after construction
 
         dst.parent.mkdir(parents=True, exist_ok=True)
 
@@ -364,6 +390,8 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
 
         return f"Copied: {src.name} → {dst.parent.name}/"
 
+    except PathEscape as e:
+        return str(e)
     except Exception as e:
         return f"Could not copy: {e}"
 
@@ -379,16 +407,46 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
         if not new_name:
             return "No new name provided."
 
-        new_path = target.parent / new_name
+        # THE FIX, part one. A rename produces a NAME, not a path, so a
+        # separator of either kind is refused outright. This matters on POSIX,
+        # where a backslash is an ordinary filename character: without it,
+        # new_name="..\\..\\..\\outside\\owned.txt" is not traversal, it is a
+        # legal (if absurd) filename, and the file is silently renamed to it.
+        # Rejecting both separators is the behaviour a person means by
+        # "rename", and it is the same on every platform.
+        if "/" in new_name or "\\" in new_name:
+            return (f"'{new_name}' is a path, not a name. I can rename "
+                    f"'{target.name}' in place, but moving it is a separate "
+                    f"request.")
+
+        # Part two: `new_name` is model-supplied text, so the path built from
+        # it is validated AFTER construction — and `allow_absolute=False` means
+        # a rename cannot become a move to an absolute location either.
+        try:
+            new_path = safe_path.resolve_within(
+                target.parent, new_name, allow_absolute=False
+            )
+        except PathEscape:
+            return (f"I will not rename '{target.name}' to '{new_name}' — that "
+                    f"name would move it outside its folder.")
+        except ValueError:
+            return "No new name provided."
+
+        new_path = _guard_destination(new_path)
+
+        if new_path == target.resolve():
+            return f"'{target.name}' already has that name."
         if new_path.exists():
-            return f"A file named '{new_name}' already exists here."
+            return f"A file named '{new_path.name}' already exists here."
 
         old_path = target.resolve()
         target.rename(new_path)
-        push_undo(f"renamed {old_path.name} to {new_name}",
-                  _undo_move(old_path, new_path.resolve()))
-        return f"Renamed: {target.name} → {new_name}"
+        push_undo(f"renamed {old_path.name} to {new_path.name}",
+                  _undo_move(old_path, new_path))
+        return f"Renamed: {old_path.name} → {new_path.name}"
 
+    except PathEscape as e:
+        return str(e)
     except Exception as e:
         return f"Could not rename: {e}"
 
@@ -418,8 +476,7 @@ def write_file(path: str, name: str = "", content: str = "",
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
-        if not _is_safe_path(target):
-            return f"Access denied: {target}"
+        target = _guard_destination(target)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         # Snapshot before writing. None means "did not exist", which is a
@@ -446,6 +503,8 @@ def write_file(path: str, name: str = "", content: str = "",
         return (f"{action}: {target.name}. "
                 f"(Too large to keep a copy of the old contents, so this one "
                 f"cannot be undone.)")
+    except PathEscape as e:
+        return str(e)
     except Exception as e:
         return f"Could not write file: {e}"
 
@@ -721,6 +780,112 @@ def file_controller(
         return f"File controller error ({action}): {e}"
 
 
+# ── Capability resolution ────────────────────────────────────────────────────
+#
+# One tool, fourteen sub-actions, and the difference between `list` and
+# `delete` is the entire question. Declaring a single capability for the tool
+# would mean either confirming every directory listing or deleting without
+# asking, so the capability is resolved per call.
+
+_CAPABILITY_BY_ACTION = {
+    "list":             capabilities.READ_ONLY,
+    "find":             capabilities.READ_ONLY,
+    "largest":          capabilities.READ_ONLY,
+    "disk_usage":       capabilities.READ_ONLY,
+    "info":             capabilities.READ_ONLY,
+    "read":             capabilities.FILE_READ,
+    "create_file":      capabilities.FILE_WRITE,
+    "create_folder":    capabilities.FILE_WRITE,
+    "write":            capabilities.FILE_WRITE,
+    "rename":           capabilities.FILE_MOVE,
+    "move":             capabilities.FILE_MOVE,
+    "copy":             capabilities.FILE_WRITE,
+    "organize_desktop": capabilities.FILE_MOVE,
+    "delete":           capabilities.FILE_DELETE,
+}
+
+
+def _file_capability(params: dict) -> str:
+    action = str((params or {}).get("action", "")).lower().strip()
+    # An unrecognised action reaches no handler branch, but returning a
+    # permissive capability for it would still be wrong: fail closed on the
+    # name rather than on the dispatch.
+    return _CAPABILITY_BY_ACTION.get(action, capabilities.FILE_DELETE)
+
+
+def _describe(params: dict) -> str:
+    name = str((params or {}).get("name", "")).strip()
+    path = str((params or {}).get("path", "desktop")).strip()
+    return name or path or "that file"
+
+
+def _resolved_target(params: dict) -> str:
+    """Best-effort absolute path, for the audit log. Never raises."""
+    try:
+        base   = _resolve_path(str((params or {}).get("path", "desktop")))
+        name   = str((params or {}).get("name", "")).strip()
+        return str((base / name) if name else base)
+    except Exception:
+        return str((params or {}).get("path", ""))
+
+
+def _write_undo_provider(params: dict):
+    """Snapshot what a write is about to destroy, so it can be put back.
+
+    Handed to the broker, which calls it BEFORE deciding. If it returns a
+    callable the write is reversible and happens immediately; if it returns
+    None — the file is too big to hold in memory, or unreadable — the write is
+    genuinely irreversible and the broker asks first. Which of those two it is
+    gets decided by the file, not by anybody's assertion."""
+    def _provider():
+        try:
+            base   = _resolve_path(str((params or {}).get("path", "desktop")))
+            name   = str((params or {}).get("name", "")).strip()
+            target = _guard_destination((base / name) if name else base)
+        except Exception:
+            return None
+
+        if not target.exists():
+            return _undo_create(target)
+        try:
+            if target.stat().st_size > _UNDO_CONTENT_LIMIT:
+                return None            # too large to snapshot — so: ask
+            previous = target.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return None                # binary or locked — so: ask
+        return _undo_write(target, previous)
+    return _provider
+
+
+def _file_guard(params: dict) -> dict:
+    action = str((params or {}).get("action", "")).lower().strip()
+    what   = _describe(params)
+    target = _resolved_target(params)
+
+    if action == "delete":
+        return {"summary": f"Delete '{what}'",
+                "detail": ("It goes to the Trash, and I can usually put it back "
+                           "if you ask me to undo."),
+                "target": target}
+    if action in ("write", "create_file"):
+        return {"summary": f"Write to '{what}'", "target": target,
+                "undo_provider": _write_undo_provider(params),
+                "undo_label": f"wrote to {what}"}
+    if action == "move":
+        return {"summary": f"Move '{what}' to "
+                           f"{str((params or {}).get('destination', '')) or 'another folder'}",
+                "target": target}
+    if action == "rename":
+        return {"summary": f"Rename '{what}' to "
+                           f"'{str((params or {}).get('new_name', ''))}'",
+                "target": target}
+    if action == "organize_desktop":
+        return {"summary": "Sort every loose file on the desktop into folders",
+                "detail": "This moves files. Tell me to undo it if it is wrong.",
+                "target": target}
+    return {"summary": f"{action or 'file'}: {what}", "target": target}
+
+
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_controller",
@@ -766,4 +931,6 @@ TOOL = {
         ]
     },
     "handler": file_controller,
+    "capability": _file_capability,
+    "guard": _file_guard,
 }

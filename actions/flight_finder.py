@@ -8,6 +8,8 @@ from pathlib import Path
 
 from config import is_windows, is_mac, is_linux
 
+from core import capabilities
+
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -402,4 +404,6 @@ TOOL = {
         ]
     },
     "handler": flight_finder,
+    "capability": capabilities.NETWORK_FETCH,
+    "guard": lambda _p, _s='Search for flights': {"summary": _s},
 }

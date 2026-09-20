@@ -21,7 +21,7 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
-from core import confirm
+from core import capabilities, confirm, exec_safe
 from core.undo import push_undo
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -64,10 +64,10 @@ def volume_up():
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             "set volume output volume (output volume of (get volume settings) + 10)"],
-            capture_output=True)
+            capture_output=True, timeout=15)
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
-            capture_output=True)
+            capture_output=True, timeout=15)
 
 def volume_down():
     if _OS == "Windows":
@@ -75,20 +75,20 @@ def volume_down():
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             "set volume output volume (output volume of (get volume settings) - 10)"],
-            capture_output=True)
+            capture_output=True, timeout=15)
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
-            capture_output=True)
+            capture_output=True, timeout=15)
 
 def volume_mute():
     if _OS == "Windows":
         pyautogui.press("volumemute")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e", "set volume with output muted"],
-            capture_output=True)
+            capture_output=True, timeout=15)
     else:
         subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
-            capture_output=True)
+            capture_output=True, timeout=15)
 
 def volume_get() -> int | None:
     """Current master volume 0-100, or None if this platform will not say.
@@ -133,7 +133,7 @@ def brightness_get() -> int | None:
             )
             return max(0, min(100, int(r.stdout.strip())))
         if _OS == "Linux" and subprocess.run(
-                ["which", "brightnessctl"], capture_output=True).returncode == 0:
+                ["which", "brightnessctl"], capture_output=True, timeout=15).returncode == 0:
             cur = int(subprocess.run(["brightnessctl", "get"],
                                      capture_output=True, text=True, timeout=5).stdout.strip())
             mx  = int(subprocess.run(["brightnessctl", "max"],
@@ -156,7 +156,7 @@ def brightness_set(value: int) -> None:
             capture_output=True, timeout=5, **_WIN_HIDE
         )
     elif _OS == "Linux":
-        subprocess.run(["brightnessctl", "set", f"{value}%"], capture_output=True)
+        subprocess.run(["brightnessctl", "set", f"{value}%"], capture_output=True, timeout=15)
 
 
 def volume_set(value: int):
@@ -179,30 +179,61 @@ def volume_set(value: int):
             pyautogui.press("volumemute")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e", f"set volume output volume {value}"],
-            capture_output=True)
+            capture_output=True, timeout=15)
         return
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"],
-            capture_output=True)
+            capture_output=True, timeout=15)
         return
+
+def _xrandr_nudge(delta: float) -> None:
+    """Adjust X brightness without a shell.
+
+    The old implementation built one string containing a pipeline, a command
+    substitution and a nested `python3 -c`, and handed it to `sh`. Nothing in
+    it was attacker-controlled, so it was not an injection — but it needed a
+    shell to work, which means every one of those pieces had to be quoted
+    correctly forever. Three plain subprocess calls need none of that."""
+    try:
+        listing = exec_safe.run(["xrandr"], timeout=5)
+        if not listing.ok:
+            return
+        output = ""
+        for line in listing.stdout.splitlines():
+            if " connected" in line:
+                output = line.split()[0]
+                break
+        if not output:
+            return
+
+        verbose = exec_safe.run(["xrandr", "--verbose"], timeout=5)
+        current = 1.0
+        if verbose.ok and "Brightness:" in verbose.stdout:
+            try:
+                current = float(verbose.stdout.split("Brightness:")[1].split()[0])
+            except Exception:
+                current = 1.0
+
+        target = max(0.1, min(1.0, current + delta))
+        exec_safe.run(
+            ["xrandr", "--output", output, "--brightness", f"{target:.2f}"],
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"[Settings] xrandr brightness failed: {e}")
+
 
 def brightness_up():
     if _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to key code 144'],
-            capture_output=True)
+            capture_output=True, timeout=15)
     elif _OS == "Linux":
         if subprocess.run(["which", "brightnessctl"],
-                capture_output=True).returncode == 0:
-            subprocess.run(["brightnessctl", "set", "+10%"], capture_output=True)
+                capture_output=True, timeout=15).returncode == 0:
+            subprocess.run(["brightnessctl", "set", "+10%"], capture_output=True, timeout=15)
         else:
-            subprocess.run(
-                'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
-                ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(min(1.0,b+0.1))")',
-                shell=True, capture_output=True
-            )
+            _xrandr_nudge(+0.1)
     else:
         try:
             subprocess.run(
@@ -219,19 +250,13 @@ def brightness_down():
     if _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to key code 145'],
-            capture_output=True)
+            capture_output=True, timeout=15)
     elif _OS == "Linux":
         if subprocess.run(["which", "brightnessctl"],
-                capture_output=True).returncode == 0:
-            subprocess.run(["brightnessctl", "set", "10%-"], capture_output=True)
+                capture_output=True, timeout=15).returncode == 0:
+            subprocess.run(["brightnessctl", "set", "10%-"], capture_output=True, timeout=15)
         else:
-            subprocess.run(
-                'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
-                ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(max(0.1,b-0.1))")',
-                shell=True, capture_output=True
-            )
+            _xrandr_nudge(-0.1)
     else:
         try:
             subprocess.run(
@@ -265,13 +290,13 @@ def maximize_window():
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to keystroke "f" '
             'using {control down, command down}'],
-            capture_output=True)
+            capture_output=True, timeout=15)
     elif _OS == "Windows":
         pyautogui.hotkey("win", "up")
     else:
         try:
             subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-b", "add,maximized_vert,maximized_horz"],
-                capture_output=True)
+                capture_output=True, timeout=15)
         except Exception:
             pyautogui.hotkey("super", "up")
 
@@ -288,7 +313,7 @@ def snap_left():
     else:  # Linux
         try:
             subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,0,0,960,1080"],
-                capture_output=True)
+                capture_output=True, timeout=15)
         except Exception:
             pass
 
@@ -304,7 +329,7 @@ def snap_right():
     else:  # Linux
         try:
             subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,960,0,960,1080"],
-                capture_output=True)
+                capture_output=True, timeout=15)
         except Exception:
             pass
 
@@ -324,7 +349,7 @@ def open_task_manager():
         subprocess.Popen(["open", "-a", "Activity Monitor"])
     else:
         for cmd in [["gnome-system-monitor"], ["xfce4-taskmanager"], ["htop"]]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
+            if subprocess.run(["which", cmd[0]], capture_output=True, timeout=15).returncode == 0:
                 subprocess.Popen(cmd)
                 break
 
@@ -452,7 +477,7 @@ def take_screenshot():
         pyautogui.hotkey("command", "shift", "3")
     else:
         for cmd in [["scrot"], ["gnome-screenshot"], ["import", "-window", "root", "screenshot.png"]]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
+            if subprocess.run(["which", cmd[0]], capture_output=True, timeout=15).returncode == 0:
                 subprocess.Popen(cmd)
                 return
         pyautogui.hotkey("ctrl", "print_screen")
@@ -461,15 +486,15 @@ def lock_screen():
     if _OS == "Windows":
         pyautogui.hotkey("win", "l")
     elif _OS == "Darwin":
-        subprocess.run(["pmset", "displaysleepnow"], capture_output=True)
+        subprocess.run(["pmset", "displaysleepnow"], capture_output=True, timeout=15)
     else:
         for cmd in [
             ["gnome-screensaver-command", "-l"],
             ["xdg-screensaver", "lock"],
             ["loginctl", "lock-session"],
         ]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
-                subprocess.run(cmd, capture_output=True)
+            if subprocess.run(["which", cmd[0]], capture_output=True, timeout=15).returncode == 0:
+                subprocess.run(cmd, capture_output=True, timeout=15)
                 return
 
 def open_system_settings():
@@ -479,7 +504,7 @@ def open_system_settings():
         subprocess.Popen(["open", "-a", "System Preferences"])
     else:
         for cmd in [["gnome-control-center"], ["xfce4-settings-manager"], ["kcmshell5"]]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
+            if subprocess.run(["which", cmd[0]], capture_output=True, timeout=15).returncode == 0:
                 subprocess.Popen(cmd)
                 return
 
@@ -490,7 +515,7 @@ def open_file_explorer():
         subprocess.Popen(["open", str(Path.home())])
     else:
         for cmd in [["nautilus"], ["thunar"], ["dolphin"], ["nemo"]]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
+            if subprocess.run(["which", cmd[0]], capture_output=True, timeout=15).returncode == 0:
                 subprocess.Popen(cmd)
                 return
         subprocess.Popen(["xdg-open", str(Path.home())])
@@ -503,9 +528,9 @@ def sleep_display():
         except Exception as e:
             print(f"[Settings] sleep_display failed: {e}")
     elif _OS == "Darwin":
-        subprocess.run(["pmset", "displaysleepnow"], capture_output=True)
+        subprocess.run(["pmset", "displaysleepnow"], capture_output=True, timeout=15)
     else:
-        subprocess.run(["xset", "dpms", "force", "off"], capture_output=True)
+        subprocess.run(["xset", "dpms", "force", "off"], capture_output=True, timeout=15)
 
 def open_run():
     if _OS == "Windows":
@@ -516,7 +541,7 @@ def dark_mode():
         subprocess.run(["osascript", "-e",
             'tell app "System Events" to tell appearance preferences '
             'to set dark mode to not dark mode'],
-            capture_output=True)
+            capture_output=True, timeout=15)
     elif _OS == "Windows":
         try:
             import winreg
@@ -532,14 +557,12 @@ def dark_mode():
         try:
             result = subprocess.run(
                 ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-                capture_output=True, text=True
-            )
+                capture_output=True, text=True, timeout=15)
             current = result.stdout.strip()
             new_scheme = "'default'" if "dark" in current else "'prefer-dark'"
             subprocess.run(
                 ["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", new_scheme],
-                capture_output=True
-            )
+                capture_output=True, timeout=15)
         except Exception as e:
             print(f"[Settings] dark_mode Linux failed: {e}")
 
@@ -548,11 +571,10 @@ def toggle_wifi():
         iface = _get_macos_wifi_interface()
         result = subprocess.run(
             ["networksetup", "-getairportpower", iface],
-            capture_output=True, text=True
-        )
+            capture_output=True, text=True, timeout=15)
         state = "off" if "On" in result.stdout else "on"
         subprocess.run(["networksetup", "-setairportpower", iface, state],
-            capture_output=True)
+            capture_output=True, timeout=15)
     elif _OS == "Windows":
         try:
             subprocess.run(
@@ -566,31 +588,31 @@ def toggle_wifi():
             print(f"[Settings] toggle_wifi Windows failed: {e}")
     else:
         try:
-            result = subprocess.run(["nmcli", "radio", "wifi"], capture_output=True, text=True)
+            result = subprocess.run(["nmcli", "radio", "wifi"], capture_output=True, text=True, timeout=15)
             state  = "off" if "enabled" in result.stdout else "on"
-            subprocess.run(["nmcli", "radio", "wifi", state], capture_output=True)
+            subprocess.run(["nmcli", "radio", "wifi", state], capture_output=True, timeout=15)
         except Exception as e:
             print(f"[Settings] toggle_wifi Linux failed: {e}")
 
 def restart_computer():
     if _OS == "Windows":
-        subprocess.run(["shutdown", "/r", "/t", "10"], capture_output=True, **_WIN_HIDE)
+        subprocess.run(["shutdown", "/r", "/t", "10"], capture_output=True, **_WIN_HIDE, timeout=15)
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to restart'],
-            capture_output=True)
+            capture_output=True, timeout=15)
     else:
-        subprocess.run(["systemctl", "reboot"], capture_output=True)
+        subprocess.run(["systemctl", "reboot"], capture_output=True, timeout=15)
 
 def shutdown_computer():
     if _OS == "Windows":
-        subprocess.run(["shutdown", "/s", "/t", "10"], capture_output=True)
+        subprocess.run(["shutdown", "/s", "/t", "10"], capture_output=True, timeout=15)
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to shut down'],
-            capture_output=True)
+            capture_output=True, timeout=15)
     else:
-        subprocess.run(["systemctl", "poweroff"], capture_output=True)
+        subprocess.run(["systemctl", "poweroff"], capture_output=True, timeout=15)
 
 ACTION_MAP: dict[str, callable] = {
     "volume_up":           volume_up,
@@ -810,23 +832,20 @@ def computer_settings(
     if player:
         player.write_log(f"[Settings] {action}")
 
-    # ── The gate ─────────────────────────────────────────────────────────────
-    # A human presses a button, or this does not happen. The model can no longer
-    # write its own permission slip, and the action itself is handed to the UI
-    # rather than performed here — so returning early is not "declining", it is
-    # "parked until someone says yes".
-    if action in _IRREVERSIBLE:
-        title, detail = _IRREVERSIBLE[action]
-        func = ACTION_MAP.get(action)
-        if func is None:
-            return f"Unknown action: '{raw_action}'."
-        if confirm.pending_title():
-            return ("There is already a confirmation waiting on screen. "
-                    "Ask the user to answer that one first.")
-        return confirm.request(
-            key=action, title=title, detail=detail,
-            run=lambda f=func, a=action: (f(), f"{a} done.")[1],
-        )
+    # ── The gate used to live here ───────────────────────────────────────────
+    # This function used to consult its own `_IRREVERSIBLE` table and call
+    # `confirm.request()` itself. That was the right idea and the wrong place:
+    # it covered three actions out of fifty-odd, and every other file that
+    # needed a gate had to reinvent it (or, mostly, did not).
+    #
+    # `_cs_capability()` at the bottom of this file now declares what each
+    # action costs, and `core/action_loader.py` puts that in front of
+    # `core/permissions.py` BEFORE this handler is entered. So by the time
+    # execution reaches here, restart/shutdown/toggle_wifi have already been
+    # approved by a human — asking again would be asking twice.
+    #
+    # `_IRREVERSIBLE` is kept below for anything still importing the name, and
+    # the capability resolver is derived from it so the two cannot drift.
 
     if action == "volume_set":
         try:
@@ -908,6 +927,95 @@ def computer_settings(
     return f"Done: {action}."
 
 
+# ── Capability resolution ────────────────────────────────────────────────────
+
+_SETTING_ACTIONS = {
+    "volume_up", "volume_down", "volume_set", "mute", "unmute", "toggle_mute",
+    "brightness_up", "brightness_down", "dark_mode", "toggle_wifi",
+    "sleep_display",
+}
+
+
+def _cs_capability(params: dict) -> str:
+    action = _normalise(str((params or {}).get("action", "")))
+    if not action:
+        detected = _detect_action(str((params or {}).get("description", "")))
+        action = detected.get("action", "")
+
+    if action in _IRREVERSIBLE:
+        # restart / shutdown / toggle_wifi. Power is its own capability; WiFi
+        # sits here because switching it off takes the assistant's own
+        # connection with it, so it cannot be asked to switch it back.
+        return (capabilities.SYSTEM_POWER if action in ("restart", "shutdown")
+                else capabilities.SYSTEM_SETTINGS)
+    if action == "screenshot":
+        return capabilities.SCREEN_CAPTURE
+    if action in _SETTING_ACTIONS:
+        return capabilities.SYSTEM_SETTINGS
+    if action in ("lock_screen",):
+        return capabilities.SYSTEM_SETTINGS
+    if not action:
+        # Nothing matched. The handler will return a suggestion rather than do
+        # anything, but the capability still has to be something, and READ_ONLY
+        # is right for "I am about to tell you I did not understand".
+        return capabilities.READ_ONLY
+    return capabilities.INPUT_SYNTHETIC
+
+
+def _volume_undo_provider():
+    """Remember the volume so a change can be taken straight back."""
+    try:
+        before = volume_get()
+    except Exception:
+        return None
+    if before is None:
+        return None
+
+    def _restore(level=before):
+        volume_set(level)
+        return f"Volume back to {level}%."
+    return _restore
+
+
+def _brightness_undo_provider():
+    try:
+        before = brightness_get()
+    except Exception:
+        return None
+    if before is None:
+        return None
+
+    def _restore(level=before):
+        brightness_set(level)
+        return f"Brightness back to {level}%."
+    return _restore
+
+
+def _cs_guard(params: dict) -> dict:
+    action = _normalise(str((params or {}).get("action", "")))
+    if not action:
+        action = _detect_action(str((params or {}).get("description", ""))).get("action", "")
+
+    if action in _IRREVERSIBLE:
+        title, detail = _IRREVERSIBLE[action]
+        return {"summary": title, "detail": detail}
+
+    if action in ("volume_up", "volume_down", "volume_set", "mute", "unmute",
+                  "toggle_mute"):
+        return {"summary": f"Change the volume ({action})",
+                "undo_provider": _volume_undo_provider,
+                "undo_label": f"volume ({action})"}
+    if action in ("brightness_up", "brightness_down"):
+        return {"summary": f"Change the brightness ({action})",
+                "undo_provider": _brightness_undo_provider,
+                "undo_label": f"brightness ({action})"}
+    if action == "dark_mode":
+        return {"summary": "Toggle dark mode",
+                "undo_provider": lambda: (lambda: (dark_mode(), "Theme switched back.")[1]),
+                "undo_label": "dark mode toggled"}
+    return {"summary": f"Computer: {action or 'unrecognised command'}"}
+
+
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "computer_settings",
@@ -959,4 +1067,6 @@ TOOL = {
         "required": []
     },
     "handler": computer_settings,
+    "capability": _cs_capability,
+    "guard": _cs_guard,
 }

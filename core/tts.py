@@ -171,7 +171,7 @@ def _import_kokoro_pipeline():
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "kokoro>=0.9",
              "--upgrade", "--quiet", "--disable-pip-version-check"],
-            capture_output=True,
+            capture_output=True, timeout=600,
         )
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace").strip()

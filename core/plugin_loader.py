@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from core import audit, capabilities, permissions
 from memory.config_manager import get_plugin_enabled, get_plugin_config
 
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
@@ -46,6 +47,35 @@ class PluginRecord:
     settings: Optional[dict] = None   # optional PLUGIN_SETTINGS schema (config fields)
     behavior: Optional[str] = None    # None = the API's default (blocking)
     scheduling: Optional[str] = None  # None = the API's default (WHEN_IDLE)
+    capability: object = None         # str, or (params) -> str; None = unclassified
+    guard: Optional[Callable] = None  # (params) -> dict of banner/audit hints
+
+    def capability_for(self, params: dict) -> str:
+        """Which capability this call needs.
+
+        A plugin that declared nothing gets PLUGIN_UNCLASSIFIED, which asks a
+        human every time. That is the deliberate cost of not saying what you
+        do; one line in the PLUGIN dict removes it."""
+        cap = self.capability
+        if cap is None:
+            return capabilities.PLUGIN_UNCLASSIFIED
+        if callable(cap):
+            try:
+                cap = cap(params or {})
+            except Exception as e:
+                print(f"[Plugins] '{self.name}' capability resolver failed: {e}")
+                return ""
+        return cap if isinstance(cap, str) else ""
+
+    def guard_hints(self, params: dict) -> dict:
+        if self.guard is None:
+            return {}
+        try:
+            hints = self.guard(params or {})
+            return hints if isinstance(hints, dict) else {}
+        except Exception as e:
+            print(f"[Plugins] '{self.name}' guard hints failed: {e}")
+            return {}
 
 
 class PluginRegistry:
@@ -85,18 +115,48 @@ class PluginRegistry:
 
     # -- called by main.py from _execute_tool's else branch --
     def run(self, name: str, parameters: dict, player=None, session_memory=None) -> str:
+        """Authorise, then run — the same gate bundled actions go through.
+
+        A plugin is code someone dropped in a folder, so if anything it is more
+        important that it cannot reach the disk or a subprocess without the
+        broker seeing it. A plugin that declares no capability is treated as
+        PLUGIN_UNCLASSIFIED and asks a human on every call; it is not assumed
+        to be harmless."""
         rec = self._plugins.get(name)
         if rec is None or not rec.valid:
             return f"Plugin '{name}' is not available."
         if not get_plugin_enabled(name):
             return f"The '{name}' plugin is currently disabled."
-        try:
-            return _call_run(rec.run, parameters, player, session_memory) or "Done."
-        except Exception as e:
-            self._logger(f"Plugin '{name}' crashed during run(): {e}")
-            self._notify(f"Plugin '{name}' failed — see the console for details.")
-            traceback.print_exc()
-            return f"Sir, the '{name}' plugin failed: {e}"
+
+        raw = parameters if isinstance(parameters, dict) else {}
+        forged = permissions.had_forged_approval(raw)
+        params = permissions.strip_forged_approval(raw)
+        if forged:
+            self._logger(f"Plugin '{name}': ignoring self-granted approval key(s): "
+                         f"{', '.join(forged)}")
+            audit.record("permission", action=name,
+                         note=f"ignored self-granted key(s): {', '.join(forged)}")
+
+        def _work():
+            try:
+                return _call_run(rec.run, params, player, session_memory) or "Done."
+            except Exception as e:
+                self._logger(f"Plugin '{name}' crashed during run(): {e}")
+                self._notify(f"Plugin '{name}' failed — see the console for details.")
+                traceback.print_exc()
+                raise
+
+        result = permissions.guard(
+            action=name,
+            capability=rec.capability_for(params),
+            summary=(rec.guard_hints(params).get("summary")
+                     or f"Run the '{name}' plugin"),
+            detail=rec.guard_hints(params).get("detail", ""),
+            target=rec.guard_hints(params).get("target", "") or "",
+            run=_work,
+            key=f"plugin:{name}",
+        )
+        return result.message or "Done."
 
     # -- called by ui.py's settings tab to render per-plugin config forms --
     def settings_schemas(self) -> list[dict]:
@@ -186,10 +246,26 @@ def _validate(module, filename: str) -> PluginRecord:
     if not (isinstance(settings, dict) and isinstance(settings.get("fields"), list)):
         settings = None
 
+    # Optional, unlike bundled actions. A plugin that names a capability gets
+    # that capability's verdict; one that does not, or that names something not
+    # in the policy table, falls back to PLUGIN_UNCLASSIFIED and asks a human
+    # every time. Unknown is never silently upgraded to allowed.
+    capability = plugin_meta.get("capability")
+    if capability is not None and not callable(capability):
+        if not (isinstance(capability, str) and capabilities.is_known(capability)):
+            print(f"[Plugins] '{name}' declares unknown capability "
+                  f"{capability!r} — treating it as unclassified.")
+            capability = None
+
+    guard = plugin_meta.get("guard")
+    if guard is not None and not callable(guard):
+        guard = None
+
     return PluginRecord(name=name, description=description.strip(), parameters=parameters,
                          run=run_fn, file=filename, valid=True, error="", settings=settings,
                          behavior=_opt_upper(plugin_meta.get("behavior"), _BEHAVIORS),
-                         scheduling=_opt_upper(plugin_meta.get("scheduling"), _SCHEDULING))
+                         scheduling=_opt_upper(plugin_meta.get("scheduling"), _SCHEDULING),
+                         capability=capability, guard=guard)
 
 
 def _load_error(path: Path, plugins_dir: Path, exc: Exception) -> str:

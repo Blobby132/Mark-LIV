@@ -73,8 +73,7 @@ def _pip(package: str, log: Callable | None = None) -> bool:
             sys.executable, "-m", "pip", "install", package,
             "--quiet", "--disable-pip-version-check",
         ],
-        capture_output=True,
-    )
+        capture_output=True, timeout=600)
     ok = result.returncode == 0
     if not ok and log:
         stderr = result.stderr.decode(errors="replace").strip()
@@ -129,8 +128,7 @@ def install_for_config(config: dict, log: Callable | None = None) -> None:
             log("SYS: Downloading Playwright browser (Chromium, ~150 MB — one-time)…")
         subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
-            capture_output=True,
-        )
+            capture_output=True, timeout=600)
         if log:
             log("SYS: Playwright browser ready.")
 

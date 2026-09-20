@@ -81,7 +81,7 @@ def install_and_download(logger: Callable[[str], None] = print,
             _tell("Wake word: installing openwakeword (one-time)…")
             r = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "openwakeword"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=600,
             )
             if r.returncode != 0:
                 tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or [""]

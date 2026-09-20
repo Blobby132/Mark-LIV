@@ -5,6 +5,8 @@ import threading
 import time
 from pathlib import Path
 
+from core import capabilities
+
 # ── Gemini grounding quota circuit breaker ────────────────────────────────────
 # The google_search grounding tool has its own small quota, separate from plain
 # generation.  Once it is spent every call returns 429 — so retrying it at the
@@ -413,4 +415,6 @@ TOOL = {
         ]
     },
     "handler": web_search,
+    "capability": capabilities.NETWORK_FETCH,
+    "guard": lambda _p, _s='Search the web': {"summary": _s},
 }

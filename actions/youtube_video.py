@@ -35,6 +35,8 @@ except ImportError:
 
 from config import get_os, is_windows, is_mac, is_linux
 
+from core import capabilities
+
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -472,4 +474,6 @@ TOOL = {
         "required": []
     },
     "handler": youtube_video,
+    "capability": capabilities.NETWORK_FETCH,
+    "guard": lambda _p, _s='Look up a YouTube video': {"summary": _s},
 }

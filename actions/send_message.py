@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+from core import capabilities
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -147,7 +149,13 @@ def _desktop_send(app_name: str, receiver: str, message: str) -> str:
     time.sleep(0.2)
     pyautogui.press("enter")
     time.sleep(0.3)
-    return f"Message sent to {receiver} via {app_name}."
+    # Deliberately not "Message sent". Nothing here observed a message being
+    # delivered: this typed into whatever window had focus and pressed Enter.
+    # If the contact search missed, that text went somewhere else entirely, and
+    # the old wording claimed success for that case too.
+    return (f"I typed the message into {app_name} and pressed Enter for "
+            f"'{receiver}'. Please check it went to the right conversation — "
+            f"I cannot see whether it was delivered.")
 
 def _send_whatsapp(receiver: str, message: str) -> str:
     return _desktop_send("WhatsApp", receiver, message)
@@ -188,7 +196,9 @@ def _send_instagram(receiver: str, message: str) -> str:
     pyautogui.press("enter")
     time.sleep(0.3)
 
-    return f"Message sent to {receiver} via Instagram."
+    return (f"I typed the message into Instagram for '{receiver}' and pressed "
+            f"Enter. Please check it reached the right conversation — I cannot "
+            f"see whether it was delivered.")
 
 
 def _send_messenger(receiver: str, message: str) -> str:
@@ -210,7 +220,9 @@ def _send_messenger(receiver: str, message: str) -> str:
     pyautogui.press("enter")
     time.sleep(0.3)
 
-    return f"Message sent to {receiver} via Messenger."
+    return (f"I typed the message into Messenger for '{receiver}' and pressed "
+            f"Enter. Please check it reached the right conversation — I cannot "
+            f"see whether it was delivered.")
 
 _PLATFORM_MAP = [
     ({"whatsapp", "wp", "wapp"},              _send_whatsapp),
@@ -248,8 +260,10 @@ def send_message(
     if not _PYAUTOGUI:
         return "PyAutoGUI is not installed — cannot control the desktop."
 
-    preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
-    print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
+    # The message body used to be printed here, and a console is not a private
+    # place. Length is enough to debug with; the words are between the user and
+    # whoever they are writing to.
+    print(f"[SendMessage] 📨 {platform} → {receiver} ({len(message_text)} chars)")
     if player:
         player.write_log(f"[msg] {platform} → {receiver}")
 
@@ -264,6 +278,22 @@ def send_message(
         player.write_log(f"[msg] {result}")
 
     return result
+
+
+def _sm_guard(params: dict) -> dict:
+    """What the confirmation banner says.
+
+    The recipient and the platform are on it; the message body is not. A
+    confirmation banner is shown on a screen that may be visible to other
+    people, and the audit log never receives the body either."""
+    receiver = str((params or {}).get("receiver", "")).strip()[:60]
+    platform = str((params or {}).get("platform", "")).strip()[:30] or "a messenger"
+    length   = len(str((params or {}).get("message_text", "")))
+    return {
+        "summary": f"Send a message to {receiver} on {platform}",
+        "detail": (f"{length} characters. I will type it into the app and press "
+                   f"Enter — it goes to whoever that conversation is with."),
+    }
 
 
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
@@ -293,4 +323,6 @@ TOOL = {
         ]
     },
     "handler": send_message,
+    "capability": capabilities.MESSAGE_SEND,
+    "guard": _sm_guard,
 }

@@ -1,6 +1,8 @@
 import webbrowser
 from urllib.parse import quote_plus
 
+from core import capabilities
+
 
 def weather_action(
     parameters: dict,
@@ -68,4 +70,6 @@ TOOL = {
         ]
     },
     "handler": weather_action,
+    "capability": capabilities.READ_ONLY,
+    "guard": lambda _p, _s='Look up the weather': {"summary": _s},
 }
