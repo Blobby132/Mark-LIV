@@ -200,6 +200,77 @@ clicking *is* the JARVIS trick, and a confirmation in front of every keypress
 would end the product. It is audited, and the audit never records what was
 typed — see `core/audit.py`, which exists partly for this case."""
 
+# — Minecraft ——————————————————————————————————————————————————————————————
+#
+# Declared HERE, in the one table, rather than in a private registry inside
+# minecraft/. That is the whole point of the namespace: a subsystem gets
+# capabilities, not its own security framework, and `core/permissions.py`
+# stays the only thing that decides.
+#
+# Which of these the current prototype will actually attempt is a separate,
+# narrower question, answered by `minecraft/capabilities.py`. That list can
+# only ever subtract from this one.
+
+MINECRAFT_OBSERVE = "minecraft.observe"
+"""Capture the Minecraft window. Narrower than SCREEN_CAPTURE: the region is
+the game window, so the rest of the desktop is not in the frame."""
+
+MINECRAFT_READ_STATE = "minecraft.read_state"
+"""Read structured game state — position, health, inventory. Reading."""
+
+MINECRAFT_CONTROL_SESSION = "minecraft.control_session"
+"""Open a time-boxed window in which the assistant may drive the game.
+
+THE gate for the whole subsystem, and the reason movement below is ALLOW.
+Confirming each keypress is not an option — a walk is tens of presses, and a
+confirmation people learn to dismiss is worse than none. So one human decision
+buys a bounded session: five minutes at most, ended by Alt-Tab, by F12, by the
+game closing, or by the clock. Inside it, `minecraft.move` and
+`minecraft.look` are free; outside it they are refused before any key is
+touched."""
+
+MINECRAFT_MOVE = "minecraft.move"
+"""Hold a movement key for a bounded time. Only reachable inside a live
+session, and only for W/A/S/D."""
+
+MINECRAFT_LOOK = "minecraft.look"
+"""Move the mouse by a bounded relative delta. Only inside a live session."""
+
+MINECRAFT_STOP = "minecraft.stop"
+"""Stop everything and release every held key.
+
+ALLOW, and it must stay ALLOW. A safety control that policy can refuse is not
+a safety control — if this could be denied, a confused planner or an expired
+confirmation would leave keys held down. It is also the one capability here
+that is *more* permissive than doing nothing."""
+
+MINECRAFT_ATTACK = "minecraft.attack"
+"""Left-click / mine / hit. Not enabled in the current phase."""
+
+MINECRAFT_USE_ITEM = "minecraft.use_item"
+"""Right-click / place / eat. Not enabled in the current phase."""
+
+MINECRAFT_INVENTORY = "minecraft.inventory"
+"""Open the inventory and move items. Not enabled in the current phase."""
+
+MINECRAFT_CHAT = "minecraft.chat"
+"""Type in the game chat. CONFIRM even when it is eventually enabled: on a
+server this reaches other people, which makes it MESSAGE_SEND wearing a
+different hat. Not enabled in the current phase."""
+
+MINECRAFT_COMMAND = "minecraft.command"
+"""Slash commands — /give, /tp, /gamemode, and on a server /op.
+
+DENY, permanently, and listed rather than omitted so the refusal is explicit
+and testable instead of being an unknown name that happens to fail closed.
+There is no route from this subsystem to a command line, in the game or out
+of it."""
+
+MINECRAFT_LAUNCH = "minecraft.launch"
+"""Start the game. Not enabled in the current phase — the prototype requires
+Minecraft to be running already, so there is no launcher path to abuse."""
+
+
 APP_STATE = "app.state"
 """The assistant's own memory, monitor list and lifecycle — not the user's
 files.
@@ -263,6 +334,23 @@ _POLICY: dict[str, str] = {
     SYSTEM_SETTINGS:        CONFIRM_IF_IRREVERSIBLE,
     SYSTEM_POWER:           CONFIRM,
     INPUT_SYNTHETIC:        ALLOW,
+
+    # Minecraft. The session is the gate; the actions inside it are not.
+    MINECRAFT_OBSERVE:          ALLOW,
+    MINECRAFT_READ_STATE:       ALLOW,
+    MINECRAFT_CONTROL_SESSION:  CONFIRM,
+    MINECRAFT_MOVE:             ALLOW,
+    MINECRAFT_LOOK:             ALLOW,
+    MINECRAFT_STOP:             ALLOW,
+    # Declared but not built. CONFIRM rather than ALLOW so that if the phase
+    # gate in minecraft/capabilities.py were ever removed, these would still
+    # stop and ask rather than quietly becoming available.
+    MINECRAFT_ATTACK:           CONFIRM,
+    MINECRAFT_USE_ITEM:         CONFIRM,
+    MINECRAFT_INVENTORY:        CONFIRM,
+    MINECRAFT_CHAT:             CONFIRM,
+    MINECRAFT_LAUNCH:           CONFIRM,
+    MINECRAFT_COMMAND:          DENY,
 
     # The assistant's own state.
     APP_STATE:              ALLOW,

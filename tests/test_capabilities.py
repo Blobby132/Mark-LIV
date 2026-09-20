@@ -185,9 +185,23 @@ class TestNamespaces(unittest.TestCase):
             self.assertTrue(capability.startswith("file."))
 
     def test_an_unused_namespace_is_empty_rather_than_an_error(self):
-        # minecraft.* is designed but not built. It must be empty, not absent,
-        # and asking about it must not raise.
-        self.assertEqual(caps.in_namespace("minecraft"), ())
+        # Asking about a namespace nothing uses must return nothing, not raise.
+        self.assertEqual(caps.in_namespace("nothing_uses_this"), ())
+        self.assertEqual(caps.in_namespace(""), ())
+
+    def test_the_minecraft_namespace_is_populated_and_still_governed(self):
+        # This assertion used to be `== ()`, which was right when the namespace
+        # was designed and unbuilt. The subsystem exists now, so the useful
+        # property is not that it is empty but that every capability in it went
+        # through the same table as everything else.
+        minecraft = caps.in_namespace("minecraft")
+        self.assertTrue(minecraft, "the minecraft namespace is empty")
+        for capability in minecraft:
+            with self.subTest(capability=capability):
+                self.assertIn(caps.decision_for(capability), caps.VERDICTS)
+                self.assertTrue(caps.is_known(capability))
+        # And the one that must never be reachable, is not.
+        self.assertEqual(caps.decision_for("minecraft.command"), caps.DENY)
 
     def test_a_future_namespace_cannot_be_registered_at_runtime(self):
         # A subsystem added later declares its capabilities in the table, as a
