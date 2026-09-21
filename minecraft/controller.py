@@ -296,6 +296,23 @@ class MinecraftController:
             "clean": report.clean,
         }
 
+    def release_inputs(self) -> dict:
+        """Let go of everything, without ending the session or cancelling.
+
+        The difference from `stop()` matters. `stop()` is for a safety event:
+        it sets the sticky cancel flag and ends the session, and nothing works
+        again until a new session is opened. That is right for F12 and for
+        focus loss, and badly wrong as a response to a recoverable error —
+        using it there turns "that request did not make sense" into "this
+        controller is dead until you notice why".
+
+        This is the version for the second case: the keys come up, the session
+        survives, and the next action can proceed."""
+        report = self._ledger.release_all()
+        return {"released": list(report.released),
+                "failed_to_release": list(report.failed),
+                "clean": report.clean}
+
     def _on_emergency(self, reason: str) -> None:
         self.stop(f"emergency stop ({reason})")
 
@@ -371,22 +388,52 @@ class MinecraftController:
 
         Attaching to the window first means a session cannot open against a
         game that is not there — the failure arrives before the grant rather
-        than on the first movement."""
+        than on the first movement.
+
+        ASKING TWICE IS NOT AN ERROR
+            A model that has lost track and asks for control it already has is
+            an ordinary thing to happen, and it used to be catastrophic: the
+            underlying manager raised, the adapter's catch-all treated it as an
+            unexpected failure and called stop(), and stop() ended the live
+            session AND set the sticky cancel flag. So a redundant request
+            destroyed the working session and wedged the controller — every
+            later action was refused with a stale error string, and no amount
+            of confirming could clear it because only start_session clears that
+            flag.
+
+            So a request that a live session already satisfies now returns that
+            session. The one case that still needs a new one is a request for
+            interaction when the current grant does not include it: grants are
+            not widened in place, because the confirmation the user answered
+            described a narrower session than the one they would end up with."""
         info = self._locator.attach()
         if not info.found:
             raise WindowNotFound(info.detail or
                                  "I could not find the Minecraft window.")
 
+        existing = self._sessions.current
+        reused = False
+        if existing is not None and existing.active:
+            if allow_interaction and not existing.allow_interaction:
+                self._sessions.end("replaced by a session that allows "
+                                   "breaking and placing")
+            else:
+                reused = True
+
         with self._lock:
             self._cancel.clear()
             self._last_stop_reason = ""
 
-        session = self._sessions.start(duration_s=duration_s, owner=owner,
-                                       allow_interaction=allow_interaction)
+        if reused:
+            session = existing
+        else:
+            session = self._sessions.start(duration_s=duration_s, owner=owner,
+                                           allow_interaction=allow_interaction)
         self._start_watchers()
 
         return {
             "session": session.as_dict(),
+            "reused_existing": reused,
             "window": info.as_dict(),
             "emergency_stop": self._emergency.describe(),
             "emergency_scope": self._emergency.scope,

@@ -342,10 +342,56 @@ class TestSessionExpiry(_ControllerCase):
         self.controller.end_session("test")
         self.assert_nothing_held("ending the session did not release keys")
 
-    def test_two_sessions_cannot_run_at_once(self):
+    def test_the_manager_still_refuses_a_second_session(self):
+        """The one-session invariant is unchanged; what changed is who handles
+        the collision. Asserted here at the level that owns it."""
         self.open_session()
         with self.assertRaises(RuntimeError):
-            self.controller.start_session(duration_s=30)
+            self.sessions.start(duration_s=30)
+
+    def test_asking_for_control_you_already_have_reuses_it(self):
+        """This is the bug that cost a live session and wedged the controller.
+
+        The manager raised, the adapter's catch-all called stop(), and stop()
+        ended the session and set the sticky cancel flag — so a redundant
+        request destroyed the working session and refused everything
+        afterwards with a stale reason no confirmation could clear."""
+        first = self.open_session()
+        again = self.controller.start_session(duration_s=30)
+        self.assertTrue(again["reused_existing"])
+        self.assertEqual(again["session"]["session_id"],
+                         first["session"]["session_id"])
+
+    def test_a_redundant_request_leaves_the_controller_usable(self):
+        """The property that actually failed for the user: after asking twice,
+        moving still works."""
+        self.open_session()
+        self.controller.start_session(duration_s=30)
+        result = self.controller.move({"direction": "forward",
+                                       "duration": 0.05})
+        self.assertTrue(result.ok, result.error)
+
+    def test_asking_for_interaction_replaces_a_session_without_it(self):
+        """A grant is not widened in place: the confirmation the user answered
+        for the first session described a narrower one than they would end up
+        with."""
+        first = self.open_session()
+        upgraded = self.controller.start_session(duration_s=30,
+                                                 allow_interaction=True)
+        self.assertFalse(upgraded["reused_existing"])
+        self.assertNotEqual(upgraded["session"]["session_id"],
+                            first["session"]["session_id"])
+        self.assertTrue(upgraded["session"]["allow_interaction"])
+
+    def test_release_inputs_does_not_end_the_session(self):
+        """The distinction that stop() was wrongly standing in for."""
+        self.open_session()
+        self.controller.ledger.hold("w")
+        report = self.controller.release_inputs()
+        self.assertTrue(report["clean"])
+        self.assert_nothing_held()
+        self.assertTrue(self.controller.sessions.is_active())
+        self.assertEqual(self.controller._guard(), "")
 
 
 # ── Validation happens before any input ──────────────────────────────────────

@@ -256,6 +256,11 @@ def minecraft_control(parameters: dict = None, player=None,
             if not info.get("input_available"):
                 warning = ("\nNOTE: I cannot actually send input on this "
                            "machine — " + info.get("input_backend", ""))
+            if info.get("reused_existing"):
+                return (f"I already have control — "
+                        f"{info['session']['remaining_seconds']:.0f}s left on "
+                        f"the session that is already open. No need to start "
+                        f"another; just tell me what to do.{warning}\n{info}")
             return (f"Minecraft control session open for "
                     f"{info['session']['granted_seconds']:.0f}s. "
                     f"{info['emergency_stop']}{warning}\n{info}")
@@ -315,13 +320,24 @@ def minecraft_control(parameters: dict = None, player=None,
     except MinecraftError as e:
         return f"{e}"
     except Exception as e:                            # pragma: no cover
-        # Anything unexpected still releases held input before reporting.
+        # Release held input, but do NOT stop the controller.
+        #
+        # This used to call stop(), which ends the session and sets the sticky
+        # cancel flag. That turned any unexpected error -- including a merely
+        # redundant request -- into a dead controller: every later action was
+        # refused with the stale reason, and only a new session could clear it.
+        # Releasing the keys is the part that matters for safety; tearing down
+        # a valid session is not, and it cost the user their working session.
         try:
-            _get_controller().stop(f"unexpected error: {type(e).__name__}")
+            _get_controller().release_inputs()
         except Exception:
             pass
+        if player:
+            player.write_log(f"[minecraft] error in {action}: "
+                             f"{type(e).__name__}")
         return (f"Minecraft control failed ({type(e).__name__}: {e}). "
-                f"I released any keys I was holding.")
+                f"I released any keys I was holding; the control session is "
+                f"still open.")
 
 
 def _run_task(controller, params: dict, player=None) -> str:
