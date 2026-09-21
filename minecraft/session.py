@@ -45,6 +45,30 @@ means a forgotten session ends sooner."""
 
 MIN_SESSION_SECONDS = 5.0
 
+UNLIMITED = 0.0
+"""Ask for this duration to get a session that runs until it is stopped.
+
+WHY AN UNBOUNDED SESSION IS STILL BOUNDED
+    The clock was never the only limit, and it was always the weakest one --
+    it protects you from forgetting, not from anything going wrong. Every
+    mechanism that actually stops a runaway agent is untouched:
+
+        F12                 any time, from anywhere, even mid-action
+        "stop"              spoken, at any point
+        focus loss          held input is released within one tick
+        the game closing    the guard fails and everything stops
+        the deadman         a key held too long comes up by itself
+        JARVIS exiting      atexit releases whatever is down
+
+    What expiry added on top of those was an automatic end to a session the
+    user had stopped thinking about. That is worth having as the default, and
+    it is genuinely annoying when you are mid-conversation about what to build
+    -- which is a way of training people to re-approve without reading, the
+    exact habit the one-confirmation design exists to avoid.
+
+    So it is offered, it is never the default, and the banner says plainly
+    that the session lasts until stopped."""
+
 GAMEPLAY_CAPABILITIES = frozenset({
     core_caps.MINECRAFT_MOVEMENT,
     core_caps.MINECRAFT_LOOK,
@@ -87,7 +111,7 @@ class Session:
     session_id: str
     owner: str
     started_at: float
-    expires_at: float
+    expires_at: float | None          # None = runs until stopped
     requested_seconds: float
     granted_seconds: float
     cancel: threading.Event = field(default_factory=threading.Event)
@@ -108,14 +132,21 @@ class Session:
     # says it may happen to YOUR world, now, for the next few minutes.
 
     @property
+    def unlimited(self) -> bool:
+        """Runs until stopped. See UNLIMITED for why that is still bounded."""
+        return self.expires_at is None
+
+    @property
     def active(self) -> bool:
         """Live right now: not cancelled, not ended, not expired."""
         return (not self._ended
                 and not self.cancel.is_set()
-                and time.monotonic() < self.expires_at)
+                and not self.expired)
 
     @property
     def expired(self) -> bool:
+        if self.expires_at is None:
+            return False
         return time.monotonic() >= self.expires_at
 
     def is_authorized(self) -> bool:
@@ -135,6 +166,14 @@ class Session:
 
     @property
     def remaining(self) -> float:
+        """Seconds left, or infinity for a session that runs until stopped.
+
+        Infinity rather than None so that every caller comparing or formatting
+        this keeps working — a None here would turn "how long left?" into a
+        type check at a dozen call sites, and the one that got missed would be
+        a crash in the middle of a live session."""
+        if self.expires_at is None:
+            return float("inf")
         return max(0.0, self.expires_at - time.monotonic())
 
     @property
@@ -146,9 +185,12 @@ class Session:
             "session_id": self.session_id,
             "owner": self.owner,
             "active": self.active,
-            "granted_seconds": round(self.granted_seconds, 1),
+            "unlimited": self.unlimited,
+            "granted_seconds": (None if self.unlimited
+                                else round(self.granted_seconds, 1)),
             "requested_seconds": round(self.requested_seconds, 1),
-            "remaining_seconds": round(self.remaining, 1),
+            "remaining_seconds": (None if self.unlimited
+                                  else round(self.remaining, 1)),
             "age_seconds": round(self.age, 1),
             "ended_reason": self.ended_reason,
             "authorized": self.is_authorized(),
@@ -184,8 +226,10 @@ class SessionManager:
         inside the broker's approved-run callback."""
         requested = float(duration_s if duration_s is not None
                           else DEFAULT_SESSION_SECONDS)
-        granted = max(MIN_SESSION_SECONDS,
-                      min(requested, MAX_SESSION_SECONDS))
+        unlimited = requested <= 0
+        granted = (float("inf") if unlimited
+                   else max(MIN_SESSION_SECONDS,
+                            min(requested, MAX_SESSION_SECONDS)))
 
         with self._lock:
             if self._session is not None and self._session.active:
@@ -198,7 +242,7 @@ class SessionManager:
                 session_id=uuid.uuid4().hex[:12],
                 owner=str(owner)[:40],
                 started_at=now,
-                expires_at=now + granted,
+                expires_at=None if unlimited else now + granted,
                 requested_seconds=requested,
                 granted_seconds=granted,
                 authorized=bool(authorized),
@@ -287,5 +331,5 @@ class SessionManager:
 
 
 __all__ = ["Session", "SessionManager", "GAMEPLAY_CAPABILITIES",
-           "GRANT_SUMMARY", "MAX_SESSION_SECONDS",
+           "GRANT_SUMMARY", "MAX_SESSION_SECONDS", "UNLIMITED",
            "DEFAULT_SESSION_SECONDS", "MIN_SESSION_SECONDS"]

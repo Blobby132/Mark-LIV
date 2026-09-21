@@ -237,5 +237,70 @@ class TestWorldState(unittest.TestCase):
         self.assertIn("no source connected", state.notes)
 
 
+class TestCaptureResolution(unittest.TestCase):
+    """Two consumers with opposite requirements.
+
+    A vision model wants a small frame; OCR wants every pixel. The F3 overlay
+    is a small fixed-size font, so on a 2560-wide window the downscale halved
+    it to around nine pixels tall and the JPEG quantiser smeared the rest.
+    That failed in the worst way — the overlay is plainly visible on screen,
+    so the obvious conclusion was that OCR was broken rather than that it had
+    been handed a bad picture."""
+
+    WIDTH, HEIGHT = 2576, 1408
+
+    def _observer(self):
+        def grab(rect):
+            return b"\x89PNG-pretend", self.WIDTH, self.HEIGHT
+
+        class Locator:
+            def probe(self):
+                rect = WindowRect(0, 0, TestCaptureResolution.WIDTH,
+                                  TestCaptureResolution.HEIGHT)
+                return WindowInfo(found=True, handle=1, title="Minecraft",
+                                  pid=1, rect=rect, foreground=True,
+                                  focus_known=True, detail="fake")
+
+        return Observer(Locator(), grabber=grab)
+
+    def test_uncompressed_capture_keeps_native_resolution(self):
+        observation = self._observer().capture(compress=False)
+        self.assertTrue(observation.ok)
+        self.assertEqual((observation.width, observation.height),
+                         (self.WIDTH, self.HEIGHT))
+        self.assertEqual(observation.mime, "image/png")
+
+    def test_compression_is_still_the_default(self):
+        """Every existing caller is unchanged; only the text reader opts out."""
+        import inspect
+        signature = inspect.signature(Observer.capture)
+        self.assertIs(signature.parameters["compress"].default, True)
+
+    def test_the_overlay_source_asks_for_native_resolution(self):
+        """The regression. If this reverts, the F3 reader silently goes back
+        to reading a halved, JPEG-smeared picture of the text."""
+        from minecraft.debug_overlay import DebugOverlayStateSource
+
+        asked = {}
+
+        class Recorder:
+            def capture(self, compress=True):
+                asked["compress"] = compress
+                return Observation(ok=False, timestamp=0.0, focused=True,
+                                   error="not a real capture")
+
+        class Reader:
+            available = True
+            name = "test"
+            def read_text(self, frame):
+                return ""
+            def describe(self):
+                return "test"
+
+        DebugOverlayStateSource(observer=Recorder(), reader=Reader()).read()
+        self.assertIs(asked.get("compress"), False,
+                      "the F3 reader must not be given a downscaled frame")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,20 @@ THE RULE
     full-screen grab — that fallback is exactly the thing being avoided, and it
     would trigger in precisely the confused situations where it does most harm.
 
+TWO CONSUMERS, TWO REQUIREMENTS
+    A frame going to a vision model wants to be small: 1280x720 JPEG is
+    plenty to recognise a tree and costs a fraction of the tokens. A frame
+    going to OCR wants the opposite. The F3 overlay is drawn in a small
+    fixed-size font, so on a 2560-wide window the downscale halves it to
+    around nine pixels tall and the JPEG quantiser smears what is left. That
+    is unreadable, and it fails in the worst way: the overlay is plainly
+    visible on screen, so the obvious conclusion is that OCR is broken rather
+    than that it was handed a bad picture.
+
+    So `capture()` takes `compress`. Default True, unchanged for every
+    existing caller; False returns the native-resolution PNG straight from the
+    grabber, which is what the debug-overlay reader asks for.
+
 WHY THE COMPRESSION IS LOCAL
     `screen_processor._compress()` does the right thing, but importing it drags
     `actions/` — and numpy, and cv2 — into this package, which the import
@@ -119,8 +133,12 @@ class Observer:
         # Injectable so tests never touch a real screen. None means mss.
         self._grabber = grabber
 
-    def capture(self) -> Observation:
-        """One frame of the Minecraft window. Never raises."""
+    def capture(self, compress: bool = True) -> Observation:
+        """One frame of the Minecraft window. Never raises.
+
+        `compress=False` keeps the native-resolution PNG. Use it for reading
+        text; the downscale that makes a frame cheap for a vision model makes
+        the F3 overlay illegible."""
         now = time.time()
 
         try:
@@ -158,7 +176,10 @@ class Observer:
                                error_class=type(e).__name__,
                                error=f"Screen capture failed ({e}).")
 
-        frame, mime, out_w, out_h = _compress(raw, width, height)
+        if compress:
+            frame, mime, out_w, out_h = _compress(raw, width, height)
+        else:
+            frame, mime, out_w, out_h = raw, "image/png", width, height
         return Observation(
             ok=True, timestamp=now, focused=bool(info.foreground),
             rect=info.rect, frame=frame, mime=mime,

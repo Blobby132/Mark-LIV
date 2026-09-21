@@ -173,7 +173,11 @@ class TestStateSource(unittest.TestCase):
     class _Observer:
         def __init__(self, obs):
             self._obs = obs
-        def capture(self):
+            self.compress_asked = None
+        def capture(self, compress=True):
+            # Records what was asked for: the F3 reader must never be handed
+            # a downscaled frame.
+            self.compress_asked = compress
             return self._obs
 
     class _Reader:
@@ -238,7 +242,7 @@ class TestStateSource(unittest.TestCase):
 
     def test_a_failed_capture_does_not_raise(self):
         class Broken:
-            def capture(self):
+            def capture(self, compress=True):
                 raise RuntimeError("no screen")
         source = f3.DebugOverlayStateSource(observer=Broken(),
                                             reader=self._Reader(MODERN))

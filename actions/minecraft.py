@@ -36,7 +36,7 @@ from minecraft.observation import Observer
 from minecraft.state import VisionStateSource
 from minecraft.session import (
     DEFAULT_SESSION_SECONDS, GRANT_SUMMARY, MAX_SESSION_SECONDS,
-    MIN_SESSION_SECONDS,
+    MIN_SESSION_SECONDS, UNLIMITED,
 )
 from minecraft.task_runner import MAX_TASK_STEPS, TaskRunner
 
@@ -149,35 +149,61 @@ def _mc_guard(params: dict) -> dict:
 
     Only `start_session` shows one, and it is the only confirmation in this
     whole subsystem. So it has to actually inform: it names every kind of
-    action it is buying, in the user's words, because session-level consent is
-    only better than per-action consent when the person knows what they are
-    agreeing to. A vague banner here would make this worse than confirming
-    every swing, not better."""
+    action it is buying, in the user's words, and it is explicit about how
+    long it lasts — because session-level consent is only better than
+    per-action consent when the person knows what they agreed to. A vague
+    banner here would make this worse, not better."""
     action = str((params or {}).get("action", "")).lower().strip()
     if action != "start_session":
         return {"summary": f"Minecraft: {action or 'unknown'}"}
 
-    requested = (params or {}).get("duration_s", DEFAULT_SESSION_SECONDS)
-    try:
-        seconds = max(MIN_SESSION_SECONDS,
-                      min(float(requested), MAX_SESSION_SECONDS))
-    except (TypeError, ValueError):
-        seconds = DEFAULT_SESSION_SECONDS
+    seconds = _requested_seconds(params)
+    if seconds is None:
+        summary = "Allow JARVIS to play Minecraft until you stop it?"
+        duration = (
+            "This lasts until you say stop or press F12 — there is no timer. "
+            "It also ends if you close the game, and I let go of every key "
+            "the moment you Alt-Tab away or Minecraft stops being the window "
+            "in front."
+        )
+    else:
+        summary = f"Allow JARVIS to play Minecraft for {int(seconds)} seconds?"
+        duration = (
+            f"It lasts {int(seconds)} seconds and ends early if you press "
+            f"F12, Alt-Tab away, or close the game."
+        )
 
     return {
-        "summary": f"Allow JARVIS to play Minecraft for {int(seconds)} seconds?",
+        "summary": summary,
         "detail": (
             f"This ONE approval lets me {GRANT_SUMMARY} — without asking "
             f"again for each action.\n\n"
-            f"It lasts {int(seconds)} seconds and ends early if you press "
-            f"F12, Alt-Tab away, or close the game. I only send input while "
-            f"the Minecraft window is in front.\n\n"
+            f"{duration}\n\n"
             f"Mining and placing change your world and I cannot undo them, so "
             f"use a world you do not mind changing.\n\n"
             f"This does NOT let me type in chat, run slash commands, or touch "
             f"anything outside Minecraft."
         ),
     }
+
+
+def _requested_seconds(params: dict):
+    """How long the caller asked for, or None for "until stopped".
+
+    Unlimited is the default. The clock was always the weakest of the stops —
+    it protects against forgetting, not against anything going wrong — and
+    expiring mid-conversation trains people to re-approve without reading,
+    which is the habit the one-confirmation design exists to avoid."""
+    raw = (params or {}).get("duration_s")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return max(MIN_SESSION_SECONDS, min(value, MAX_SESSION_SECONDS))
 
 
 # ── Result shaping ───────────────────────────────────────────────────────────
@@ -253,8 +279,9 @@ def minecraft_control(parameters: dict = None, player=None,
             return _result_line(controller.toggle_debug_overlay(), player)
 
         if action == "start_session":
+            seconds = _requested_seconds(params)
             info = controller.start_session(
-                duration_s=params.get("duration_s"),
+                duration_s=UNLIMITED if seconds is None else seconds,
                 owner=str(params.get("owner", "user"))[:40],
             )
             if player:
@@ -263,13 +290,19 @@ def minecraft_control(parameters: dict = None, player=None,
             if not info.get("input_available"):
                 warning = ("\nNOTE: I cannot actually send input on this "
                            "machine — " + info.get("input_backend", ""))
+            session = info["session"]
+            if session.get("unlimited"):
+                lifetime = "until you tell me to stop"
+            else:
+                lifetime = f"for {session['granted_seconds']:.0f}s"
+
             if info.get("reused_existing"):
-                return (f"I already have control — "
-                        f"{info['session']['remaining_seconds']:.0f}s left on "
-                        f"the session that is already open. No need to start "
-                        f"another; just tell me what to do.{warning}\n{info}")
-            return (f"Minecraft session open for "
-                    f"{info['session']['granted_seconds']:.0f}s — I can now "
+                left = ("" if session.get("unlimited")
+                        else f" — {session['remaining_seconds']:.0f}s left")
+                return (f"I already have control{left}. No need to start "
+                        f"another session; just tell me what to do."
+                        f"{warning}\n{info}")
+            return (f"Minecraft session open {lifetime} — I can now "
                     f"{GRANT_SUMMARY} without asking again. "
                     f"{info['emergency_stop']}{warning}\n{info}")
 
@@ -427,8 +460,9 @@ TOOL = {
     "description": (
         "Plays Minecraft Java Edition. Use for any request about looking at "
         "or playing Minecraft.\n"
-        "ONE CONFIRMATION: call start_session once. The user approves a "
-        "single banner and that covers ALL gameplay for the session — "
+        "ONE CONFIRMATION: call start_session once, with no duration_s. The "
+        "user approves a single banner and that covers ALL gameplay until "
+        "they stop it — "
         "movement, looking, jumping, sprinting, sneaking, attacking, mining, "
         "placing, items, the hotbar, the inventory and interaction. Do NOT "
         "ask them to confirm individual actions, and do NOT call "
@@ -498,8 +532,11 @@ TOOL = {
             },
             "duration_s": {
                 "type": "NUMBER",
-                "description": ("For start_session: how many seconds of "
-                                "control to ask for, up to 300."),
+                "description": ("For start_session. LEAVE THIS OUT unless the "
+                                "user asks for a time limit — the session "
+                                "then runs until they stop it, which is what "
+                                "they usually want. A number gives a timed "
+                                "session, up to 300 seconds."),
             },
             "state": {
                 "type": "STRING",

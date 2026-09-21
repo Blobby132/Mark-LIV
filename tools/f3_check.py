@@ -73,12 +73,12 @@ def main() -> int:
         return 1
 
     # ── 3. capture ───────────────────────────────────────────────────────────
-    observation = Observer(locator).capture()
+    observation = Observer(locator).capture(compress=False)
     print(f"  Capture: {observation.describe()}")
     if not observation.ok or not observation.frame:
         return 1
 
-    out = Path(__file__).resolve().parent / "f3_frame.jpg"
+    out = Path(__file__).resolve().parent / "f3_frame.png"
     try:
         out.write_bytes(observation.frame)
         print(f"  Saved the frame to: {out}")

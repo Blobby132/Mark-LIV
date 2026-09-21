@@ -223,6 +223,76 @@ class TestOneConfirmationCoversGameplay(unittest.TestCase):
                     f"second confirmation during gameplay")
 
 
+class TestSessionLifetime(unittest.TestCase):
+    """A session that runs until stopped, and why that is still bounded."""
+
+    def test_a_session_can_run_until_stopped(self):
+        from minecraft.session import SessionManager, UNLIMITED
+        session = SessionManager().start(duration_s=UNLIMITED,
+                                         authorized=True)
+        self.assertTrue(session.unlimited)
+        self.assertFalse(session.expired)
+        self.assertTrue(session.is_authorized())
+
+    def test_an_unlimited_session_still_ends_on_stop(self):
+        """The clock was never the only stop, and was always the weakest."""
+        from minecraft.session import SessionManager, UNLIMITED
+        manager = SessionManager()
+        session = manager.start(duration_s=UNLIMITED, authorized=True)
+        manager.end("stopped by the user")
+        self.assertFalse(session.active)
+        self.assertFalse(session.is_authorized())
+
+    def test_an_unlimited_session_still_ends_on_cancel(self):
+        from minecraft.session import SessionManager, UNLIMITED
+        session = SessionManager().start(duration_s=UNLIMITED,
+                                         authorized=True)
+        session.cancel.set()
+        self.assertFalse(session.active)
+
+    def test_f12_still_revokes_an_unlimited_session(self):
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_minecraft_controller import FakeLocator, FakeProcess
+        from minecraft.controller import MinecraftController
+        from minecraft.input_backend import FakeInputBackend
+        from minecraft.session import SessionManager, UNLIMITED
+
+        backend = FakeInputBackend()
+        controller = MinecraftController(
+            backend=backend, locator=FakeLocator(), sessions=SessionManager(),
+            process_module=FakeProcess(), start_watchers=False,
+            focus_wait_s=0.0)
+        controller.start_session(duration_s=UNLIMITED)
+        self.assertTrue(controller.execute_action(
+            "mine", {"duration": 0.05}).ok)
+
+        controller.emergency_stop("F12")
+        self.assertFalse(controller.execute_action(
+            "mine", {"duration": 0.05}).ok)
+
+    def test_a_timed_session_still_expires(self):
+        """Asking for a limit must still give one."""
+        from minecraft.session import SessionManager
+        session = SessionManager().start(duration_s=30, authorized=True)
+        self.assertFalse(session.unlimited)
+        session.expires_at = 0.0
+        self.assertTrue(session.expired)
+        self.assertFalse(session.is_authorized())
+
+    def test_the_banner_says_which_kind_it_is(self):
+        """Session-level consent is only better than per-action consent when
+        the person knows what they agreed to — including how long it lasts."""
+        from actions.minecraft import _mc_guard
+        unlimited = _mc_guard({"action": "start_session"})
+        self.assertIn("until you stop it", unlimited["summary"])
+        self.assertIn("no timer", unlimited["detail"])
+
+        timed = _mc_guard({"action": "start_session", "duration_s": 120})
+        self.assertIn("120 seconds", timed["summary"])
+        self.assertNotIn("no timer", timed["detail"])
+
+
 class TestToolRefusesDisabledCapabilities(unittest.TestCase):
     """Through the real adapter, so the refusal is the one a model would get."""
 

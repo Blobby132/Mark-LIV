@@ -317,7 +317,11 @@ class DebugOverlayStateSource:
             return empty_state(self.unavailable_reason())
 
         try:
-            observation = self._observer.capture()
+            # Native resolution, not the compressed frame. The downscale that
+            # makes a frame cheap for a vision model reduces F3 text to a
+            # handful of pixels and JPEG-smears what survives -- see the note
+            # in minecraft/observation.py.
+            observation = self._observer.capture(compress=False)
         except Exception as e:
             return empty_state(f"Screen capture failed ({type(e).__name__}).")
 
