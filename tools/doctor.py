@@ -56,6 +56,7 @@ OPTIONAL = [
     ("fastapi",     "fastapi",        "the phone dashboard"),
     ("pyautogui",   "pyautogui",      "desktop input control"),
     ("pygetwindow", "pygetwindow",    "window focus (Minecraft needs this)"),
+    ("pytesseract", "pytesseract",    "reading Minecraft's F3 overlay"),
 ]
 
 # Files that must exist for this to be a complete checkout. Chosen to also
@@ -234,6 +235,30 @@ def check_app_modules() -> list[str]:
     return problems
 
 
+def check_ocr() -> list[str]:
+    """OCR needs a program as well as a package, so "pip installed it" is not
+    the same question as "does it work"."""
+    _rule("Reading the Minecraft screen (optional)")
+    try:
+        from core import ocr
+        reader = ocr.create_reader()
+    except Exception as exc:
+        print(f"{WARN} could not check: {type(exc).__name__}: {exc}")
+        return []
+
+    if getattr(reader, "available", False):
+        print(f"{OK} {reader.describe()}")
+        print(f"{INFO} Verify it against the real game with:")
+        print(f"{INFO}   py tools\\f3_check.py")
+    else:
+        print(f"{WARN} Not set up. Minecraft control still works; JARVIS")
+        print(f"{INFO} just cannot read your position or what you are")
+        print(f"{INFO} looking at, and says so rather than guessing.")
+        for line in reader.describe().splitlines():
+            print(f"{INFO}   {line}")
+    return []
+
+
 def check_config() -> list[str]:
     _rule("Configuration")
     problems: list[str] = []
@@ -272,7 +297,7 @@ def main() -> int:
 
     problems: list[str] = []
     for check in (check_interpreter, check_checkout, check_dependencies,
-                  check_app_modules, check_config):
+                  check_app_modules, check_ocr, check_config):
         try:
             problems += check()
         except Exception:
