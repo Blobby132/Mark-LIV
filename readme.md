@@ -295,12 +295,24 @@ python main.py
 | Requirement | Details |
 | --- | --- |
 | **OS** | Windows 10/11, macOS, or Linux |
-| **Python** | 3.11, 3.12 or 3.13 |
+| **Python** | 3.11, 3.12, 3.13 or 3.14 |
 | **Microphone** | Required for voice interaction (and for the "Hey Jarvis" wake word) |
 | **Speakers** | Required for voice replies |
 | **API Key** | Free Gemini API key (entered on first launch → `config/api_keys.json`) |
 | **GPU** | **Not required.** The avatar is rendered in software |
 | **Wake word** *(optional)* | One-click download from ⚙ → WAKE WORD (`openwakeword`, a few MB, fully local) |
+
+> **Python 3.14** is supported. The test suite runs green on 3.11, 3.12, 3.13
+> and 3.14, and every dependency in `requirements.txt` — including PyQt6,
+> numpy, OpenCV, cryptography, Playwright and `google-genai` — resolves to a
+> real 3.14 wheel. On Windows, `pywin32` ships `cp314` builds and the other
+> Windows-only extras are pure Python.
+>
+> `tests/test_python_compatibility.py` keeps this honest: it re-checks syntax,
+> removed and deprecated standard-library modules, and the asyncio patterns
+> that change between versions, against whichever interpreter is running the
+> tests. It cannot check that third-party wheels exist for a *future* Python —
+> that stays a manual step before declaring support for one.
 
 ---
 
