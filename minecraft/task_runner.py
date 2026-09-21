@@ -83,6 +83,16 @@ is under a minute; twenty steps that each wait on a slow screen capture is
 several. A task that has been running for two minutes has outlived the
 attention of whoever asked for it, whatever its step count says."""
 
+MAX_REPLANS = 2
+"""How many times one task may change approach.
+
+Without a cap, replanning defeats the thing it is attached to: every stuck
+verdict clears the progress history, so a skill that always offers an
+"alternative" resets the detector forever and runs to the step limit anyway.
+That is not hypothetical -- it is what collect_logs did, sweeping twenty times
+for a log it could not see, because its replan handed back the sweep it was
+already doing."""
+
 MIN_OBSERVATION_INTERVAL_S = 0.25
 """The floor between steps. Minecraft runs at 20 ticks per second, so anything
 under about 50ms observes the same tick twice and learns nothing from it."""
@@ -221,7 +231,7 @@ class TaskResult:
 
         detail = f" after {self.steps_taken} step(s)"
         if self.reason:
-            detail += f" — {self.reason}"
+            detail += f" — {self.reason.rstrip('.')}"
         if self.completed and self.verified_steps == 0 and self.records:
             detail += (". Note: I could not verify any of it, so I am "
                        "reporting what I did, not what it achieved")
@@ -274,6 +284,7 @@ class TaskRunner:
 
         records: list = []
         self.progress.reset()
+        replans = 0
         deadline = self._clock() + self._max_seconds
 
         # The one observation before the loop. Every later one comes from a
@@ -298,10 +309,16 @@ class TaskRunner:
                     f"({type(e).__name__}: {e})", records, state)
 
             if step is None:
-                return self._result(
-                    COMPLETED, goal,
-                    getattr(skill, "done_reason", "") or "the skill is finished",
-                    records, state)
+                # None means "no further step". It does NOT mean success: a
+                # skill that has discovered it cannot do the job at all
+                # returns None too, and reporting that as completed is the
+                # exact overstatement this whole layer exists to prevent.
+                reason = (getattr(skill, "done_reason", "")
+                          or "the skill is finished")
+                finished = COMPLETED
+                if getattr(skill, "failed", False):
+                    finished = INCOMPLETE
+                return self._result(finished, goal, reason, records, state)
 
             problem = self._reject(step)
             if problem:
@@ -316,11 +333,14 @@ class TaskRunner:
             # means the answer is "there is a wall" rather than "I ran out of
             # steps", and it gives a skill the chance to try something else.
             if self.progress.stuck:
-                alternative = self._replan(skill, state, tuple(records))
+                explanation = self.progress.explain()
+                alternative = (self._replan(skill, state, tuple(records))
+                               if replans < MAX_REPLANS else None)
                 if alternative is None:
                     return self._result(INCOMPLETE, goal,
-                                        f"{STUCK}: {self.progress.explain()}",
+                                        f"{STUCK}: {explanation}",
                                         records, state)
+                replans += 1
                 self.progress.reset()
 
             self._sleep(self._interval)
@@ -438,5 +458,5 @@ __all__ = [
     "MAX_TASK_STEPS", "MAX_TASK_SECONDS", "MIN_OBSERVATION_INTERVAL_S",
     "DEFAULT_OBSERVATION_INTERVAL_S", "DISPATCH", "ALLOWED_ACTIONS",
     "COMPLETED", "INCOMPLETE", "STOPPED", "FAILED",
-    "STEP_LIMIT", "TIME_LIMIT", "STUCK",
+    "STEP_LIMIT", "TIME_LIMIT", "STUCK", "MAX_REPLANS",
 ]

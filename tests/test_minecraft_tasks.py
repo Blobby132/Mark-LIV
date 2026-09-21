@@ -30,7 +30,8 @@ from minecraft.controller import ActionResult                          # noqa: E
 from minecraft.state import BlockRef, INFERRED, WorldState, empty_state  # noqa: E402
 from minecraft.progress import ProgressMonitor                          # noqa: E402
 from minecraft.task_runner import (                                    # noqa: E402
-    COMPLETED, FAILED, INCOMPLETE, MAX_TASK_STEPS, STOPPED, Step, TaskRunner,
+    COMPLETED, FAILED, INCOMPLETE, MAX_TASK_STEPS, STOPPED, Step, StepRecord,
+    TaskRunner,
 )
 from minecraft import task_runner                                      # noqa: E402
 
@@ -512,6 +513,82 @@ class TestTasksVerify(unittest.TestCase):
 
 # ── Skills ───────────────────────────────────────────────────────────────────
 
+class TestBlindTasksStopImmediately(unittest.TestCase):
+    """The failure a user actually hit: "mine wood" made it spin in circles.
+
+    Without OCR nothing under the crosshair is readable, so collect_logs swept
+    the view twenty times looking for a log it could never see. Three bugs
+    stacked: blind verdicts were misread as "nothing changed", the skill's
+    replan handed back the sweep it was already doing so the stuck detector
+    reset forever, and returning None from plan() was reported as success."""
+
+    class NoOCR:
+        def read(self):
+            return empty_state("vision only; no numbers are read from it")
+
+    def test_collect_logs_stops_at_once_instead_of_sweeping(self):
+        controller = FakeController()
+        result = runner(controller, self.NoOCR()).run(
+            skills.CollectLogs(count=4))
+        self.assertEqual(result.steps_taken, 0)
+        self.assertEqual(controller.calls, [])
+
+    def test_it_is_reported_as_incomplete_not_completed(self):
+        """Returning None from plan() means "no further step", never
+        "succeeded". A skill that has discovered it cannot do the job returns
+        None too."""
+        result = runner(FakeController(), self.NoOCR()).run(
+            skills.CollectLogs(count=4))
+        self.assertEqual(result.status, INCOMPLETE)
+        self.assertNotEqual(result.status, COMPLETED)
+
+    def test_the_reason_names_the_actual_fix(self):
+        result = runner(FakeController(), self.NoOCR()).run(
+            skills.CollectLogs(count=4))
+        self.assertIn("OCR", result.reason)
+        self.assertIn("F3", result.reason)
+
+    def test_find_block_also_stops_rather_than_sweeping_blind(self):
+        controller = FakeController()
+        result = runner(controller, self.NoOCR()).run(skills.FindBlock())
+        self.assertEqual(controller.calls, [])
+        self.assertEqual(result.status, INCOMPLETE)
+
+    def test_replanning_cannot_reset_the_detector_forever(self):
+        """A skill that always offers an "alternative" would clear the
+        progress history on every stuck verdict and run to the step limit
+        anyway — which is what defeated stuck detection for real."""
+        class AlwaysReplans:
+            name = goal = "always replans"
+            def __init__(self): self.replans = 0
+            def plan(self, state, index, history):
+                return Step(action="move", params={"direction": "forward"},
+                            expectation=verify_mod.moved(min_distance=0.5))
+            def replan(self, state, reason, history):
+                self.replans += 1
+                return "the same thing again"
+
+        class Wall:
+            def read(self):
+                return WorldState(position=(1.0, 2.0, 3.0), source="test",
+                                  confidence=INFERRED)
+
+        skill = AlwaysReplans()
+        result = runner(FakeController(), Wall()).run(skill)
+        self.assertLessEqual(skill.replans, task_runner.MAX_REPLANS)
+        self.assertIn(task_runner.STUCK, result.reason)
+        self.assertLess(result.steps_taken, MAX_TASK_STEPS)
+
+    def test_a_replan_is_not_offered_for_the_action_already_failing(self):
+        """collect_logs only suggests sweeping when it was MINING. Offering
+        it while already sweeping hands back the failing action."""
+        skill = skills.CollectLogs(count=2)
+        history = (StepRecord(index=0, step={"action": "look"}, delivered=True,
+                              action_result={}, verification={},
+                              state_before={}, state_after={}),)
+        self.assertIsNone(skill.replan(None, "no_progress", history))
+
+
 class TestSkills(unittest.TestCase):
 
     def test_the_registry_only_builds_known_skills(self):
@@ -551,12 +628,17 @@ class TestSkills(unittest.TestCase):
                          "it swung at the wrong block")
 
     def test_find_block_reports_honestly_when_nothing_is_found(self):
+        """Sweeping the whole view and finding nothing is not a success.
+
+        It used to report `completed` because the skill had run out of steps
+        to take — conflating "I have nothing left to try" with "I found it",
+        which is the overstatement this layer exists to prevent."""
         source = StaticSource(WorldState(
             target_block=BlockRef(name="grass_block"), source="f3",
             confidence=INFERRED))
         result = runner(FakeController(), source).run(
             skills.FindBlock(steps=3))
-        self.assertEqual(result.status, COMPLETED)
+        self.assertEqual(result.status, INCOMPLETE)
         self.assertIn("without", result.reason)
 
     def test_find_block_stops_as_soon_as_the_target_is_under_the_crosshair(self):

@@ -41,7 +41,20 @@ def succeeded_at(position) -> dict:
 
 
 def blind() -> dict:
-    return {"status": verify_mod.UNVERIFIABLE, "after": {}}
+    """A REAL unverifiable verdict, produced by the verifier.
+
+    This used to be a hand-written `{"after": {}}`, and that fabrication is
+    what let a live bug through: `Expectation.check` reports the fields it
+    WANTED even when it could not read them, so a real blind verdict carries
+    `{"rotation": None}` and the monitor classified every one of them as
+    "nothing changed". The user's agent spun in circles for twenty steps
+    while the detector built to stop exactly that said it was fine.
+
+    Building the payload through the real code path is the difference between
+    testing the monitor and testing my idea of the monitor."""
+    from minecraft.state import empty_state
+    return verify_mod.turned(2.0).check(empty_state(), empty_state(),
+                                        delivered=True).as_dict()
 
 
 class TestNoProgress(unittest.TestCase):
@@ -110,6 +123,21 @@ class TestBlind(unittest.TestCase):
         for _ in range(STUCK_AFTER):
             monitor.record("mine", blind())
         self.assertNotEqual(monitor.stuck_reason(), NO_PROGRESS)
+
+    def test_a_verdict_naming_fields_it_could_not_read_carries_no_evidence(self):
+        """The regression. An unverifiable check still reports which fields it
+        wanted — `{"rotation": None}` — so testing for an empty dict missed
+        the case that actually happens."""
+        payload = blind()
+        self.assertTrue(payload["after"],
+                        "a real blind verdict does name its fields")
+        self.assertTrue(all(v is None for v in payload["after"].values()))
+
+        monitor = ProgressMonitor()
+        for _ in range(BLIND_AFTER):
+            monitor.record("look", payload)
+        self.assertEqual(monitor.stuck_reason(), BLIND)
+        self.assertEqual(monitor.repeats, 0)
 
     def test_the_blind_threshold_is_higher_than_the_stuck_one(self):
         """One unreadable observation is noise; a run of them is a setup

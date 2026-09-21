@@ -174,12 +174,19 @@ def _fingerprint(verification: dict) -> str:
     expectation named — so "relevant" means the same thing here as it does
     there, and a new expectation does not need a matching change in this file.
 
-    A verdict with no evidence (an unverifiable step, an action with no check)
-    fingerprints as empty, which is deliberately NOT a match with any real
-    reading: two blind steps should count as a blind streak, not as two
-    identical states."""
+    A verdict with no evidence fingerprints as empty, which is deliberately
+    NOT a match with any real reading: two blind steps should count as a blind
+    streak, not as two identical states.
+
+    "No evidence" has to mean what it says. An unverifiable check still
+    reports the fields it WANTED -- `{"rotation": None}` -- so testing for an
+    empty dict missed the case that matters and classified every blind step as
+    "nothing changed". That is the wrong diagnosis with the wrong fix: it sent
+    the user looking for a wall when the real problem was that nothing could
+    be read at all. A mapping whose values are all None carries no evidence,
+    whatever keys it has."""
     after = (verification or {}).get("after") or {}
-    if not after:
+    if not after or all(v is None for v in after.values()):
         return ""
     return repr(sorted((str(k), repr(v)) for k, v in after.items()))
 

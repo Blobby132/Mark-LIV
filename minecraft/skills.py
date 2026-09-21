@@ -43,7 +43,20 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from minecraft import action_spec, verification as verify_mod
+from minecraft.state import UNKNOWN
 from minecraft.task_runner import Step
+
+CANNOT_SEE_TARGET = (
+    "I cannot read what is under the crosshair, so I have no way to find a "
+    "log or to tell whether one broke. That needs the F3 overlay open and "
+    "OCR installed — see core/ocr.py. I stopped rather than swing at "
+    "nothing."
+)
+"""Why a target-dependent skill gives up immediately.
+
+Sweeping the view twenty times looking for something you cannot see is not
+perseverance, it is a loop with a step limit for a brake. The skills that
+depend on reading the target check for it once and say what is missing."""
 
 # Blocks that count as "a tree" for FindBlock's default search.
 LOG_BLOCKS = frozenset({
@@ -156,9 +169,16 @@ class FindBlock:
         return self._found or "swept the view without the crosshair "\
                               "crossing one"
 
+    @property
+    def failed(self) -> bool:
+        return not self._found or self._found == CANNOT_SEE_TARGET
+
     _found: str = ""
 
     def plan(self, state, step_index: int, history: tuple):
+        if state.confidence_of("target_block") == UNKNOWN:
+            self._found = CANNOT_SEE_TARGET
+            return None
         block = state.target_block
         name = getattr(block, "name", None) if block else None
         if name in self.wanted:
@@ -303,6 +323,13 @@ class CollectLogs:
 
     _broken: int = 0
     _last_target: str = ""
+    _blind: bool = False
+
+    @property
+    def failed(self) -> bool:
+        """Blind, or short of the count. Either way this is not a success,
+        and the runner reports it as incomplete rather than done."""
+        return self._blind or self._broken < self.count
 
     @property
     def goal(self) -> str:
@@ -310,11 +337,21 @@ class CollectLogs:
 
     @property
     def done_reason(self) -> str:
+        if self._blind:
+            return CANNOT_SEE_TARGET
         return (f"broke {self._broken} of {self.count} log(s) — I cannot see "
                 f"the inventory, so I am reporting blocks that disappeared, "
                 f"not items picked up")
 
     def plan(self, state, step_index: int, history: tuple):
+        # Nothing readable under the crosshair means this task is impossible,
+        # not merely difficult: every step would be a blind swing and every
+        # verdict unverifiable. Say so on the first step instead of spending
+        # the whole budget discovering it.
+        if state.confidence_of("target_block") == UNKNOWN:
+            self._blind = True
+            return None
+
         # Count from the record, not from a local tally: a swing whose
         # verification says the block went is the only evidence that counts.
         self._broken = sum(
@@ -339,15 +376,22 @@ class CollectLogs:
                     note=f"looking for a log ({self._broken}/{self.count})")
 
     def replan(self, state, reason, history):
-        """Stuck: stop mining and look elsewhere.
+        """Stuck: stop mining this log and look for another.
 
-        The commonest cause is a log that will not break because it is out of
-        reach, which no number of extra swings fixes. Turning is a cheap,
-        bounded alternative and the progress monitor gets reset, so the new
-        approach is judged on its own."""
-        if reason == "no_progress":
-            return "sweep for a different log"
-        return None
+        Only offered when the last thing tried was mining. Offering it while
+        already sweeping hands back the action that is failing, which resets
+        the stuck detector without changing anything — the loop that made this
+        task spin twenty times. The runner caps replans as a second defence,
+        but a replan that is not an alternative should not be offered at all.
+
+        Blindness gets no alternative: turning does not make an unreadable
+        screen readable."""
+        if reason != "no_progress":
+            return None
+        last = history[-1].step.get("action") if history else ""
+        if last != "mine":
+            return None
+        return "sweep for a different log"
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
