@@ -288,6 +288,27 @@ python main.py
 
 > ⚠️ **Installation Note:** If you hit a `ModuleNotFoundError` for an OS-specific package, install it with `pip install <module_name>`. The optional **wake word** engine is *not* installed here — grab it in one click from **⚙ → WAKE WORD** inside the app.
 
+### On Windows: use `run_jarvis.bat`
+
+Double-click **`run_jarvis.bat`** instead of `main.py`.
+
+Double-clicking a `.py` file opens a console, runs it, and closes that console the instant the process exits. If Python exits because of an uncaught exception, the traceback is printed into a window that has already closed — all you see is a flash. That is the single most common "it doesn't work" report, and it is a reporting problem, not a bug in the app.
+
+`run_jarvis.bat` fixes it properly. It finds a supported interpreter, sets the working directory, installs the dependencies if they are missing, and — if the app exits with an error — runs the doctor and holds the window open so the reason can actually be read.
+
+### When it closes instantly anyway
+
+Run the doctor:
+
+```bat
+py tools\doctor.py
+```
+
+It imports what `main.py` imports, in the same order, and reports the first thing that fails with the real error and the command that fixes it. It distinguishes a package that is *absent* (install it) from one that is *present but will not load* (a broken install or a missing Visual C++ runtime — re-running pip will not help). It also verifies the checkout is complete, that `config/` is writable, and that you are launching from the right directory.
+
+The doctor never reads or prints your API key — only whether one is saved.
+
+
 ---
 
 ## 📋 Requirements
