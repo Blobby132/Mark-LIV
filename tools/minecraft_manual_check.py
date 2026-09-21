@@ -32,17 +32,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core import ocr as core_ocr                      # noqa: E402
 from minecraft import process as mc_process          # noqa: E402
+from minecraft import skills as mc_skills            # noqa: E402
 from minecraft.controller import MinecraftController  # noqa: E402
+from minecraft.debug_overlay import DebugOverlayStateSource  # noqa: E402
 from minecraft.observation import Observer            # noqa: E402
 from minecraft.state import VisionStateSource         # noqa: E402
+from minecraft.task_runner import TaskRunner          # noqa: E402
 
 RULE = "─" * 72
 results: list = []
 
 
-def heading(number: int, title: str) -> None:
-    print(f"\n{RULE}\n  STEP {number}: {title}\n{RULE}")
+_step_number = 0
+
+
+def heading(title: str) -> None:
+    """Numbered automatically. Hand-numbered headings meant that inserting a
+    check in the middle silently renumbered every later one, and the numbers
+    in the summary stopped matching the numbers on screen."""
+    global _step_number
+    _step_number += 1
+    print(f"\n{RULE}\n  STEP {_step_number}: {title}\n{RULE}")
 
 
 def record(name: str, ok: bool, note: str = "") -> None:
@@ -81,7 +93,7 @@ def countdown(seconds: int, why: str) -> None:
 def main() -> int:
     print(f"""
 {RULE}
-  MARK-LIV — MINECRAFT PHASE 2 MANUAL CHECK
+  MARK-LIV — MINECRAFT PHASE 3 MANUAL CHECK
 {RULE}
 
   Before you start:
@@ -95,21 +107,32 @@ def main() -> int:
       answer 'q' at any prompt to stop.
 
   What this checks, in order:
-    1. Minecraft process detection        6. Hold W for 0.5s
-    2. Minecraft window detection         7. Hold A for 0.5s
-    3. Foreground focus                   8. Tap SPACE
-    4. Capture one Minecraft-only frame   9. Emergency stop (F12)
-    5. Relative mouse movement           10. Everything released
+     1. Minecraft process detection       8. Tap SPACE
+     2. Minecraft window detection        9. Read the F3 debug overlay
+     3. Foreground focus                 10. Report your position
+     4. Capture one Minecraft-only frame 11. Aim at a block
+     5. Relative mouse movement          12. Attack, and VERIFY the result
+     6. Hold W for 0.5s                  13. Select a hotbar slot
+     7. Hold A for 0.5s                  14. Use an item
+                                         15. Emergency stop (F12)
+                                         16. Everything released
+
+  Steps 12 and 14 change the world (they break and place blocks), so they
+  are asked for separately and you can skip them. Use a throwaway world.
 """)
     pause("Press Enter when Minecraft is open and you are ready.")
 
     controller = MinecraftController(start_watchers=False)
     observer = Observer(controller._locator)
+    reader = core_ocr.create_reader()
+    source = DebugOverlayStateSource(observer=observer, reader=reader)
+    state = None
+    aimed = None
     session_open = False
 
     try:
         # ── 1 ────────────────────────────────────────────────────────────────
-        heading(1, "Is Minecraft running?")
+        heading("Is Minecraft running?")
         info = mc_process.find()
         print(f"  {info.detail}")
         if info.running:
@@ -121,7 +144,7 @@ def main() -> int:
             return summarise()
 
         # ── 2 ────────────────────────────────────────────────────────────────
-        heading(2, "Can I find the window?")
+        heading("Can I find the window?")
         window = controller._locator.attach()
         print(f"  {window.detail}")
         if window.found and window.rect:
@@ -135,7 +158,7 @@ def main() -> int:
             return summarise()
 
         # ── 3 ────────────────────────────────────────────────────────────────
-        heading(3, "Does Minecraft have focus?")
+        heading("Does Minecraft have focus?")
         if not window.focus_known:
             print(f"  I cannot read the foreground window on this platform.")
             print(f"  {window.detail}")
@@ -152,7 +175,7 @@ def main() -> int:
                    else "another window has focus")
 
         # ── 4 ────────────────────────────────────────────────────────────────
-        heading(4, "Capture one Minecraft-only frame")
+        heading("Capture one Minecraft-only frame")
         print("  This captures the game window region ONLY — not your whole")
         print("  desktop. Nothing is sent anywhere; it is saved next to this")
         print("  script so you can look at it.")
@@ -172,12 +195,13 @@ def main() -> int:
         else:
             record("window-only capture", False, observation.error)
 
-        state = VisionStateSource().read()
-        print(f"\n  State source says: {state.describe()}")
-        print("  (That is expected in this phase — nothing reads game state yet.)")
+        vision = VisionStateSource().read()
+        print(f"\n  Vision-only state: {vision.describe()}")
+        print("  (Expected — the F3 overlay is what reads real values; that")
+        print("   is tested further down.)")
 
         # ── 5 ────────────────────────────────────────────────────────────────
-        heading(5, "Does relative mouse movement turn the camera?")
+        heading("Does relative mouse movement turn the camera?")
         print("  THIS IS THE IMPORTANT ONE.")
         print()
         print("  Minecraft reads mouse DELTAS while it has the cursor captured,")
@@ -216,14 +240,14 @@ def main() -> int:
                "injected deltas did not move the camera — try turning OFF "
                "'Raw Input' in Minecraft's mouse settings and re-running")
 
-        # ── 6, 7, 8 ──────────────────────────────────────────────────────────
-        for number, (label, params, question) in enumerate([
+        # ── movement ─────────────────────────────────────────────────────────
+        for label, params, question in [
             ("Hold W for 0.5s", {"direction": "forward", "duration": 0.5},
              "Did your character walk FORWARD?"),
             ("Hold A for 0.5s", {"direction": "left", "duration": 0.5},
              "Did your character strafe LEFT?"),
-        ], start=6):
-            heading(number, label)
+        ]:
+            heading(label)
             print("  Click on Minecraft and watch your character.")
             if not ask(f"Ready to {label.lower()}?"):
                 record(label, False, "skipped")
@@ -239,7 +263,7 @@ def main() -> int:
             record(label, moved and result.ok,
                    "" if moved else "no movement observed")
 
-        heading(8, "Tap SPACE")
+        heading("Tap SPACE")
         if ask("Ready to jump?"):
             countdown(3, "Jumping in:")
             result = controller.jump({})
@@ -251,7 +275,135 @@ def main() -> int:
             record("jump", False, "skipped")
 
         # ── 9 ────────────────────────────────────────────────────────────────
-        heading(9, "Emergency stop")
+        # ── Phase 3: state, interaction, verification ────────────────────────
+        heading("Read the F3 debug overlay")
+        print("  Reading your position needs Minecraft's own debug screen.")
+        print(f"  Text reader: {reader.describe()}")
+        if not getattr(reader, "available", False):
+            record("F3 state reading", False,
+                   "no OCR installed — see the message above")
+            print("\n  Skipping the state-dependent steps (9-12).")
+            state = None
+        else:
+            print("\n  I will press F3 to open the overlay.")
+            if ask("Open the debug overlay?") and ensure_session(controller):
+                session_open = True
+                controller.toggle_debug_overlay()
+                time.sleep(0.6)
+            else:
+                print("  Press F3 yourself, then continue.")
+                pause("Press Enter when the overlay is showing.")
+
+            state = source.read()
+            print(f"\n  {state.describe()}")
+            got = bool(state.known_fields())
+            record("F3 state reading", got,
+                   f"read {len(state.known_fields())} field(s)" if got
+                   else "could not read any values — try a bigger window "
+                        "or a larger GUI scale")
+
+        # ── 10 ───────────────────────────────────────────────────────────────
+        heading("Does it know where you are?")
+        if state is not None and state.position:
+            x, y, z = state.position
+            print(f"  I make your position:  X={x:.1f}  Y={y:.1f}  Z={z:.1f}")
+            if state.facing:
+                print(f"  Facing: {state.facing}")
+            if state.biome:
+                print(f"  Biome:  {state.biome}")
+            print("\n  Compare that with the XYZ line on your F3 screen.")
+            right = ask("Does that match what F3 shows?")
+            record("position reading", right,
+                   "" if right else "the numbers did not match — OCR misread "
+                                    "them; a larger window usually fixes it")
+        else:
+            record("position reading", False, "no position was read")
+
+        # ── 11 ───────────────────────────────────────────────────────────────
+        heading("Aim at a block")
+        print("  Point your crosshair at a solid block — a tree trunk is")
+        print("  ideal, since step 12 will try to break it.")
+        pause("Aim at a block, click back on Minecraft, then press Enter.")
+
+        target = source.read() if state is not None else None
+        aimed = getattr(getattr(target, "target_block", None), "name", None)
+        if aimed and aimed != "air":
+            print(f"  I think you are looking at: {aimed}")
+            right = ask("Is that the block you are aiming at?")
+            record("target block identification", right,
+                   "" if right else f"I read {aimed}")
+        else:
+            print("  I cannot see a block under your crosshair.")
+            record("target block identification", False,
+                   "no target block read" if state is not None
+                   else "skipped — no state source")
+
+        # ── 12 ───────────────────────────────────────────────────────────────
+        heading("Attack, and verify the result")
+        print("  THIS BREAKS A BLOCK. Only continue in a throwaway world.")
+        print()
+        print("  The point of this step is not that the block breaks. It is")
+        print("  that I can tell you WHETHER it broke, rather than assuming")
+        print("  it did because I held the button down.")
+        print()
+        if aimed and aimed != "air" and ask(f"Break the {aimed}?") \
+                and ensure_session(controller, interaction=True):
+            session_open = True
+            print("  Click back on Minecraft.")
+            countdown(4, "Breaking in:")
+            outcome = TaskRunner(controller, source,
+                                 observer=observer).run(
+                                     mc_skills.BreakBlock(expected=aimed))
+            print(f"\n  {outcome.describe()}")
+            for entry in outcome.records:
+                print(f"    swing {entry.index + 1}: "
+                      f"{entry.verification['status']:<12} "
+                      f"{entry.verification['reason']}")
+            verified = outcome.verified_steps > 0
+            record("attack + verification", verified,
+                   "the break was confirmed by re-reading the target"
+                   if verified else
+                   "the block did not break, or I could not confirm it did")
+            gone = ask(f"Is the {aimed} actually gone in the game?")
+            record("verification matched reality", gone == verified,
+                   "" if gone == verified else
+                   f"I said {verified} and the game says {gone} — this is the "
+                   f"important failure to report")
+        else:
+            record("attack + verification", False, "skipped")
+
+        # ── 13 ───────────────────────────────────────────────────────────────
+        heading("Select a hotbar slot")
+        print("  I will select slot 3. Watch the hotbar highlight move.")
+        if ask("Ready?") and ensure_session(controller):
+            session_open = True
+            countdown(3, "Selecting slot 3 in:")
+            result = controller.hotbar_select({"slot": 3})
+            print(f"  {result.describe()}")
+            moved = ask("Did the hotbar selection move to slot 3?")
+            record("hotbar select", moved and result.ok)
+            print("\n  Note: I cannot VERIFY this myself — the selected slot")
+            print("  is not on the F3 screen. It needs the mod bridge.")
+        else:
+            record("hotbar select", False, "skipped")
+
+        # ── 14 ───────────────────────────────────────────────────────────────
+        heading("Use an item")
+        print("  Put a placeable block in slot 3 and aim at the ground.")
+        print("  THIS PLACES A BLOCK.")
+        if ask("Try using/placing what is in your hand?") \
+                and ensure_session(controller, interaction=True):
+            session_open = True
+            pause("Aim at the ground, click back on Minecraft, press Enter.")
+            countdown(3, "Using in:")
+            result = controller.use_item({"duration": 0.2})
+            print(f"  {result.describe()}")
+            placed = ask("Did something happen (a block placed, an item used)?")
+            record("use item", placed and result.ok)
+        else:
+            record("use item", False, "skipped")
+
+        heading("Emergency stop")
         print(f"  {controller.emergency.describe()}")
         print()
         if controller.emergency.scope == "global":
@@ -285,7 +437,7 @@ def main() -> int:
                 record("focus-loss stop", False, "skipped")
 
         # ── 10 ───────────────────────────────────────────────────────────────
-        heading(10, "Is everything released?")
+        heading("Is everything released?")
         outcome = controller.stop("manual check finished")
         held = controller.ledger.held()
         print(f"  Ledger says held: {sorted(held) or 'nothing'}")
@@ -318,6 +470,33 @@ def main() -> int:
             print("  (Control session closed.)")
 
 
+def ensure_session(controller, interaction: bool = False) -> bool:
+    """Make sure a live session exists, with the grant this step needs.
+
+    The later steps involve reading prompts and looking at the game, which
+    takes longer than a session lasts — so by the time you answer, the one
+    opened earlier has usually expired. Rather than failing a check for a
+    reason that has nothing to do with what it is testing, open a fresh one.
+
+    Returns False if it could not, so the caller records a skip rather than
+    walking into a refusal."""
+    current = controller.sessions.current
+    if current is not None and current.active:
+        if not interaction or current.allow_interaction:
+            return True
+        # Upgrading a grant is not a thing: end this one and open a session
+        # that was asked for with interaction from the start.
+        controller.stop("reopening with interaction")
+
+    try:
+        controller.start_session(duration_s=120, owner="manual check",
+                                 allow_interaction=interaction)
+        return True
+    except Exception as e:
+        print(f"  Could not open a session: {e}")
+        return False
+
+
 def summarise() -> int:
     print(f"\n{RULE}\n  RESULT\n{RULE}")
     if not results:
@@ -337,7 +516,7 @@ def summarise() -> int:
         print("  the relative-mouse step failed, since that one decides whether")
         print("  looking around can work at all.")
     else:
-        print(f"  All {len(results)} checks passed. Phase 2 works on your machine.")
+        print(f"  All {len(results)} checks passed. Phase 3 works on your machine.")
     return 1 if failed else 0
 
 

@@ -244,11 +244,55 @@ a safety control — if this could be denied, a confused planner or an expired
 confirmation would leave keys held down. It is also the one capability here
 that is *more* permissive than doing nothing."""
 
+MINECRAFT_JUMP = "minecraft.jump"
+"""One hop. Only inside a live session."""
+
+MINECRAFT_HOTBAR = "minecraft.hotbar"
+"""Select hotbar slot 1-9. Changes what is held, destroys nothing."""
+
+MINECRAFT_SNEAK = "minecraft.sneak"
+"""Hold crouch, optionally while walking. Only inside a live session."""
+
+MINECRAFT_SPRINT = "minecraft.sprint"
+"""Hold sprint while walking. Only inside a live session."""
+
 MINECRAFT_ATTACK = "minecraft.attack"
-"""Left-click / mine / hit. Not enabled in the current phase."""
+"""Left-click: mine a block, hit a mob.
+
+ALLOW, and the reasoning is worth writing down because this is the one verdict
+in this namespace that changed when it went from declared to built.
+
+It was CONFIRM while it was a placeholder for something unimplemented — a
+sensible default for a capability nothing could reach. Building it made that
+default actively harmful: breaking one oak log takes several bounded swings,
+so CONFIRM means a dialog per swing, and a dialog per swing is how people
+learn to dismiss dialogs without reading them. That trains the exact reflex
+the confirmation exists to prevent, and it would apply to the confirmations
+that really matter elsewhere in the app too.
+
+So the consent moved rather than disappeared, and it got MORE specific: a
+session must be opened with interaction explicitly granted, and the
+confirmation for that session names mining and placing in as many words. A
+session without that grant refuses attack before any button is pressed. One
+informed decision, time-boxed to five minutes, revocable by Alt-Tab, F12, the
+clock or the game closing — instead of twenty identical prompts.
+
+The verdict here is not what makes this safe; `Session.allow_interaction` is.
+This row only stops the broker asking a question the session already asked
+better."""
 
 MINECRAFT_USE_ITEM = "minecraft.use_item"
-"""Right-click / place / eat. Not enabled in the current phase."""
+"""Right-click: place a block, eat, open a door. Same reasoning as
+MINECRAFT_ATTACK, and gated by the same session grant."""
+
+MINECRAFT_TASK = "minecraft.task"
+"""Run a bounded multi-step task — observe, act, verify, repeat.
+
+CONFIRM, and this one is a gate being ADDED rather than relaxed. Every
+individual action a task takes is already bounded and already inside a
+session. What is new is the count: one approval buying up to twenty actions
+chosen by code rather than by the person watching. That is a genuinely
+different decision from "walk forward", so it gets its own."""
 
 MINECRAFT_INVENTORY = "minecraft.inventory"
 """Open the inventory and move items. Not enabled in the current phase."""
@@ -342,11 +386,21 @@ _POLICY: dict[str, str] = {
     MINECRAFT_MOVE:             ALLOW,
     MINECRAFT_LOOK:             ALLOW,
     MINECRAFT_STOP:             ALLOW,
+    MINECRAFT_JUMP:             ALLOW,
+    MINECRAFT_HOTBAR:           ALLOW,
+    MINECRAFT_SNEAK:            ALLOW,
+    MINECRAFT_SPRINT:           ALLOW,
+    # Destructive, and gated by an explicit per-session grant rather than by a
+    # prompt per swing — see MINECRAFT_ATTACK's docstring for why that is the
+    # stronger of the two.
+    MINECRAFT_ATTACK:           ALLOW,
+    MINECRAFT_USE_ITEM:         ALLOW,
+    # A task spends one approval on up to twenty actions, which is a different
+    # decision from any single one of them.
+    MINECRAFT_TASK:             CONFIRM,
     # Declared but not built. CONFIRM rather than ALLOW so that if the phase
     # gate in minecraft/capabilities.py were ever removed, these would still
     # stop and ask rather than quietly becoming available.
-    MINECRAFT_ATTACK:           CONFIRM,
-    MINECRAFT_USE_ITEM:         CONFIRM,
     MINECRAFT_INVENTORY:        CONFIRM,
     MINECRAFT_CHAT:             CONFIRM,
     MINECRAFT_LAUNCH:           CONFIRM,

@@ -80,8 +80,17 @@ class ObservationFailed(MinecraftError):
     caller might not check."""
 
 
+class InteractionNotGranted(MinecraftError):
+    """Mining or placing was attempted in a session that did not ask for it.
+
+    Separate from NoActiveSession because the fix is different: there IS a
+    session, it simply does not cover changing the world. The remedy is to
+    start one that does, which means another confirmation naming what it
+    allows -- not silently upgrading the one already open."""
+
+
 __all__ = [
-    "MinecraftError", "InvalidAction", "CapabilityDisabled",
+    "MinecraftError", "InteractionNotGranted", "InvalidAction", "CapabilityDisabled",
     "MinecraftNotRunning", "WindowNotFound", "WindowNotFocused",
     "NoActiveSession", "SessionExpired", "InputBackendUnavailable",
     "EmergencyStop", "ObservationFailed",

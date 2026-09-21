@@ -25,22 +25,26 @@ WHAT THIS FILE DELIBERATELY DOES NOT DO
 from __future__ import annotations
 
 from core import capabilities
+from core import ocr as core_ocr
 
 from minecraft import capabilities as mc_phase
+from minecraft import skills as mc_skills
 from minecraft.controller import MinecraftController
+from minecraft.debug_overlay import DebugOverlayStateSource, NEEDS_MOD_BRIDGE
 from minecraft.errors import CapabilityDisabled, InvalidAction, MinecraftError
 from minecraft.observation import Observer
 from minecraft.state import VisionStateSource
 from minecraft.session import (
     DEFAULT_SESSION_SECONDS, MAX_SESSION_SECONDS, MIN_SESSION_SECONDS,
 )
+from minecraft.task_runner import MAX_TASK_STEPS, TaskRunner
 
 # One controller for the process. Minecraft is one game with one window and one
 # session, and a second controller would mean a second ledger — two records of
 # which keys are held, neither of them complete.
 _controller: MinecraftController | None = None
 _observer: Observer | None = None
-_state_source = VisionStateSource()
+_state_source = None
 
 
 def _get_controller() -> MinecraftController:
@@ -56,12 +60,35 @@ def _get_observer() -> Observer:
     return _observer
 
 
-def _reset_for_tests(controller=None, observer=None) -> None:
+def _get_state_source():
+    """The best state source available.
+
+    This is the one place that decides which source the rest of the system
+    talks to, and everything above it — the task runner, verification, the
+    handler — is written against the `StateSource` interface and never learns
+    which it got. Adding the Fabric bridge later is a change to this function.
+
+    The OCR reader is built HERE, from core, and injected. `minecraft/` imports
+    no OCR engine: pytesseract shells out to a binary, and that package is
+    forbidden from starting processes — see core/ocr.py."""
+    global _state_source
+    if _state_source is None:
+        overlay = DebugOverlayStateSource(observer=_get_observer(),
+                                          reader=core_ocr.create_reader())
+        # A source that cannot read is worse than the honest empty one: it
+        # would report "overlay closed" when the real problem is a missing
+        # OCR install, and the user would go and press F3 for nothing.
+        _state_source = overlay if overlay.available() else VisionStateSource()
+    return _state_source
+
+
+def _reset_for_tests(controller=None, observer=None, state_source=None) -> None:
     """Swap in fakes. Only the tests call this; it exists so they can exercise
     the real adapter rather than a copy of its logic."""
-    global _controller, _observer
+    global _controller, _observer, _state_source
     _controller = controller
     _observer = observer
+    _state_source = state_source
 
 
 # ── Capability resolution ────────────────────────────────────────────────────
@@ -75,14 +102,19 @@ _CAPABILITY_BY_ACTION = {
     "stop":          capabilities.MINECRAFT_STOP,
     "move":          capabilities.MINECRAFT_MOVE,
     "look":          capabilities.MINECRAFT_LOOK,
-    "jump":          capabilities.MINECRAFT_MOVE,
-    # Named so they resolve to their real capability and are refused by the
-    # phase gate with an explanation, rather than falling through to the
-    # unknown-action branch and getting a vaguer answer.
+    "jump":          capabilities.MINECRAFT_JUMP,
     "attack":        capabilities.MINECRAFT_ATTACK,
     "mine":          capabilities.MINECRAFT_ATTACK,
     "use_item":      capabilities.MINECRAFT_USE_ITEM,
     "place":         capabilities.MINECRAFT_USE_ITEM,
+    "hotbar_select": capabilities.MINECRAFT_HOTBAR,
+    "sneak":         capabilities.MINECRAFT_SNEAK,
+    "sprint":        capabilities.MINECRAFT_SPRINT,
+    "toggle_debug":  capabilities.MINECRAFT_READ_STATE,
+    "run_task":      capabilities.MINECRAFT_TASK,
+    # Named so they resolve to their real capability and are refused by the
+    # phase gate with an explanation, rather than falling through to the
+    # unknown-action branch and getting a vaguer answer.
     "inventory":     capabilities.MINECRAFT_INVENTORY,
     "chat":          capabilities.MINECRAFT_CHAT,
     "say":           capabilities.MINECRAFT_CHAT,
@@ -114,15 +146,30 @@ def _mc_guard(params: dict) -> dict:
     except (TypeError, ValueError):
         seconds = DEFAULT_SESSION_SECONDS
 
-    return {
-        "summary": f"Let me control Minecraft for {int(seconds)} seconds",
-        "detail": (
-            "I can walk, turn and jump inside the Minecraft window only, and "
-            "only while it is the window in front. Alt-Tab or F12 stops me "
-            "immediately. I cannot type in chat, run commands, or touch "
-            "anything outside the game."
-        ),
-    }
+    interact = bool((params or {}).get("allow_interaction"))
+    summary = (f"Let me control Minecraft for {int(seconds)} seconds"
+               + (" — INCLUDING breaking and placing blocks" if interact
+                  else ""))
+
+    detail = (
+        "I can walk, turn and jump inside the Minecraft window only, and "
+        "only while it is the window in front. Alt-Tab or F12 stops me "
+        "immediately. I cannot type in chat, run commands, or touch "
+        "anything outside the game."
+    )
+    if interact:
+        # Spelled out rather than implied: this is the grant that replaces a
+        # confirmation per swing, so it has to actually inform.
+        detail += (
+            "\n\nThis session ALSO lets me mine blocks and use/place items. "
+            "That changes your world and I cannot undo it — use a creative or "
+            "throwaway world if you are not sure."
+        )
+    else:
+        detail += ("\n\nThis session does NOT let me break or place "
+                   "anything.")
+
+    return {"summary": summary, "detail": detail}
 
 
 # ── Result shaping ───────────────────────────────────────────────────────────
@@ -176,13 +223,21 @@ def minecraft_control(parameters: dict = None, player=None,
                     f"{observation.as_dict(include_frame=False)}")
 
         if action == "read_state":
-            state = _state_source.read()
-            return f"{state.describe()}\n{state.as_dict()}"
+            source = _get_state_source()
+            state = source.read()
+            extra = ""
+            if state.is_empty and not getattr(source, "available", lambda: True)():
+                extra = f"\n{source.unavailable_reason()}"
+            return f"{state.describe()}{extra}\n{state.as_dict()}"
+
+        if action == "toggle_debug":
+            return _result_line(controller.toggle_debug_overlay())
 
         if action == "start_session":
             info = controller.start_session(
                 duration_s=params.get("duration_s"),
                 owner=str(params.get("owner", "user"))[:40],
+                allow_interaction=bool(params.get("allow_interaction")),
             )
             if player:
                 player.write_log("[minecraft] control session started")
@@ -218,6 +273,24 @@ def minecraft_control(parameters: dict = None, player=None,
         if action == "look":
             return _result_line(controller.look(params))
 
+        if action in ("attack", "mine"):
+            return _result_line(controller.attack(params))
+
+        if action in ("use_item", "place"):
+            return _result_line(controller.use_item(params))
+
+        if action == "hotbar_select":
+            return _result_line(controller.hotbar_select(params))
+
+        if action == "sneak":
+            return _result_line(controller.sneak(params))
+
+        if action == "sprint":
+            return _result_line(controller.sprint(params))
+
+        if action == "run_task":
+            return _run_task(controller, params, player)
+
         # Reachable only if someone adds a name to _CAPABILITY_BY_ACTION and
         # to ENABLED without writing the handler.
         raise InvalidAction(f"'{action}' is not something I can do yet.")
@@ -240,6 +313,45 @@ def minecraft_control(parameters: dict = None, player=None,
                 f"I released any keys I was holding.")
 
 
+def _run_task(controller, params: dict, player=None) -> str:
+    """Run one bounded skill to completion, or to its limit.
+
+    The model chooses WHICH skill and with what parameters. It does not get to
+    describe the steps: a skill is ordinary Python, so the sequence of actions
+    is decided in source and the runner validates every one of them again
+    against `action_spec` before it reaches the controller."""
+    name = str(params.get("task", "")).strip().lower()
+    if not name:
+        return (f"Which task? I have: {', '.join(mc_skills.available())}. "
+                f"Some things I cannot do yet: "
+                f"{', '.join(sorted(mc_skills.NOT_YET_POSSIBLE))}.")
+
+    options = {}
+    for key in ("seconds", "direction", "expected", "swings", "steps"):
+        if key in params:
+            options[key] = params[key]
+
+    try:
+        skill = mc_skills.create(name, **options)
+    except KeyError as e:
+        return str(e).strip('"')
+    except TypeError as e:
+        return (f"'{name}' does not take those options ({e}). "
+                f"Try it without them.")
+
+    runner = TaskRunner(controller, _get_state_source(),
+                        observer=_get_observer())
+    result = runner.run(skill, max_steps=params.get("max_steps",
+                                                    MAX_TASK_STEPS))
+    if player:
+        player.write_log(f"[minecraft] task {name}: {result.status} "
+                         f"({result.steps_taken} steps)")
+
+    # The summary line is built to be un-overstatable: it says what was
+    # verified, separately from what was attempted.
+    return f"{result.describe()}\n{result.as_dict()}"
+
+
 def _status_line(status: dict) -> str:
     if not status.get("minecraft_running"):
         return status.get("process_detail") or "Minecraft is not running."
@@ -259,51 +371,100 @@ def _status_line(status: dict) -> str:
 TOOL = {
     "name": "minecraft_control",
     "description": (
-        "Observes and controls Minecraft Java Edition. Use for any request "
-        "about looking at or playing Minecraft. Actions: status (is it "
-        "running, is the window in front), observe (capture the Minecraft "
-        "window), read_state (what is known about the game — currently very "
-        "little), start_session (asks the user for permission to control the "
-        "game for up to 300 seconds; movement is refused until they confirm), "
-        "move (direction=forward|back|left|right, duration up to 2 seconds), "
-        "look (dx, dy in PIXELS of mouse movement, up to 400 each — degrees "
-        "are NOT supported), jump, stop (release everything immediately). "
+        "Observes, understands and controls Minecraft Java Edition. Use for "
+        "any request about looking at or playing Minecraft.\n"
+        "READING: status (is it running, is it in front), observe (capture "
+        "the window), read_state (position, facing, biome, and the block "
+        "under the crosshair — needs the F3 overlay open), toggle_debug "
+        "(press F3 to open/close that overlay).\n"
+        "CONTROL: start_session asks the user for permission for up to 300 "
+        "seconds; nothing below works until they confirm. Pass "
+        "allow_interaction=true ONLY if the task needs to break or place "
+        "blocks — it changes their world and is asked for separately. Then: "
+        "move (direction, duration<=2s), look (dx/dy in PIXELS, <=400 each — "
+        "degrees are NOT supported), jump, sneak, sprint, hotbar_select "
+        "(slot 1-9), attack (duration<=2s), use_item (duration<=2s), stop.\n"
+        "TASKS: run_task performs a bounded multi-step job, observing and "
+        "verifying between steps. task=walk_forward|survey|find_block|"
+        "break_block. It stops by itself at 20 steps.\n"
+        "IMPORTANT: one attack does NOT break a block — breaking an oak log "
+        "takes several. Never say a block broke, a tree was chopped or "
+        "anything was collected unless a result says so: check "
+        "verification.status == 'success', not just ok == true. 'unverifiable' "
+        "means I could not see whether it worked — say that, do not guess. "
         "Movement only works while Minecraft is the window in front; if the "
-        "user switches away it stops by itself. Never claim an action "
-        "succeeded unless the result says ok=true — a move can be cut short "
-        "and will report how long it actually lasted."
+        "user switches away it stops by itself."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": ("status | observe | read_state | start_session "
-                                "| end_session | move | look | jump | stop"),
+                "description": (
+                    "status | observe | read_state | toggle_debug | "
+                    "start_session | end_session | move | look | jump | "
+                    "sneak | sprint | hotbar_select | attack | use_item | "
+                    "run_task | stop"),
             },
             "direction": {
                 "type": "STRING",
-                "description": "For move: forward | back | left | right",
+                "description": ("For move/sneak/sprint: forward | back | "
+                                "left | right."),
             },
             "duration": {
                 "type": "NUMBER",
-                "description": ("For move: seconds to hold, up to 2.0. Longer "
-                                "requests are shortened to 2.0, not refused."),
+                "description": ("Seconds to hold, up to 2.0 for every action "
+                                "that takes one. Longer requests are "
+                                "shortened to 2.0, not refused."),
             },
             "dx": {
                 "type": "INTEGER",
-                "description": ("For look: horizontal mouse movement in pixels, "
-                                "-400 to 400. Positive turns right."),
+                "description": ("For look: horizontal mouse movement in "
+                                "pixels, -400 to 400. Positive turns right."),
             },
             "dy": {
                 "type": "INTEGER",
                 "description": ("For look: vertical mouse movement in pixels, "
                                 "-400 to 400. Positive looks down."),
             },
+            "slot": {
+                "type": "INTEGER",
+                "description": ("For hotbar_select: which slot, 1 to 9. Out "
+                                "of range is refused, not adjusted."),
+            },
             "duration_s": {
                 "type": "NUMBER",
-                "description": ("For start_session: how many seconds of control "
-                                "to ask for, up to 300."),
+                "description": ("For start_session: how many seconds of "
+                                "control to ask for, up to 300."),
+            },
+            "allow_interaction": {
+                "type": "BOOLEAN",
+                "description": (
+                    "For start_session. False by default. True also asks "
+                    "permission to break and place blocks, which changes the "
+                    "user's world and cannot be undone. Only ask for it when "
+                    "the task actually needs it."),
+            },
+            "task": {
+                "type": "STRING",
+                "description": ("For run_task: walk_forward | survey | "
+                                "find_block | break_block."),
+            },
+            "seconds": {
+                "type": "NUMBER",
+                "description": "For the walk_forward task: how long to walk.",
+            },
+            "expected": {
+                "type": "STRING",
+                "description": (
+                    "For the break_block task: the block name expected under "
+                    "the crosshair, e.g. 'oak_log'. If something else is "
+                    "there the task stops rather than break the wrong thing."),
+            },
+            "max_steps": {
+                "type": "INTEGER",
+                "description": ("For run_task: fewer steps than the limit of "
+                                "20. It cannot be raised above 20."),
             },
         },
         "required": ["action"],

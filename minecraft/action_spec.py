@@ -39,6 +39,24 @@ problem."""
 
 MIN_MOVE_DURATION_S = 0.05
 
+MAX_ATTACK_DURATION_S = 2.0
+"""One swing-and-hold, not a mining session. Breaking an oak log by hand takes
+about three seconds, so a single attack deliberately does NOT finish the job:
+the task runner repeats bounded attacks and re-checks the target between them.
+That is the difference between "I held the button" and "the block broke", and
+building it in at the limit is what makes the distinction unavoidable."""
+
+MAX_USE_DURATION_S = 2.0
+"""Placing, eating, drawing a bow. Same bound as attack for the same reason."""
+
+MAX_SNEAK_DURATION_S = MAX_MOVE_DURATION_S
+MAX_SPRINT_DURATION_S = MAX_MOVE_DURATION_S
+
+HOTBAR_SLOTS = tuple(range(1, 10))
+"""1-9 as the player sees them. Slot 0 does not exist on a Minecraft hotbar,
+and `selected_slot` in WorldState is 0-8 because that is what the game's own
+data uses -- the conversion happens here, once, rather than in a planner."""
+
 MAX_LOOK_DELTA_PX = 400
 """Per call, in each axis. Roughly a quarter turn at default sensitivity,
 though the real relationship is unknown until calibration — which is why the
@@ -56,6 +74,12 @@ MOVE_KEYS = {
 }
 
 DIRECTIONS = tuple(sorted(MOVE_KEYS))
+
+SNEAK_KEY = "shift"
+SPRINT_KEY = "ctrl"
+
+ATTACK_BUTTON = "left"
+USE_BUTTON = "right"
 
 
 # ── Specs ────────────────────────────────────────────────────────────────────
@@ -101,6 +125,46 @@ class JumpSpec:
 
     def as_dict(self) -> dict:
         return {"duration": self.duration}
+
+
+@dataclass(frozen=True)
+class HoldSpec:
+    """A bounded hold of any combination of keys and mouse buttons.
+
+    One shape for attack, use_item, sneak and sprint, because from the
+    controller's point of view they differ only in what goes down and for how
+    long -- and a single hold path means a single release path."""
+
+    action: str
+    keys: tuple = ()
+    buttons: tuple = ()
+    duration: float = 0.0
+    requested_duration: float = 0.0
+    detail: dict = None
+
+    @property
+    def clamped(self) -> bool:
+        return abs(self.duration - self.requested_duration) > 1e-9
+
+    def as_dict(self) -> dict:
+        out = {"duration": self.duration,
+               "requested_duration": self.requested_duration}
+        if self.detail:
+            out.update(self.detail)
+        return out
+
+
+@dataclass(frozen=True)
+class HotbarSpec:
+    """Selecting a hotbar slot. A tap, not a hold -- there is no duration to
+    bound, so the only validation is that the slot exists."""
+
+    slot: int
+    key: str
+    clamped: bool = False
+
+    def as_dict(self) -> dict:
+        return {"slot": self.slot}
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
@@ -192,6 +256,111 @@ def parse_jump(params: dict) -> JumpSpec:
     return JumpSpec()
 
 
+def _bounded_duration(params: dict, default: float, maximum: float) -> tuple:
+    """Shared duration handling: validate, clamp, and keep what was asked.
+
+    Returns (duration, requested). Clamping rather than refusing, for the
+    reason in the module docstring -- but the requested value survives so the
+    caller can tell the planner it did not get what it asked for."""
+    requested = _as_float((params or {}).get("duration", default), "duration")
+    if requested <= 0:
+        raise InvalidAction("'duration' must be greater than zero seconds.")
+    return max(MIN_MOVE_DURATION_S, min(requested, maximum)), requested
+
+
+def _optional_direction(params: dict) -> str:
+    """A direction to travel in while sneaking or sprinting, or ''."""
+    raw = str((params or {}).get("direction", "")).strip().lower()
+    if not raw:
+        return ""
+    if raw not in MOVE_KEYS:
+        raise InvalidAction(
+            f"'{raw}' is not a direction I can walk. "
+            f"One of: {', '.join(DIRECTIONS)}."
+        )
+    return raw
+
+
+def parse_attack(params: dict) -> HoldSpec:
+    """Hold the attack button for a bounded time.
+
+    Takes no target. Minecraft attacks whatever is under the crosshair, so
+    aiming is a `look` and hitting is this -- keeping them separate means the
+    planner has to observe between them, which is where verification lives."""
+    for unsupported in ("target", "block", "entity", "at", "position"):
+        if unsupported in (params or {}):
+            raise InvalidAction(
+                f"Attack takes no '{unsupported}'. I hit whatever is under the "
+                f"crosshair, so aim first with 'look', check what you are "
+                f"looking at with 'read_state', then attack."
+            )
+    duration, requested = _bounded_duration(params, 0.5, MAX_ATTACK_DURATION_S)
+    return HoldSpec(action="attack", buttons=(ATTACK_BUTTON,),
+                    duration=duration, requested_duration=requested)
+
+
+def parse_use_item(params: dict) -> HoldSpec:
+    """Hold the use button: place a block, eat, open a door."""
+    for unsupported in ("item", "slot", "target", "block"):
+        if unsupported in (params or {}):
+            raise InvalidAction(
+                f"Use takes no '{unsupported}'. It uses whatever is in your "
+                f"hand on whatever is under the crosshair -- select the item "
+                f"first with 'hotbar_select'."
+            )
+    duration, requested = _bounded_duration(params, 0.2, MAX_USE_DURATION_S)
+    return HoldSpec(action="use_item", buttons=(USE_BUTTON,),
+                    duration=duration, requested_duration=requested)
+
+
+def parse_sneak(params: dict) -> HoldSpec:
+    """Hold sneak, optionally while walking.
+
+    Sneaking in place is genuinely useful -- it is what stops you walking off
+    an edge -- so `direction` is optional rather than required."""
+    direction = _optional_direction(params)
+    duration, requested = _bounded_duration(params, 0.5, MAX_SNEAK_DURATION_S)
+    keys = (SNEAK_KEY,) + ((MOVE_KEYS[direction],) if direction else ())
+    return HoldSpec(action="sneak", keys=keys, duration=duration,
+                    requested_duration=requested,
+                    detail={"direction": direction or None})
+
+
+def parse_sprint(params: dict) -> HoldSpec:
+    """Hold sprint plus a direction.
+
+    Unlike sneak, the direction is required: sprinting on the spot is not a
+    thing Minecraft does, and accepting it would have the planner believe it
+    had moved."""
+    direction = _optional_direction(params) or "forward"
+    duration, requested = _bounded_duration(params, 1.0, MAX_SPRINT_DURATION_S)
+    return HoldSpec(action="sprint",
+                    keys=(SPRINT_KEY, MOVE_KEYS[direction]),
+                    duration=duration, requested_duration=requested,
+                    detail={"direction": direction})
+
+
+def parse_hotbar(params: dict) -> HotbarSpec:
+    """Select hotbar slot 1-9. Out of range is refused, not clamped.
+
+    Clamping is right for a duration, where the useful part of the action
+    still happens. It is wrong here: asking for slot 12 and silently getting
+    slot 9 would have the planner believe it is holding something it is not,
+    and every action after that reasons from a false premise."""
+    params = params or {}
+    if "slot" not in params:
+        raise InvalidAction(
+            f"Which hotbar slot? {HOTBAR_SLOTS[0]} to {HOTBAR_SLOTS[-1]}."
+        )
+    slot = _as_int(params.get("slot"), "slot")
+    if slot not in HOTBAR_SLOTS:
+        raise InvalidAction(
+            f"There is no hotbar slot {slot}. The hotbar is "
+            f"{HOTBAR_SLOTS[0]} to {HOTBAR_SLOTS[-1]}."
+        )
+    return HotbarSpec(slot=slot, key=str(slot))
+
+
 def limits() -> dict:
     """The numbers, for a status report and for the tool description, so the
     model is told the bounds rather than discovering them by being refused."""
@@ -201,12 +370,21 @@ def limits() -> dict:
         "max_look_delta_px": MAX_LOOK_DELTA_PX,
         "jump_tap_s": JUMP_TAP_S,
         "directions": list(DIRECTIONS),
+        "max_attack_duration_s": MAX_ATTACK_DURATION_S,
+        "max_use_duration_s": MAX_USE_DURATION_S,
+        "max_sneak_duration_s": MAX_SNEAK_DURATION_S,
+        "max_sprint_duration_s": MAX_SPRINT_DURATION_S,
+        "hotbar_slots": list(HOTBAR_SLOTS),
     }
 
 
 __all__ = [
-    "MoveSpec", "LookSpec", "JumpSpec",
-    "parse_move", "parse_look", "parse_jump", "limits",
+    "MoveSpec", "LookSpec", "JumpSpec", "HoldSpec", "HotbarSpec",
+    "parse_move", "parse_look", "parse_jump", "parse_attack",
+    "parse_use_item", "parse_sneak", "parse_sprint", "parse_hotbar", "limits",
     "MAX_MOVE_DURATION_S", "MIN_MOVE_DURATION_S", "MAX_LOOK_DELTA_PX",
-    "JUMP_TAP_S", "MOVE_KEYS", "DIRECTIONS",
+    "MAX_ATTACK_DURATION_S", "MAX_USE_DURATION_S", "MAX_SNEAK_DURATION_S",
+    "MAX_SPRINT_DURATION_S", "HOTBAR_SLOTS",
+    "JUMP_TAP_S", "MOVE_KEYS", "DIRECTIONS", "SNEAK_KEY", "SPRINT_KEY",
+    "ATTACK_BUTTON", "USE_BUTTON",
 ]

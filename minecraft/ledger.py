@@ -10,9 +10,17 @@ THE INVARIANT
     process — none of those release W. The operating system keeps it down until
     something explicitly sends the key-up.
 
-    So the set of held keys lives here, apart from the controller, behind a
+    So the set of held inputs lives here, apart from the controller, behind a
     reentrant lock, and `release_all()` is callable from any thread at any time
     including from inside a signal path or an `atexit` hook.
+
+KEYS AND MOUSE BUTTONS ARE THE SAME PROBLEM
+    A held left mouse button is worse than a held W. Focus moves, and the click
+    lands on whatever is now in front — a desktop icon, a browser tab, a
+    Confirm button. So buttons live in this same ledger under the reserved
+    names `mouse:left` and `mouse:right`, are subject to the same deadman
+    timeout, and come up in the same `release_all()`. There is no second path
+    that presses a button without recording it.
 
 RECORD FIRST, THEN PRESS
     `hold()` adds the key to the ledger BEFORE asking the backend to press it.
@@ -44,6 +52,25 @@ from dataclasses import dataclass, field
 MAX_HOLD_SECONDS = 2.5
 
 _RELEASE_ATTEMPTS = 2
+
+
+BUTTON_PREFIX = "mouse:"
+
+
+def button_token(button: str) -> str:
+    """The ledger name for a mouse button.
+
+    Prefixed so one dict holds both kinds without a key ever colliding with a
+    button: no entry in the scan-code table contains a colon."""
+    return f"{BUTTON_PREFIX}{button}"
+
+
+def is_button(token: str) -> bool:
+    return token.startswith(BUTTON_PREFIX)
+
+
+def button_name(token: str) -> str:
+    return token[len(BUTTON_PREFIX):] if is_button(token) else token
 
 
 @dataclass
@@ -136,6 +163,18 @@ class InputLedger:
             # which is harmless, and the caller sees the exception.
             raise
 
+    def hold_button(self, button: str) -> None:
+        """Press and record a mouse button. Same ordering rule as `hold()`:
+        the ledger entry exists before the button goes down, so a press that
+        fails leaves a harmless redundant release rather than an untracked
+        held button."""
+        token = button_token(button)
+        with self._lock:
+            if token in self._held:
+                return
+            self._held[token] = _Held(key=token)
+        self._backend.button_down(button)
+
     def release(self, key: str) -> bool:
         """Release one key. True if the backend accepted it."""
         with self._lock:
@@ -174,10 +213,18 @@ class InputLedger:
 
         return ReleaseReport(released=tuple(released), failed=tuple(failed))
 
-    def _release_one(self, key: str) -> bool:
+    def _release_one(self, token: str) -> bool:
+        """Send the right kind of release for this token.
+
+        Dispatching here rather than at the call site is what makes
+        `release_all()` able to stay a single loop that knows nothing about
+        what kind of input it is letting go of."""
         for _attempt in range(_RELEASE_ATTEMPTS):
             try:
-                self._backend.key_up(key)
+                if is_button(token):
+                    self._backend.button_up(button_name(token))
+                else:
+                    self._backend.key_up(token)
                 return True
             except Exception:
                 continue
@@ -192,4 +239,5 @@ class InputLedger:
         self._backend.move_mouse_relative(int(dx), int(dy))
 
 
-__all__ = ["InputLedger", "ReleaseReport", "MAX_HOLD_SECONDS"]
+__all__ = ["InputLedger", "ReleaseReport", "MAX_HOLD_SECONDS",
+           "BUTTON_PREFIX", "button_token", "is_button", "button_name"]

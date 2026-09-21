@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from core import capabilities as core_caps
 
-PHASE = "2"
+PHASE = "3"
 """Bumped when a later phase enables more. Recorded in the audit log so a log
 line can be read against the code that produced it."""
 
@@ -35,19 +35,27 @@ ENABLED = frozenset({
     core_caps.MINECRAFT_CONTROL_SESSION,
     core_caps.MINECRAFT_MOVE,
     core_caps.MINECRAFT_LOOK,
+    core_caps.MINECRAFT_JUMP,
     core_caps.MINECRAFT_STOP,
+    # Phase 3: interacting with the world, and doing it more than once.
+    core_caps.MINECRAFT_ATTACK,
+    core_caps.MINECRAFT_USE_ITEM,
+    core_caps.MINECRAFT_HOTBAR,
+    core_caps.MINECRAFT_SNEAK,
+    core_caps.MINECRAFT_SPRINT,
+    core_caps.MINECRAFT_TASK,
 })
-"""What Phase 2 can attempt: look at the game, describe what it knows, open a
-bounded session, walk, turn, and stop.
+"""What Phase 3 can attempt: everything Phase 2 could, plus mining, placing,
+hotbar selection, sneaking, sprinting, and bounded multi-step tasks.
 
-Deliberately absent: attack, use_item, inventory, chat, command, launch."""
+Deliberately still absent: inventory, chat, command, launch.
+
+Note that attack and use_item being in this set is NOT what makes them
+reachable. They additionally require a session opened with interaction
+granted — see `Session.allow_interaction`. This set says "the code exists";
+the session says "you may use it on my world"."""
 
 DISABLED_REASON = {
-    core_caps.MINECRAFT_ATTACK:
-        "Mining and fighting are not built yet — they need verified state to "
-        "know whether the swing landed.",
-    core_caps.MINECRAFT_USE_ITEM:
-        "Placing and using items is not built yet.",
     core_caps.MINECRAFT_INVENTORY:
         "Inventory handling is not built yet — it needs a real state source to "
         "know what is in which slot.",

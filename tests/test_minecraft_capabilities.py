@@ -67,9 +67,10 @@ class TestCentralTableOwnsTheVerdicts(unittest.TestCase):
             "a DENY capability must not be offered as a confirmation")
 
     def test_the_unbuilt_capabilities_are_declared_but_not_enabled(self):
-        for capability in (core_caps.MINECRAFT_ATTACK,
-                           core_caps.MINECRAFT_USE_ITEM,
-                           core_caps.MINECRAFT_INVENTORY,
+        # attack and use_item left this list in Phase 3 — they are built now.
+        # What replaced their phase-gate protection is asserted below, in
+        # TestWorldChangingActionsNeedAGrant.
+        for capability in (core_caps.MINECRAFT_INVENTORY,
                            core_caps.MINECRAFT_CHAT,
                            core_caps.MINECRAFT_LAUNCH):
             with self.subTest(capability=capability):
@@ -80,8 +81,8 @@ class TestCentralTableOwnsTheVerdicts(unittest.TestCase):
     def test_a_disabled_capability_would_still_confirm_if_it_were_enabled(self):
         # Defence in depth: removing the phase gate must not silently make
         # these free.
-        for capability in (core_caps.MINECRAFT_ATTACK,
-                           core_caps.MINECRAFT_USE_ITEM,
+        for capability in (core_caps.MINECRAFT_INVENTORY,
+                           core_caps.MINECRAFT_LAUNCH,
                            core_caps.MINECRAFT_CHAT):
             with self.subTest(capability=capability):
                 self.assertTrue(core_caps.requires_confirmation(capability))
@@ -91,6 +92,89 @@ class TestCentralTableOwnsTheVerdicts(unittest.TestCase):
         self.assertEqual(core_caps.decision_for(core_caps.MINECRAFT_STOP),
                          core_caps.ALLOW)
         self.assertIn(core_caps.MINECRAFT_STOP, mc_phase.ENABLED)
+
+
+class TestWorldChangingActionsNeedAGrant(unittest.TestCase):
+    """The replacement for the CONFIRM verdict attack used to carry.
+
+    In Phase 2, `minecraft.attack` was CONFIRM because it was unimplemented.
+    Building it made a per-call confirmation actively harmful — breaking one
+    log takes several swings, so CONFIRM meant a dialog per swing, and a
+    dialog per swing teaches people to dismiss dialogs unread.
+
+    So the consent moved to the session and got more specific. These tests
+    assert that it actually moved, rather than evaporated: the verdict is now
+    ALLOW, and the thing standing between a model and your world is
+    `Session.allow_interaction`. If someone ever deletes that check, this
+    fails."""
+
+    def _controller(self):
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_minecraft_controller import FakeLocator, FakeProcess
+        from minecraft.controller import MinecraftController
+        from minecraft.input_backend import FakeInputBackend
+        from minecraft.session import SessionManager
+        backend = FakeInputBackend()
+        return MinecraftController(
+            backend=backend, locator=FakeLocator(), sessions=SessionManager(),
+            process_module=FakeProcess(), start_watchers=False), backend
+
+    def test_the_verdict_alone_does_not_make_attack_reachable(self):
+        self.assertEqual(core_caps.decision_for(core_caps.MINECRAFT_ATTACK),
+                         core_caps.ALLOW)
+        controller, backend = self._controller()
+        try:
+            controller.start_session(duration_s=30)      # no grant asked for
+            result = controller.attack({"duration": 0.05})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.stopped_reason, "interaction_not_granted")
+            # And no button was pressed at all — refused before the input,
+            # not after it.
+            self.assertEqual(backend.button_downs(), [])
+        finally:
+            controller.stop("test")
+
+    def test_use_item_needs_the_same_grant(self):
+        controller, backend = self._controller()
+        try:
+            controller.start_session(duration_s=30)
+            result = controller.use_item({"duration": 0.05})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.stopped_reason, "interaction_not_granted")
+            self.assertEqual(backend.button_downs(), [])
+        finally:
+            controller.stop("test")
+
+    def test_a_granted_session_allows_it_and_still_releases(self):
+        controller, backend = self._controller()
+        try:
+            controller.start_session(duration_s=30, allow_interaction=True)
+            result = controller.attack({"duration": 0.05})
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(backend.button_downs(), ["left"])
+            self.assertEqual(backend.button_ups(), ["left"])
+            self.assertEqual(controller.ledger.held(), frozenset())
+        finally:
+            controller.stop("test")
+
+    def test_movement_does_not_need_the_grant(self):
+        """The grant is about changing the world, not about control. Walking
+        in a session that did not ask for interaction must still work."""
+        controller, _ = self._controller()
+        try:
+            controller.start_session(duration_s=30)
+            result = controller.move({"direction": "forward",
+                                      "duration": 0.05})
+            self.assertTrue(result.ok, result.error)
+        finally:
+            controller.stop("test")
+
+    def test_the_default_session_does_not_grant_interaction(self):
+        """A caller who forgets the flag gets the safe session."""
+        from minecraft.session import SessionManager
+        session = SessionManager().start(duration_s=30)
+        self.assertFalse(session.allow_interaction)
 
 
 class TestToolRefusesDisabledCapabilities(unittest.TestCase):

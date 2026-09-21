@@ -56,7 +56,19 @@ class Session:
     granted_seconds: float
     cancel: threading.Event = field(default_factory=threading.Event)
     ended_reason: str = ""
+    allow_interaction: bool = False
     _ended: bool = False
+
+    # ── what this grant covers ───────────────────────────────────────────────
+    #
+    # Movement and looking come with any session. Mining and placing do not:
+    # they change the world, and undoing a mistake in survival means finding
+    # the block again. So they need a session opened with interaction asked
+    # for by name, and the confirmation for that session says so in as many
+    # words.
+    #
+    # This flag, not the capability verdict, is what makes attack safe. See
+    # MINECRAFT_ATTACK in core/capabilities.py.
 
     @property
     def active(self) -> bool:
@@ -87,6 +99,7 @@ class Session:
             "remaining_seconds": round(self.remaining, 1),
             "age_seconds": round(self.age, 1),
             "ended_reason": self.ended_reason,
+            "allow_interaction": self.allow_interaction,
         }
 
 
@@ -104,11 +117,15 @@ class SessionManager:
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     def start(self, duration_s: float | None = None,
-              owner: str = "user") -> Session:
+              owner: str = "user",
+              allow_interaction: bool = False) -> Session:
         """Open a session. Raises RuntimeError if one is already live.
 
         Called from inside the broker's approved-run callback, so by the time
-        this executes a human has pressed CONFIRM."""
+        this executes a human has pressed CONFIRM.
+
+        `allow_interaction` defaults to False so that a caller who forgets to
+        pass it gets the safe session, not the destructive one."""
         requested = float(duration_s if duration_s is not None
                           else DEFAULT_SESSION_SECONDS)
         granted = max(MIN_SESSION_SECONDS,
@@ -128,6 +145,7 @@ class SessionManager:
                 expires_at=now + granted,
                 requested_seconds=requested,
                 granted_seconds=granted,
+                allow_interaction=bool(allow_interaction),
             )
             return self._session
 

@@ -44,8 +44,9 @@ from dataclasses import dataclass, field
 from minecraft import action_spec, process as mc_process
 from minecraft.emergency import EmergencyStopWatcher
 from minecraft.errors import (
-    EmergencyStop, InputBackendUnavailable, InvalidAction, MinecraftNotRunning,
-    NoActiveSession, SessionExpired, WindowNotFocused, WindowNotFound,
+    EmergencyStop, InputBackendUnavailable, InteractionNotGranted,
+    InvalidAction, MinecraftNotRunning, NoActiveSession, SessionExpired,
+    WindowNotFocused, WindowNotFound,
 )
 from minecraft.input_backend import create_backend
 from minecraft.ledger import InputLedger, MAX_HOLD_SECONDS
@@ -317,7 +318,8 @@ class MinecraftController:
     # ── sessions ─────────────────────────────────────────────────────────────
 
     def start_session(self, duration_s: float | None = None,
-                      owner: str = "user") -> dict:
+                      owner: str = "user",
+                      allow_interaction: bool = False) -> dict:
         """Open a control session. The broker has already confirmed by here.
 
         Attaching to the window first means a session cannot open against a
@@ -332,7 +334,8 @@ class MinecraftController:
             self._cancel.clear()
             self._last_stop_reason = ""
 
-        session = self._sessions.start(duration_s=duration_s, owner=owner)
+        session = self._sessions.start(duration_s=duration_s, owner=owner,
+                                       allow_interaction=allow_interaction)
         self._start_watchers()
 
         return {
@@ -353,11 +356,25 @@ class MinecraftController:
 
     def _hold_for(self, key: str, seconds: float, action: str,
                   requested: dict, clamped: bool) -> ActionResult:
-        """Hold one key for up to `seconds`, re-checking the world every tick.
+        """One key. Kept as the narrow case of `_hold_inputs`."""
+        return self._hold_inputs((key,), (), seconds, action, requested,
+                                 clamped)
+
+    def _hold_inputs(self, keys: tuple, buttons: tuple, seconds: float,
+                     action: str, requested: dict,
+                     clamped: bool) -> ActionResult:
+        """Hold keys and/or mouse buttons for up to `seconds`, re-checking the
+        world every tick.
 
         The `finally` is the important line in this function: whatever happens
         — a guard failure, a backend error, a cancelled session, an exception
-        nobody predicted — the key comes up before this returns."""
+        nobody predicted — everything comes up before this returns. That now
+        includes mouse buttons, which matter more than keys: a left-click that
+        outlives focus lands on whatever window is in front.
+
+        Every input goes down through the ledger before the timing loop starts,
+        so a failure part-way through a multi-key hold still has every earlier
+        input recorded and therefore released."""
         started = time.monotonic()
         stopped_reason: str | None = None
         focused_throughout = True
@@ -378,7 +395,10 @@ class MinecraftController:
             self._action_in_flight = action
 
         try:
-            self._ledger.hold(key)
+            for key in keys:
+                self._ledger.hold(key)
+            for button in buttons:
+                self._ledger.hold_button(button)
             deadline = started + min(seconds, MAX_HOLD_SECONDS)
 
             while time.monotonic() < deadline:
@@ -430,6 +450,81 @@ class MinecraftController:
         spec = action_spec.parse_jump(params or {})
         return self._hold_for(spec.key, spec.duration, "jump",
                               spec.as_dict(), spec.clamped)
+
+    def _require_interaction(self, action: str) -> ActionResult | None:
+        """Refuse a world-changing action unless the session asked for it.
+
+        Checked here rather than in the adapter so it holds for every caller,
+        including the task runner — a skill cannot mine its way around a
+        session that was opened for walking."""
+        session = self._sessions.current
+
+        # No live session at all? Say nothing here and let the ordinary
+        # pre-flight check answer. Both refusals would be true, but
+        # "interaction_not_granted" would send someone off to add a flag to a
+        # session that does not exist, when what they need is to start one.
+        if session is None or not session.active:
+            return None
+
+        if session.allow_interaction:
+            return None
+        return ActionResult(
+            ok=False, action=action, requested={},
+            stopped_reason="interaction_not_granted",
+            error_class="InteractionNotGranted",
+            error=("This session only covers moving and looking. Mining and "
+                   "placing change the world, so they need a session started "
+                   "with interaction allowed — ask me to start one and "
+                   "confirm it."),
+        )
+
+    def attack(self, params: dict | None = None) -> ActionResult:
+        """Hold the attack button. Hits whatever is under the crosshair.
+
+        Deliberately says nothing about whether anything broke — that is
+        `minecraft/verification.py`'s job, and conflating the two is how an
+        agent ends up reporting a tree felled that is still standing."""
+        refusal = self._require_interaction("attack")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_attack(params or {})
+        return self._hold_inputs((), spec.buttons, spec.duration, "attack",
+                                 spec.as_dict(), spec.clamped)
+
+    def use_item(self, params: dict | None = None) -> ActionResult:
+        refusal = self._require_interaction("use_item")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_use_item(params or {})
+        return self._hold_inputs((), spec.buttons, spec.duration, "use_item",
+                                 spec.as_dict(), spec.clamped)
+
+    def sneak(self, params: dict | None = None) -> ActionResult:
+        spec = action_spec.parse_sneak(params or {})
+        return self._hold_inputs(spec.keys, (), spec.duration, "sneak",
+                                 spec.as_dict(), spec.clamped)
+
+    def sprint(self, params: dict | None = None) -> ActionResult:
+        spec = action_spec.parse_sprint(params or {})
+        return self._hold_inputs(spec.keys, (), spec.duration, "sprint",
+                                 spec.as_dict(), spec.clamped)
+
+    def hotbar_select(self, params: dict | None = None) -> ActionResult:
+        """Tap a number key. The shortest action there is, and still guarded:
+        a number key delivered to the wrong window types a digit into it."""
+        spec = action_spec.parse_hotbar(params or {})
+        return self._hold_inputs((spec.key,), (), action_spec.JUMP_TAP_S,
+                                 "hotbar_select", spec.as_dict(), spec.clamped)
+
+    def toggle_debug_overlay(self) -> ActionResult:
+        """Tap F3.
+
+        Needed because reading state requires the overlay to be open, and
+        asking the user to press it themselves every time makes the whole
+        state pipeline feel broken. It is an input action like any other, so
+        it needs a live session and passes the same guard."""
+        return self._hold_inputs(("f3",), (), action_spec.JUMP_TAP_S,
+                                 "toggle_debug_overlay", {}, False)
 
     def look(self, params: dict) -> ActionResult:
         """One relative mouse delta. Nothing is held, so there is nothing to
@@ -514,6 +609,8 @@ def _reason_for(error: Exception) -> str:
 def _explain(reason: str | None) -> str:
     """A sentence for a reason code, for the model to relay to the user."""
     return {
+        "interaction_not_granted": "This session does not allow mining or "
+                                   "placing blocks.",
         "focus_lost": "Minecraft stopped being the active window, so I let go "
                       "of everything and stopped.",
         "focus_unknown": "I could not confirm Minecraft had focus, so I "

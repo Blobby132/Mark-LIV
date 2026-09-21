@@ -21,12 +21,34 @@ THE RULE THIS FILE ENFORCES
 
     A planner that acts on `health=None` has to handle it. A planner that acts
     on a guessed `health=20` walks into lava. The None is the useful answer.
+
+PROVENANCE IS PER FIELD, NOT PER STATE
+    One state can mix sources. The F3 overlay gives an exact position and says
+    nothing about health; a later mod bridge gives both. A single state-level
+    `confidence` would have to describe that with one word, and the only honest
+    word would be the worst one — which throws away the fact that the position
+    IS trustworthy.
+
+    So `provenance` maps each field to its own level, and `confidence` remains
+    as the summary (the weakest level among the fields that actually have
+    values). `confidence_of("position")` is what a planner should ask.
+
+THE INVARIANT `__post_init__` ENFORCES
+    A field that is None has provenance "unknown". Always, with no way to
+    override it.
+
+    That is the "do not fabricate" rule made mechanical rather than
+    remembered: a source cannot hand back `health=None, provenance={"health":
+    "exact"}` and have anything downstream believe the health reading is
+    trustworthy. Claiming knowledge of a value you do not have is rejected at
+    construction, not caught in review.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Protocol
 
 UNKNOWN = "unknown"
@@ -82,6 +104,7 @@ class WorldState:
     # Where and which way
     position: tuple | None = None          # (x, y, z)
     rotation: tuple | None = None          # (yaw, pitch) in degrees
+    facing: str | None = None              # cardinal: north/south/east/west
 
     # Condition
     health: float | None = None            # 0-20
@@ -90,6 +113,7 @@ class WorldState:
     # Carrying
     inventory: tuple | None = None         # tuple[ItemStack, ...]
     selected_slot: int | None = None       # 0-8
+    held_item: ItemStack | None = None
 
     # Looking at
     target_block: BlockRef | None = None
@@ -97,7 +121,10 @@ class WorldState:
 
     # Around
     dimension: str | None = None           # overworld / nether / the_end
+    biome: str | None = None
+    weather: str | None = None             # clear / rain / thunder
     time_of_day: int | None = None         # 0-24000 ticks
+    light_level: int | None = None         # 0-15
     nearby_entities: tuple | None = None   # tuple[EntityRef, ...]
 
     # Provenance — never None, because "where did this come from" always has
@@ -107,11 +134,53 @@ class WorldState:
     captured_at: float = field(default_factory=time.time)
     notes: str = ""
 
+    # field name -> one of CONFIDENCE_LEVELS. Normalised and frozen in
+    # __post_init__; read it through confidence_of().
+    provenance: dict = field(default_factory=dict)
+
     # ── introspection ────────────────────────────────────────────────────────
 
-    _FIELDS = ("position", "rotation", "health", "hunger", "inventory",
-               "selected_slot", "target_block", "target_entity", "dimension",
-               "time_of_day", "nearby_entities")
+    _FIELDS = ("position", "rotation", "facing", "health", "hunger",
+               "inventory", "selected_slot", "held_item", "target_block",
+               "target_entity", "dimension", "biome", "weather",
+               "time_of_day", "light_level", "nearby_entities")
+
+    def __post_init__(self):
+        """Normalise provenance, then freeze it.
+
+        Three rules, in order:
+          * a field that is None is "unknown", whatever was claimed for it;
+          * a field that has a value but no entry inherits the state-level
+            `confidence`, so a source that sets one level for everything does
+            not have to spell out sixteen entries;
+          * an unrecognised level is discarded rather than trusted.
+        """
+        clean = {}
+        for name in self._FIELDS:
+            has_value = getattr(self, name) is not None
+            claimed = self.provenance.get(name) if self.provenance else None
+            if not has_value:
+                clean[name] = UNKNOWN
+            elif claimed in CONFIDENCE_LEVELS:
+                clean[name] = claimed
+            else:
+                clean[name] = (self.confidence if self.confidence
+                               in CONFIDENCE_LEVELS else UNKNOWN)
+        object.__setattr__(self, "provenance", MappingProxyType(clean))
+
+    def confidence_of(self, name: str) -> str:
+        """How trustworthy one field is. The planner's real question — a state
+        can hold an exact position next to an unknown health."""
+        return self.provenance.get(name, UNKNOWN)
+
+    def fields_at_least(self, level: str) -> tuple:
+        """Fields known to at least `level`. Lets a planner say "only act on
+        what is exact" without knowing which source supplied what."""
+        if level not in CONFIDENCE_LEVELS:
+            return ()
+        floor = CONFIDENCE_LEVELS.index(level)
+        return tuple(name for name in self._FIELDS
+                     if CONFIDENCE_LEVELS.index(self.confidence_of(name)) >= floor)
 
     def known_fields(self) -> tuple:
         """Which fields actually have a value. The planner's first question."""
@@ -148,6 +217,8 @@ class WorldState:
             "captured_at": self.captured_at,
             "known_fields": list(self.known_fields()),
             "unknown_fields": list(self.unknown_fields()),
+            "provenance": {k: v for k, v in self.provenance.items()
+                           if v != UNKNOWN},
             "notes": self.notes,
         })
         return out
@@ -164,8 +235,13 @@ class WorldState:
             return (f"I cannot read any game state yet ({why}). I can see the "
                     f"screen, but I do not know your position, health or "
                     f"inventory.")
-        parts = [f"{name}={getattr(self, name)}" for name in known]
-        return (f"From {self.source} ({self.confidence}): " + ", ".join(parts))
+        parts = [f"{name}={getattr(self, name)} [{self.confidence_of(name)}]"
+                 for name in known]
+        missing = self.unknown_fields()
+        line = f"From {self.source}: " + ", ".join(parts)
+        if missing:
+            line += f". Still unknown: {', '.join(missing)}."
+        return line
 
 
 # ── The seam ─────────────────────────────────────────────────────────────────

@@ -5,9 +5,9 @@ WHY NOT REUSE actions/computer_control.py
     That module can press any key, anywhere, with any modifier. Reusing it
     would make "JARVIS can walk forward in Minecraft" mean "JARVIS can send
     arbitrary keystrokes to Windows", which is exactly the conflation this
-    package exists to prevent. So this backend has its own vocabulary, and the
-    vocabulary is a frozen dict of sixteen keys. There is no function here that
-    takes a keycode.
+    package exists to prevent. So this backend has its own vocabulary: a frozen
+    dict of movement, hotbar and UI keys, plus exactly two mouse buttons. There
+    is no function here that takes a keycode, and no way to add one at runtime.
 
     ALT, the Windows key, F4, and every combination are not "blocked" by a
     filter that could be bypassed — they are absent. `key_down("alt")` raises
@@ -70,6 +70,12 @@ _SCANCODES: dict[str, int] = {
 
 ALLOWED_KEYS = frozenset(_SCANCODES)
 
+# The mouse buttons, and only these two. Attack is left, use/place is right.
+# Middle-click (pick block) is absent because nothing in this phase needs it,
+# and the vocabulary is the allowlist -- see the module docstring.
+_BUTTONS = ("left", "right")
+ALLOWED_BUTTONS = frozenset(_BUTTONS)
+
 # Names a planner might reasonably try that are refused on purpose, mapped to
 # why — so the refusal teaches rather than just failing.
 _EXPLAINED_REFUSALS = {
@@ -122,17 +128,39 @@ def validate_key(key: str) -> str:
     )
 
 
+def validate_button(button: str) -> str:
+    """Normalise and check a mouse button name, or raise `InvalidAction`."""
+    if not isinstance(button, str):
+        raise InvalidAction(f"A mouse button must be named 'left' or 'right', "
+                            f"not {type(button).__name__}.")
+    name = button.strip().lower()
+    if name in ALLOWED_BUTTONS:
+        return name
+    if name in ("middle", "wheel", "scroll", "m3"):
+        raise InvalidAction(
+            "The middle mouse button is not available -- nothing in this "
+            "version needs it."
+        )
+    raise InvalidAction(
+        f"'{button}' is not a mouse button I can press. The ones I can are: "
+        f"{', '.join(_BUTTONS)}."
+    )
+
+
 # ── The contract ─────────────────────────────────────────────────────────────
 
 class InputBackend(Protocol):
-    """What the controller needs. Deliberately four methods and no more —
-    there is no `press_any`, no `type_text`, no `hotkey`."""
+    """What the controller needs. Deliberately six methods and no more —
+    there is no `press_any`, no `type_text`, no `hotkey`, and no method that
+    takes a raw keycode or a screen coordinate."""
 
     name: str
     available: bool
 
     def key_down(self, key: str) -> None: ...
     def key_up(self, key: str) -> None: ...
+    def button_down(self, button: str) -> None: ...
+    def button_up(self, button: str) -> None: ...
     def move_mouse_relative(self, dx: int, dy: int) -> None: ...
     def describe(self) -> str: ...
 
@@ -156,6 +184,14 @@ class UnavailableBackend:
 
     def key_up(self, key: str) -> None:
         validate_key(key)
+        raise InputBackendUnavailable(self._reason)
+
+    def button_down(self, button: str) -> None:
+        validate_button(button)
+        raise InputBackendUnavailable(self._reason)
+
+    def button_up(self, button: str) -> None:
+        validate_button(button)
         raise InputBackendUnavailable(self._reason)
 
     def move_mouse_relative(self, dx: int, dy: int) -> None:
@@ -193,6 +229,15 @@ if _IS_WINDOWS:                                       # pragma: no cover
     _KEYEVENTF_KEYUP = 0x0002
     _KEYEVENTF_EXTENDEDKEY = 0x0001
     _MOUSEEVENTF_MOVE = 0x0001
+    _MOUSEEVENTF_LEFTDOWN = 0x0002
+    _MOUSEEVENTF_LEFTUP = 0x0004
+    _MOUSEEVENTF_RIGHTDOWN = 0x0008
+    _MOUSEEVENTF_RIGHTUP = 0x0010
+
+    _BUTTON_FLAGS = {
+        "left":  (_MOUSEEVENTF_LEFTDOWN, _MOUSEEVENTF_LEFTUP),
+        "right": (_MOUSEEVENTF_RIGHTDOWN, _MOUSEEVENTF_RIGHTUP),
+    }
 
     # Scan codes that need the extended-key flag to be delivered correctly.
     _EXTENDED = frozenset()
@@ -229,6 +274,26 @@ if _IS_WINDOWS:                                       # pragma: no cover
 
         def key_up(self, key: str) -> None:
             self._send_key(key, up=True)
+
+        def _send_button(self, button: str, up: bool) -> None:
+            name = validate_button(button)
+            flags = _BUTTON_FLAGS[name][1 if up else 0]
+            event = _INPUT(type=_INPUT_MOUSE)
+            event.union.mi = _MOUSEINPUT(dx=0, dy=0, mouseData=0,
+                                         dwFlags=flags, time=0, dwExtraInfo=0)
+            sent = self._user32.SendInput(1, ctypes.byref(event),
+                                          ctypes.sizeof(_INPUT))
+            if sent != 1:
+                raise InputBackendUnavailable(
+                    f"Windows refused the {name}-button event (SendInput "
+                    f"returned {sent})."
+                )
+
+        def button_down(self, button: str) -> None:
+            self._send_button(button, up=False)
+
+        def button_up(self, button: str) -> None:
+            self._send_button(button, up=True)
 
         def move_mouse_relative(self, dx: int, dy: int) -> None:
             """Relative, never absolute.
@@ -287,6 +352,23 @@ class FakeInputBackend:
         self.events.append(("up", name))
         self.held.discard(name)
 
+    def button_down(self, button: str) -> None:
+        name = validate_button(button)
+        if not self.available:
+            raise InputBackendUnavailable("fake backend is unavailable")
+        if self._fail_on == "button_down":
+            raise InputBackendUnavailable("fake button_down failure")
+        self.events.append(("bdown", name))
+        self.held.add(f"mouse:{name}")
+
+    def button_up(self, button: str) -> None:
+        name = validate_button(button)
+        if self._fail_on == "button_up":
+            self.events.append(("bup_failed", name))
+            raise InputBackendUnavailable("fake button_up failure")
+        self.events.append(("bup", name))
+        self.held.discard(f"mouse:{name}")
+
     def move_mouse_relative(self, dx: int, dy: int) -> None:
         if not self.available:
             raise InputBackendUnavailable("fake backend is unavailable")
@@ -304,6 +386,12 @@ class FakeInputBackend:
 
     def mouse_moves(self) -> list[tuple[int, int]]:
         return [(e[1], e[2]) for e in self.events if e[0] == "mouse"]
+
+    def button_downs(self) -> list[str]:
+        return [e[1] for e in self.events if e[0] == "bdown"]
+
+    def button_ups(self) -> list[str]:
+        return [e[1] for e in self.events if e[0] == "bup"]
 
 
 def create_backend() -> InputBackend:
@@ -324,6 +412,6 @@ def create_backend() -> InputBackend:
 
 
 __all__ = [
-    "ALLOWED_KEYS", "InputBackend", "UnavailableBackend", "FakeInputBackend",
-    "create_backend", "validate_key",
+    "ALLOWED_KEYS", "ALLOWED_BUTTONS", "InputBackend", "UnavailableBackend",
+    "FakeInputBackend", "create_backend", "validate_key", "validate_button",
 ]

@@ -36,6 +36,9 @@ ADAPTER = Path("actions/minecraft.py")
 ALLOWED_STDLIB = frozenset({
     "__future__", "atexit", "ctypes", "dataclasses", "io", "os", "platform",
     "threading", "time", "typing", "uuid", "json", "math", "enum", "re",
+    # MappingProxyType, to freeze a WorldState's per-field provenance so a
+    # snapshot cannot be edited after the fact.
+    "types",
 })
 
 ALLOWED_CORE = frozenset({
@@ -157,6 +160,34 @@ class TestImportBoundary(unittest.TestCase):
             "the Minecraft package may only use core's permission, audit and "
             f"capability interfaces:\n  " + "\n  ".join(offenders))
 
+    def test_no_ocr_library_is_imported(self):
+        """OCR is the one Phase 3 dependency that would have smuggled a
+        subprocess back in.
+
+        pytesseract runs the Tesseract binary via subprocess. Importing it
+        anywhere under `minecraft/` would give this package a process spawn
+        again, and the honest way to permit that would be to weaken the test
+        above — so instead the reader lives in `core/ocr.py` and is injected.
+        `minecraft/debug_overlay.py` declares the interface and imports no
+        engine at all.
+
+        This is a separate test from the allowlist so that adding an OCR
+        library here requires deleting a test that says why not, rather than
+        appending one word to a set."""
+        engines = ("pytesseract", "tesseract", "easyocr", "paddleocr",
+                   "cv2", "numpy")
+        offenders = []
+        for path in _module_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for name, lineno in _imports(tree):
+                if _root(name) in engines:
+                    offenders.append(f"{path}:{lineno} imports {name}")
+        self.assertEqual(
+            offenders, [],
+            "the Minecraft package imported an OCR/vision engine directly. "
+            "Inject a reader from core/ocr.py instead:\n  "
+            + "\n  ".join(offenders))
+
     def test_exec_safe_is_not_imported(self):
         """Even the safe subprocess wrapper is out of bounds here. It is the
         right tool elsewhere; in this package it would be a process-spawning
@@ -231,6 +262,67 @@ class TestNoExecutionPrimitives(unittest.TestCase):
         self.assertEqual(offenders, [], f"filesystem writes: {offenders}")
 
 
+class TestTheNamedIsolationRequirements(unittest.TestCase):
+    """The isolation list, asserted one item at a time.
+
+    Most of these are already implied by the allowlist above. They are spelled
+    out separately because an allowlist failure reads as "unreviewed import"
+    and these read as "Minecraft can now send messages" — and the second is
+    the sentence that should appear in a diff."""
+
+    def _all_imports(self):
+        for path in _module_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for name, lineno in _imports(tree):
+                yield path, name, lineno
+
+    def test_no_shell_execution(self):
+        offenders = [f"{p}:{n}" for p, name, n in self._all_imports()
+                     if _root(name) in ("subprocess", "pty", "os")
+                     and name in ("subprocess", "pty")]
+        self.assertEqual(offenders, [])
+
+    def test_no_browser_control(self):
+        offenders = [f"{p}:{n} ({name})" for p, name, n in self._all_imports()
+                     if _root(name) in ("webbrowser", "playwright", "selenium")
+                     or name == "actions.browser_control"]
+        self.assertEqual(offenders, [],
+                         f"Minecraft can reach browser control: {offenders}")
+
+    def test_no_messaging(self):
+        offenders = [f"{p}:{n} ({name})" for p, name, n in self._all_imports()
+                     if _root(name) in ("smtplib", "email", "twilio")
+                     or name in ("actions.send_message", "actions.messaging")]
+        self.assertEqual(offenders, [],
+                         f"Minecraft can reach messaging: {offenders}")
+
+    def test_no_arbitrary_filesystem_access(self):
+        """`os` is allowed for `os.name` and path joins; `shutil`, `glob` and
+        `pathlib` writes are not. The write check above covers the calls; this
+        covers the imports that only exist to do bulk file work."""
+        offenders = [f"{p}:{n} ({name})" for p, name, n in self._all_imports()
+                     if _root(name) in ("shutil", "glob", "tempfile",
+                                        "fileinput")]
+        self.assertEqual(offenders, [])
+
+    def test_minecraft_command_is_denied_in_the_central_table(self):
+        from core import capabilities as core_caps
+        from minecraft import capabilities as mc_phase
+        self.assertEqual(core_caps.decision_for("minecraft.command"),
+                         core_caps.DENY)
+        self.assertNotIn(core_caps.MINECRAFT_COMMAND, mc_phase.ENABLED)
+
+    def test_an_unknown_minecraft_action_resolves_to_the_denied_capability(self):
+        """The fail-closed default. A sub-action nobody wrote must land on the
+        one capability that can never be granted, not on a permissive one."""
+        from actions.minecraft import _mc_capability
+        for invented in ("give_me_diamonds", "op", "", "  ", "execute",
+                         "run_command", None):
+            with self.subTest(action=invented):
+                self.assertEqual(_mc_capability({"action": invented}),
+                                 "minecraft.command")
+
+
 class TestTheOnlyWayInIsTheBroker(unittest.TestCase):
 
     def test_the_adapter_declares_a_capability_resolver(self):
@@ -248,6 +340,29 @@ class TestTheOnlyWayInIsTheBroker(unittest.TestCase):
         self.assertTrue(registry.has("minecraft_control"),
                         f"minecraft_control did not load: "
                         f"{[l for l in logs if 'minecraft' in l]}")
+
+    def test_the_planner_cannot_name_an_input_primitive(self):
+        """The task runner dispatches only through a fixed table. A skill that
+        returns an action outside it is refused, so the set of things a plan
+        can contain is decided in source rather than by whatever produced the
+        plan."""
+        from minecraft import task_runner
+        for forbidden in ("press", "type", "key_down", "key_up", "hotkey",
+                          "send_keys", "button_down", "move_mouse_relative",
+                          "chat", "command", "run", "exec", "eval"):
+            with self.subTest(action=forbidden):
+                self.assertNotIn(forbidden, task_runner.DISPATCH)
+
+    def test_every_dispatchable_action_has_a_capability(self):
+        """A task must not be able to reach an action the broker never rated.
+        Every entry in the runner's table has to appear in the adapter's
+        capability map, or a skill could take an unbrokered action."""
+        from actions.minecraft import _CAPABILITY_BY_ACTION
+        from minecraft import task_runner
+        missing = [a for a in task_runner.DISPATCH
+                   if a not in _CAPABILITY_BY_ACTION]
+        self.assertEqual(missing, [],
+                         f"dispatchable but unbrokered actions: {missing}")
 
     def test_the_package_exposes_no_general_input_function(self):
         """A `press(key)` or `type(text)` at package level would be the

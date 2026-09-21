@@ -260,6 +260,30 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 
 ---
 
+## 🎮 Minecraft (experimental)
+
+JARVIS can observe and play Minecraft Java Edition, inside a bounded, revocable session.
+
+**What it can do now.** Read your position, facing, biome and the block under your crosshair off the F3 debug overlay. Walk, turn, jump, sneak, sprint, select a hotbar slot, mine, and place. Run small multi-step tasks (`walk_forward`, `survey`, `find_block`, `break_block`) that observe between steps and **verify** the result.
+
+**Verification is the point.** "I held the attack button" and "the block broke" are different answers, and the system reports them separately. A swing that lands on an unbroken log is recorded as delivered-but-failed, not as success. When it cannot see the target at all, it says `unverifiable` rather than guessing either way.
+
+**What it deliberately cannot do.** Type in chat. Run slash commands — `minecraft.command` is `DENY` permanently. Open your inventory. Launch the game. Touch anything outside the Minecraft window.
+
+**The safety boundary.** The subsystem cannot start a process, reach the shell, open a browser, send a message, or write a file — `tests/test_minecraft_boundary.py` parses every module and fails the build if that changes. Input is limited to a fixed table of keys and two mouse buttons; there is no function anywhere that takes a keycode. Everything held is recorded before it is pressed and released by a single `release_all()` reachable from five independent stops: focus loss (checked every 40ms), F12, a deadman timer, session expiry, and the game closing.
+
+**Consent.** Movement needs a confirmed session (5 minutes maximum). Breaking and placing blocks need a session that asked for that *specifically* — a separate, plainer confirmation. There is no per-swing dialog, on purpose: a prompt per swing is how people learn to dismiss prompts unread.
+
+**Requires Windows** for input (Linux and macOS can observe but not control), Minecraft in windowed or borderless mode, and — for reading the F3 overlay — the optional OCR extra described in `requirements.txt`. Without OCR it still plays; it just cannot read the numbers, and says so.
+
+Test it against a real game with a throwaway creative world:
+
+```bat
+py tools\minecraft_manual_check.py
+```
+
+---
+
 ## 🗺️ Mark Roadmap
 
 | Mark | Focus |

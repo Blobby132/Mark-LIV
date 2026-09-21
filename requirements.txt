@@ -82,6 +82,22 @@ pynvml                       # system_monitor + the HUD's GPU meter (NVIDIA)
 #                            #   (also needs ffmpeg on PATH for most formats)
 #   pip install mediapipe    # pushup_counter: elbow-angle rep detection
 
+# ── Optional: reading Minecraft's F3 debug overlay ────────────────────────────
+# Deliberately NOT installed by default. It needs the Tesseract PROGRAM as well
+# as the Python package, and that is a native install from outside pip -- too
+# much to impose on everyone for one feature in one subsystem.
+#
+# Without it, Minecraft control still works; JARVIS just cannot read your
+# position, biome or the block under your crosshair off the screen, and says so
+# rather than guessing.
+#
+#   pip install pytesseract
+#   plus Tesseract itself: https://github.com/UB-Mannheim/tesseract/wiki
+#
+# A later phase replaces this with a bitmap-font reader needing no install and
+# no subprocess -- Minecraft's debug text is a fixed font, which general OCR is
+# the wrong tool for.
+
 # ── Optional: local wake word ("Hey Jarvis") ──────────────────────────────────
 # Deliberately NOT installed by default — it's opt-in. Enable it (and download
 # the tiny model) with one click from ⚙ → WAKE WORD in the app, or install it
