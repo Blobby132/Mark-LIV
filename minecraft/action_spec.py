@@ -52,6 +52,33 @@ MAX_USE_DURATION_S = 2.0
 MAX_SNEAK_DURATION_S = MAX_MOVE_DURATION_S
 MAX_SPRINT_DURATION_S = MAX_MOVE_DURATION_S
 
+MAX_MINE_DURATION_S = 2.0
+"""One sustained swing, not "until it breaks".
+
+Breaking an oak log by hand takes about three seconds and stone takes much
+longer, so a single mine action deliberately CANNOT finish the job. That is
+not a limitation to work around: it is what forces the caller back through
+observation between swings, which is the only way anything downstream can
+tell a broken block from a held button."""
+
+MAX_INTERACT_DURATION_S = 1.0
+"""Right-click on a door, chest or crafting table. Short: these are taps, and
+a held right-click on a stack of blocks places a wall of them."""
+
+MAX_EAT_DURATION_S = 2.0
+"""Eating holds right-click for about 1.6 seconds in modern versions."""
+
+PLACE_TAP_S = 0.08
+"""Placing is a tap. A hold places repeatedly as the crosshair drifts, which
+is how an agent asked for one block builds a staircase."""
+
+DROP_TAP_S = 0.08
+INVENTORY_TAP_S = 0.08
+
+INVENTORY_KEY = "e"
+DROP_KEY = "q"
+CLOSE_KEY = "esc"
+
 HOTBAR_SLOTS = tuple(range(1, 10))
 """1-9 as the player sees them. Slot 0 does not exist on a Minecraft hotbar,
 and `selected_slot` in WorldState is 0-8 because that is what the game's own
@@ -361,6 +388,98 @@ def parse_hotbar(params: dict) -> HotbarSpec:
     return HotbarSpec(slot=slot, key=str(slot))
 
 
+def parse_mine(params: dict) -> HoldSpec:
+    """Hold the attack button against a block.
+
+    Physically identical to `attack`; kept separate because the capability and
+    the verification differ. A broken block is observable on the F3 overlay; a
+    damaged mob is not, so pretending one is the other would make mining look
+    unverifiable and combat look verifiable, both wrongly."""
+    for unsupported in ("target", "block", "at", "position", "until"):
+        if unsupported in (params or {}):
+            raise InvalidAction(
+                f"Mining takes no '{unsupported}'. I break whatever is under "
+                f"the crosshair -- aim with 'look', confirm what you are "
+                f"aiming at with 'read_state', then mine."
+            )
+    duration, requested = _bounded_duration(params, 1.0, MAX_MINE_DURATION_S)
+    return HoldSpec(action="mine", buttons=(ATTACK_BUTTON,),
+                    duration=duration, requested_duration=requested)
+
+
+def parse_place(params: dict) -> HoldSpec:
+    """Place the held block against whatever the crosshair is on.
+
+    A tap, with no duration parameter: a held right-click places block after
+    block as the view drifts, and an agent asked for one block would build a
+    trail of them."""
+    for unsupported in ("duration", "count", "times", "block", "item"):
+        if unsupported in (params or {}):
+            raise InvalidAction(
+                f"Placing takes no '{unsupported}'. It is one tap that places "
+                f"whatever is in your hand against the block you are looking "
+                f"at -- select the item first with 'hotbar_select', and ask "
+                f"again for another block."
+            )
+    return HoldSpec(action="place", buttons=(USE_BUTTON,),
+                    duration=PLACE_TAP_S, requested_duration=PLACE_TAP_S)
+
+
+def parse_interact(params: dict) -> HoldSpec:
+    """Right-click a block or entity: open a door, a chest, a crafting table."""
+    duration, requested = _bounded_duration(params, 0.1,
+                                            MAX_INTERACT_DURATION_S)
+    return HoldSpec(action="interact", buttons=(USE_BUTTON,),
+                    duration=duration, requested_duration=requested)
+
+
+def parse_eat(params: dict) -> HoldSpec:
+    """Hold right-click to eat or drink what is held."""
+    duration, requested = _bounded_duration(params, 1.8, MAX_EAT_DURATION_S)
+    return HoldSpec(action="eat", buttons=(USE_BUTTON,),
+                    duration=duration, requested_duration=requested)
+
+
+def parse_drop(params: dict) -> HoldSpec:
+    """Tap Q: drop one of the held item.
+
+    Refuses 'all' explicitly. Ctrl-Q drops a whole stack, and an agent that
+    misjudged which slot was selected would empty it in one keystroke -- so
+    the stack version is not available and the refusal says why."""
+    for unsupported in ("all", "stack", "count", "amount"):
+        if unsupported in (params or {}):
+            raise InvalidAction(
+                "I can only drop one item at a time. Dropping a whole stack "
+                "is one keystroke away from emptying a slot I misread, so it "
+                "is not available."
+            )
+    return HoldSpec(action="drop", keys=(DROP_KEY,), duration=DROP_TAP_S,
+                    requested_duration=DROP_TAP_S)
+
+
+def parse_inventory(params: dict) -> HoldSpec:
+    """Open or close the inventory.
+
+    Opening uses E and closing uses ESC rather than E again: if the inventory
+    is already shut, E opens it, so "close" implemented as E would toggle the
+    wrong way exactly when the state was misread. ESC closes and does nothing
+    when nothing is open, which fails in the harmless direction."""
+    raw = str((params or {}).get("state", "open")).strip().lower()
+    if raw in ("open", "opened", "show"):
+        key, name = INVENTORY_KEY, "open"
+    elif raw in ("close", "closed", "hide", "exit"):
+        key, name = CLOSE_KEY, "close"
+    else:
+        raise InvalidAction(
+            f"'{raw}' is not something I can do to the inventory. "
+            f"Use state=open or state=close."
+        )
+    return HoldSpec(action=f"inventory_{name}", keys=(key,),
+                    duration=INVENTORY_TAP_S,
+                    requested_duration=INVENTORY_TAP_S,
+                    detail={"state": name})
+
+
 def limits() -> dict:
     """The numbers, for a status report and for the tool description, so the
     model is told the bounds rather than discovering them by being refused."""
@@ -375,16 +494,24 @@ def limits() -> dict:
         "max_sneak_duration_s": MAX_SNEAK_DURATION_S,
         "max_sprint_duration_s": MAX_SPRINT_DURATION_S,
         "hotbar_slots": list(HOTBAR_SLOTS),
+        "max_mine_duration_s": MAX_MINE_DURATION_S,
+        "max_interact_duration_s": MAX_INTERACT_DURATION_S,
+        "max_eat_duration_s": MAX_EAT_DURATION_S,
+        "place_is_a_tap": True,
     }
 
 
 __all__ = [
     "MoveSpec", "LookSpec", "JumpSpec", "HoldSpec", "HotbarSpec",
     "parse_move", "parse_look", "parse_jump", "parse_attack",
-    "parse_use_item", "parse_sneak", "parse_sprint", "parse_hotbar", "limits",
+    "parse_use_item", "parse_sneak", "parse_sprint", "parse_hotbar",
+    "parse_mine", "parse_place", "parse_interact", "parse_eat", "parse_drop",
+    "parse_inventory", "limits",
     "MAX_MOVE_DURATION_S", "MIN_MOVE_DURATION_S", "MAX_LOOK_DELTA_PX",
     "MAX_ATTACK_DURATION_S", "MAX_USE_DURATION_S", "MAX_SNEAK_DURATION_S",
-    "MAX_SPRINT_DURATION_S", "HOTBAR_SLOTS",
+    "MAX_SPRINT_DURATION_S", "HOTBAR_SLOTS", "MAX_MINE_DURATION_S",
+    "MAX_INTERACT_DURATION_S", "MAX_EAT_DURATION_S", "PLACE_TAP_S",
+    "INVENTORY_KEY", "DROP_KEY", "CLOSE_KEY",
     "JUMP_TAP_S", "MOVE_KEYS", "DIRECTIONS", "SNEAK_KEY", "SPRINT_KEY",
     "ATTACK_BUTTON", "USE_BUTTON",
 ]

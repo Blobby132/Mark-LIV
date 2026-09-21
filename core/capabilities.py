@@ -218,23 +218,56 @@ the game window, so the rest of the desktop is not in the frame."""
 MINECRAFT_READ_STATE = "minecraft.read_state"
 """Read structured game state — position, health, inventory. Reading."""
 
-MINECRAFT_CONTROL_SESSION = "minecraft.control_session"
-"""Open a time-boxed window in which the assistant may drive the game.
+MINECRAFT_CONTROL = "minecraft.control"
+"""THE confirmation. One human decision, and the only one in this namespace.
 
-THE gate for the whole subsystem, and the reason movement below is ALLOW.
-Confirming each keypress is not an option — a walk is tens of presses, and a
-confirmation people learn to dismiss is worse than none. So one human decision
-buys a bounded session: five minutes at most, ended by Alt-Tab, by F12, by the
-game closing, or by the clock. Inside it, `minecraft.move` and
-`minecraft.look` are free; outside it they are refused before any key is
-touched."""
+WHAT APPROVING IT BUYS
+    Every ordinary gameplay capability below, for the life of one bounded
+    session: walking, looking, jumping, sprinting, sneaking, attacking,
+    mining, placing, using and dropping items, the hotbar, the inventory, and
+    interacting with blocks and entities.
 
-MINECRAFT_MOVE = "minecraft.move"
-"""Hold a movement key for a bounded time. Only reachable inside a live
-session, and only for W/A/S/D."""
+WHY ONE AND NOT TWENTY
+    Mining a single log takes several swings; collecting wood takes dozens of
+    actions. A confirmation per action is not twenty times the safety, it is
+    zero times the safety plus a trained reflex to click through dialogs —
+    and that reflex applies to the confirmations elsewhere in this app that
+    really do need reading.
+
+    So the decision is made once, with a banner that names what it covers,
+    and the bound is TIME rather than count: five minutes at most, ended by
+    Alt-Tab, by F12, by the game closing, or by the clock.
+
+WHAT IT DOES NOT BUY
+    Chat, slash commands, launching the game — and nothing at all outside
+    Minecraft. This grants gameplay, not the computer. `minecraft.command`
+    stays DENY whatever a session says."""
+
+MINECRAFT_MOVEMENT = "minecraft.movement"
+"""Walk, jump, sprint, sneak. Bounded holds, inside a live session."""
 
 MINECRAFT_LOOK = "minecraft.look"
 """Move the mouse by a bounded relative delta. Only inside a live session."""
+
+MINECRAFT_COMBAT = "minecraft.combat"
+"""Attack: hit whatever is under the crosshair."""
+
+MINECRAFT_MINING = "minecraft.mining"
+"""Break blocks. Separate from combat because the same button does both and
+the verification is completely different — a broken block is observable, a
+damaged mob is not."""
+
+MINECRAFT_BUILD = "minecraft.build"
+"""Place blocks."""
+
+MINECRAFT_ITEMS = "minecraft.items"
+"""Select a hotbar slot, use or eat what is held, drop an item."""
+
+MINECRAFT_INVENTORY = "minecraft.inventory"
+"""Open the inventory and move items between slots."""
+
+MINECRAFT_INTERACT = "minecraft.interact"
+"""Right-click a block or entity: doors, chests, crafting tables, furnaces."""
 
 MINECRAFT_STOP = "minecraft.stop"
 """Stop everything and release every held key.
@@ -244,63 +277,21 @@ a safety control — if this could be denied, a confused planner or an expired
 confirmation would leave keys held down. It is also the one capability here
 that is *more* permissive than doing nothing."""
 
-MINECRAFT_JUMP = "minecraft.jump"
-"""One hop. Only inside a live session."""
-
-MINECRAFT_HOTBAR = "minecraft.hotbar"
-"""Select hotbar slot 1-9. Changes what is held, destroys nothing."""
-
-MINECRAFT_SNEAK = "minecraft.sneak"
-"""Hold crouch, optionally while walking. Only inside a live session."""
-
-MINECRAFT_SPRINT = "minecraft.sprint"
-"""Hold sprint while walking. Only inside a live session."""
-
-MINECRAFT_ATTACK = "minecraft.attack"
-"""Left-click: mine a block, hit a mob.
-
-ALLOW, and the reasoning is worth writing down because this is the one verdict
-in this namespace that changed when it went from declared to built.
-
-It was CONFIRM while it was a placeholder for something unimplemented — a
-sensible default for a capability nothing could reach. Building it made that
-default actively harmful: breaking one oak log takes several bounded swings,
-so CONFIRM means a dialog per swing, and a dialog per swing is how people
-learn to dismiss dialogs without reading them. That trains the exact reflex
-the confirmation exists to prevent, and it would apply to the confirmations
-that really matter elsewhere in the app too.
-
-So the consent moved rather than disappeared, and it got MORE specific: a
-session must be opened with interaction explicitly granted, and the
-confirmation for that session names mining and placing in as many words. A
-session without that grant refuses attack before any button is pressed. One
-informed decision, time-boxed to five minutes, revocable by Alt-Tab, F12, the
-clock or the game closing — instead of twenty identical prompts.
-
-The verdict here is not what makes this safe; `Session.allow_interaction` is.
-This row only stops the broker asking a question the session already asked
-better."""
-
-MINECRAFT_USE_ITEM = "minecraft.use_item"
-"""Right-click: place a block, eat, open a door. Same reasoning as
-MINECRAFT_ATTACK, and gated by the same session grant."""
-
 MINECRAFT_TASK = "minecraft.task"
 """Run a bounded multi-step task — observe, act, verify, repeat.
 
-CONFIRM, and this one is a gate being ADDED rather than relaxed. Every
-individual action a task takes is already bounded and already inside a
-session. What is new is the count: one approval buying up to twenty actions
-chosen by code rather than by the person watching. That is a genuinely
-different decision from "walk forward", so it gets its own."""
-
-MINECRAFT_INVENTORY = "minecraft.inventory"
-"""Open the inventory and move items. Not enabled in the current phase."""
+Covered by the session grant, like every other gameplay capability. It was
+briefly its own CONFIRM on the reasoning that one approval buying twenty
+actions is a different decision; in practice that made "collect some wood"
+cost two confirmations for one intent, which is the fatigue problem wearing a
+different hat. The count is bounded by MAX_TASK_STEPS and the wall clock
+instead, which cannot be clicked through."""
 
 MINECRAFT_CHAT = "minecraft.chat"
 """Type in the game chat. CONFIRM even when it is eventually enabled: on a
 server this reaches other people, which makes it MESSAGE_SEND wearing a
-different hat. Not enabled in the current phase."""
+different hat. Deliberately NOT covered by the session grant — a grant for
+gameplay is not a grant to talk to strangers. Not enabled."""
 
 MINECRAFT_COMMAND = "minecraft.command"
 """Slash commands — /give, /tp, /gamemode, and on a server /op.
@@ -308,11 +299,27 @@ MINECRAFT_COMMAND = "minecraft.command"
 DENY, permanently, and listed rather than omitted so the refusal is explicit
 and testable instead of being an unknown name that happens to fail closed.
 There is no route from this subsystem to a command line, in the game or out
-of it."""
+of it, and no session grant reaches it."""
 
 MINECRAFT_LAUNCH = "minecraft.launch"
-"""Start the game. Not enabled in the current phase — the prototype requires
-Minecraft to be running already, so there is no launcher path to abuse."""
+"""Start the game. Not enabled — the prototype requires Minecraft to be
+running already, so there is no launcher path to abuse."""
+
+# ── Names kept so existing call sites and tests keep working ────────────────
+#
+# The namespace was regrouped by what an action DOES rather than by which key
+# it presses: four movement capabilities said nothing four times, and there
+# was no name at all for mining or building. These aliases are the old names
+# pointing at the new groups, so the rename is not a flag day.
+MINECRAFT_CONTROL_SESSION = MINECRAFT_CONTROL
+MINECRAFT_MOVE = MINECRAFT_MOVEMENT
+MINECRAFT_JUMP = MINECRAFT_MOVEMENT
+MINECRAFT_SNEAK = MINECRAFT_MOVEMENT
+MINECRAFT_SPRINT = MINECRAFT_MOVEMENT
+MINECRAFT_ATTACK = MINECRAFT_COMBAT
+MINECRAFT_USE_ITEM = MINECRAFT_ITEMS
+MINECRAFT_HOTBAR = MINECRAFT_ITEMS
+
 
 
 APP_STATE = "app.state"
@@ -379,29 +386,25 @@ _POLICY: dict[str, str] = {
     SYSTEM_POWER:           CONFIRM,
     INPUT_SYNTHETIC:        ALLOW,
 
-    # Minecraft. The session is the gate; the actions inside it are not.
+    # Minecraft. ONE confirmation -- minecraft.control -- covers every
+    # gameplay capability below for the life of a bounded session. The
+    # verdicts here are not what makes that safe; Session.authorized is, and
+    # the controller refuses before any key is pressed without it.
     MINECRAFT_OBSERVE:          ALLOW,
     MINECRAFT_READ_STATE:       ALLOW,
-    MINECRAFT_CONTROL_SESSION:  CONFIRM,
-    MINECRAFT_MOVE:             ALLOW,
+    MINECRAFT_CONTROL:          CONFIRM,
+    MINECRAFT_MOVEMENT:         ALLOW,
     MINECRAFT_LOOK:             ALLOW,
+    MINECRAFT_COMBAT:           ALLOW,
+    MINECRAFT_MINING:           ALLOW,
+    MINECRAFT_BUILD:            ALLOW,
+    MINECRAFT_ITEMS:            ALLOW,
+    MINECRAFT_INVENTORY:        ALLOW,
+    MINECRAFT_INTERACT:         ALLOW,
+    MINECRAFT_TASK:             ALLOW,
     MINECRAFT_STOP:             ALLOW,
-    MINECRAFT_JUMP:             ALLOW,
-    MINECRAFT_HOTBAR:           ALLOW,
-    MINECRAFT_SNEAK:            ALLOW,
-    MINECRAFT_SPRINT:           ALLOW,
-    # Destructive, and gated by an explicit per-session grant rather than by a
-    # prompt per swing — see MINECRAFT_ATTACK's docstring for why that is the
-    # stronger of the two.
-    MINECRAFT_ATTACK:           ALLOW,
-    MINECRAFT_USE_ITEM:         ALLOW,
-    # A task spends one approval on up to twenty actions, which is a different
-    # decision from any single one of them.
-    MINECRAFT_TASK:             CONFIRM,
-    # Declared but not built. CONFIRM rather than ALLOW so that if the phase
-    # gate in minecraft/capabilities.py were ever removed, these would still
-    # stop and ask rather than quietly becoming available.
-    MINECRAFT_INVENTORY:        CONFIRM,
+    # Not covered by the session grant, and not built. Chat reaches other
+    # people; launch starts a process; commands are refused permanently.
     MINECRAFT_CHAT:             CONFIRM,
     MINECRAFT_LAUNCH:           CONFIRM,
     MINECRAFT_COMMAND:          DENY,

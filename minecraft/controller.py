@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 
 from minecraft import action_spec, process as mc_process
 from minecraft.emergency import EmergencyStopWatcher
+from core import capabilities as core_caps
 from minecraft.errors import (
     EmergencyStop, InputBackendUnavailable, InteractionNotGranted,
     InvalidAction, MinecraftNotRunning, NoActiveSession, SessionExpired,
@@ -313,6 +314,15 @@ class MinecraftController:
                 "failed_to_release": list(report.failed),
                 "clean": report.clean}
 
+    def emergency_stop(self, reason: str = "emergency stop") -> dict:
+        """Stop now. Never refused, never confirmed, callable from anywhere.
+
+        The same code path as F12 and as every automatic stop, exposed under
+        the name the rest of the system uses for it. It takes no capability
+        and asks no permission on purpose: a safety control that policy can
+        decline is not a safety control."""
+        return self.stop(reason)
+
     def _on_emergency(self, reason: str) -> None:
         self.stop(f"emergency stop ({reason})")
 
@@ -383,7 +393,7 @@ class MinecraftController:
 
     def start_session(self, duration_s: float | None = None,
                       owner: str = "user",
-                      allow_interaction: bool = False) -> dict:
+                      authorized: bool = True) -> dict:
         """Open a control session. The broker has already confirmed by here.
 
         Attaching to the window first means a session cannot open against a
@@ -414,9 +424,8 @@ class MinecraftController:
         existing = self._sessions.current
         reused = False
         if existing is not None and existing.active:
-            if allow_interaction and not existing.allow_interaction:
-                self._sessions.end("replaced by a session that allows "
-                                   "breaking and placing")
+            if authorized and not existing.authorized:
+                self._sessions.end("replaced by an authorised session")
             else:
                 reused = True
 
@@ -428,7 +437,7 @@ class MinecraftController:
             session = existing
         else:
             session = self._sessions.start(duration_s=duration_s, owner=owner,
-                                           allow_interaction=allow_interaction)
+                                           authorized=authorized)
         self._start_watchers()
 
         return {
@@ -538,41 +547,105 @@ class MinecraftController:
         )
 
     def move(self, params: dict) -> ActionResult:
+        refusal = self._require_authorized(core_caps.MINECRAFT_MOVEMENT,
+                                           "move")
+        if refusal is not None:
+            return refusal
         spec = action_spec.parse_move(params or {})
         return self._hold_for(spec.key, spec.duration, "move",
                               spec.as_dict(), spec.clamped)
 
     def jump(self, params: dict | None = None) -> ActionResult:
+        refusal = self._require_authorized(core_caps.MINECRAFT_MOVEMENT,
+                                           "jump")
+        if refusal is not None:
+            return refusal
         spec = action_spec.parse_jump(params or {})
         return self._hold_for(spec.key, spec.duration, "jump",
                               spec.as_dict(), spec.clamped)
 
-    def _require_interaction(self, action: str) -> ActionResult | None:
-        """Refuse a world-changing action unless the session asked for it.
+    def _require_authorized(self, capability: str,
+                            action: str) -> ActionResult | None:
+        """The one gate every gameplay action passes.
 
-        Checked here rather than in the adapter so it holds for every caller,
-        including the task runner — a skill cannot mine its way around a
-        session that was opened for walking."""
+        Returns None when the session's grant covers this capability, or the
+        refusal to hand straight back. Checked here rather than in the adapter
+        so it holds for every caller including the task runner — a skill
+        cannot mine its way around a session that was never authorised.
+
+        A missing or dead session says nothing here: `_require_ready` gives
+        the better answer ("start a session" rather than "your session does
+        not cover this"), and sending someone to fix a grant on a session that
+        does not exist wastes their time."""
         session = self._sessions.current
-
-        # No live session at all? Say nothing here and let the ordinary
-        # pre-flight check answer. Both refusals would be true, but
-        # "interaction_not_granted" would send someone off to add a flag to a
-        # session that does not exist, when what they need is to start one.
         if session is None or not session.active:
             return None
 
-        if session.allow_interaction:
+        if session.covers(capability):
             return None
+
         return ActionResult(
             ok=False, action=action, requested={},
-            stopped_reason="interaction_not_granted",
+            stopped_reason="not_authorized",
             error_class="InteractionNotGranted",
-            error=("This session only covers moving and looking. Mining and "
-                   "placing change the world, so they need a session started "
-                   "with interaction allowed — ask me to start one and "
-                   "confirm it."),
+            error=(f"This session does not cover {capability}. Ask me to "
+                   f"start a Minecraft session and confirm it — one "
+                   f"confirmation covers all ordinary gameplay."),
         )
+
+    def _gameplay(self, capability: str, action: str, parse,
+                  params: dict | None) -> ActionResult:
+        """Authorise, then validate, then hold whatever the spec names.
+
+        One function for every gameplay primitive, so there is exactly one
+        place where authorisation happens and exactly one place where inputs
+        go down — which is what makes "did anything skip the gate?" a question
+        you can answer by reading twenty lines.
+
+        The order matters. Parsing first meant an unauthorised session was
+        told about a bad parameter instead of about the missing authorisation,
+        which is both the less useful answer and a way to probe the parameter
+        rules of an action you may not take. The gate speaks first."""
+        refusal = self._require_authorized(capability, action)
+        if refusal is not None:
+            return refusal
+        spec = parse(params or {})
+        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                 action, spec.as_dict(), spec.clamped)
+
+    def mine(self, params: dict | None = None) -> ActionResult:
+        """Hold attack against a block. Says nothing about whether it broke —
+        that is verification's job, and one swing usually will not."""
+        return self._gameplay(core_caps.MINECRAFT_MINING, "mine",
+                              action_spec.parse_mine, params)
+
+    def place(self, params: dict | None = None) -> ActionResult:
+        return self._gameplay(core_caps.MINECRAFT_BUILD, "place",
+                              action_spec.parse_place, params)
+
+    def interact(self, params: dict | None = None) -> ActionResult:
+        return self._gameplay(core_caps.MINECRAFT_INTERACT, "interact",
+                              action_spec.parse_interact, params)
+
+    def eat(self, params: dict | None = None) -> ActionResult:
+        return self._gameplay(core_caps.MINECRAFT_ITEMS, "eat",
+                              action_spec.parse_eat, params)
+
+    def drop(self, params: dict | None = None) -> ActionResult:
+        return self._gameplay(core_caps.MINECRAFT_ITEMS, "drop",
+                              action_spec.parse_drop, params)
+
+    def inventory(self, params: dict | None = None) -> ActionResult:
+        """Open or close the inventory. Authorised as one capability; the
+        spec decides which key, so the action name is resolved after the
+        gate rather than before it."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_INVENTORY,
+                                           "inventory")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_inventory(params or {})
+        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                 spec.action, spec.as_dict(), spec.clamped)
 
     def attack(self, params: dict | None = None) -> ActionResult:
         """Hold the attack button. Hits whatever is under the crosshair.
@@ -580,34 +653,28 @@ class MinecraftController:
         Deliberately says nothing about whether anything broke — that is
         `minecraft/verification.py`'s job, and conflating the two is how an
         agent ends up reporting a tree felled that is still standing."""
-        refusal = self._require_interaction("attack")
-        if refusal is not None:
-            return refusal
-        spec = action_spec.parse_attack(params or {})
-        return self._hold_inputs((), spec.buttons, spec.duration, "attack",
-                                 spec.as_dict(), spec.clamped)
+        return self._gameplay(core_caps.MINECRAFT_COMBAT, "attack",
+                              action_spec.parse_attack, params)
 
     def use_item(self, params: dict | None = None) -> ActionResult:
-        refusal = self._require_interaction("use_item")
-        if refusal is not None:
-            return refusal
-        spec = action_spec.parse_use_item(params or {})
-        return self._hold_inputs((), spec.buttons, spec.duration, "use_item",
-                                 spec.as_dict(), spec.clamped)
+        return self._gameplay(core_caps.MINECRAFT_ITEMS, "use_item",
+                              action_spec.parse_use_item, params)
 
     def sneak(self, params: dict | None = None) -> ActionResult:
-        spec = action_spec.parse_sneak(params or {})
-        return self._hold_inputs(spec.keys, (), spec.duration, "sneak",
-                                 spec.as_dict(), spec.clamped)
+        return self._gameplay(core_caps.MINECRAFT_MOVEMENT, "sneak",
+                              action_spec.parse_sneak, params)
 
     def sprint(self, params: dict | None = None) -> ActionResult:
-        spec = action_spec.parse_sprint(params or {})
-        return self._hold_inputs(spec.keys, (), spec.duration, "sprint",
-                                 spec.as_dict(), spec.clamped)
+        return self._gameplay(core_caps.MINECRAFT_MOVEMENT, "sprint",
+                              action_spec.parse_sprint, params)
 
     def hotbar_select(self, params: dict | None = None) -> ActionResult:
         """Tap a number key. The shortest action there is, and still guarded:
         a number key delivered to the wrong window types a digit into it."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_ITEMS,
+                                           "hotbar_select")
+        if refusal is not None:
+            return refusal
         spec = action_spec.parse_hotbar(params or {})
         return self._hold_inputs((spec.key,), (), action_spec.JUMP_TAP_S,
                                  "hotbar_select", spec.as_dict(), spec.clamped)
@@ -626,6 +693,9 @@ class MinecraftController:
         """One relative mouse delta. Nothing is held, so there is nothing to
         release — but the guard still runs, because a delta delivered to the
         wrong window moves someone else's cursor."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_LOOK, "look")
+        if refusal is not None:
+            return refusal
         spec = action_spec.parse_look(params or {})
         started = time.monotonic()
 
@@ -655,6 +725,40 @@ class MinecraftController:
             actual_duration_ms=int((time.monotonic() - started) * 1000),
             window_focused_throughout=True, clamped=spec.clamped,
         )
+
+    # ── one way in ───────────────────────────────────────────────────────────
+
+    ACTIONS = {
+        "move": "move", "jump": "jump", "look": "look",
+        "sneak": "sneak", "sprint": "sprint",
+        "attack": "attack", "mine": "mine",
+        "place": "place", "interact": "interact",
+        "use_item": "use_item", "eat": "eat", "drop": "drop",
+        "hotbar_select": "hotbar_select", "inventory": "inventory",
+    }
+    """Every gameplay primitive, by name. The complete list.
+
+    This IS the vocabulary: `execute_action` looks a name up here and calls
+    nothing else, so a planner that invents an action gets a refusal rather
+    than a method call. There is no entry that takes a key, a keycode or a
+    screen coordinate."""
+
+    def execute_action(self, action: str, params: dict | None = None):
+        """Run one named primitive.
+
+        The single entry point the planner and the task runner both use, so
+        the set of things either can do is this dict and nothing else."""
+        name = str(action or "").strip().lower()
+        method = self.ACTIONS.get(name)
+        if method is None:
+            return ActionResult(
+                ok=False, action=name or "(none)", requested=dict(params or {}),
+                stopped_reason="unknown_action",
+                error_class="InvalidAction",
+                error=(f"'{action}' is not a Minecraft action I have. Mine "
+                       f"are: {', '.join(sorted(self.ACTIONS))}."),
+            )
+        return getattr(self, method)(params or {})
 
     # ── status ───────────────────────────────────────────────────────────────
 
@@ -707,8 +811,9 @@ def _reason_for(error: Exception) -> str:
 def _explain(reason: str | None) -> str:
     """A sentence for a reason code, for the model to relay to the user."""
     return {
-        "interaction_not_granted": "This session does not allow mining or "
-                                   "placing blocks.",
+        "not_authorized": "This session is not authorised for that. One "
+                          "confirmation covers all ordinary gameplay — ask me "
+                          "to start a Minecraft session.",
         "focus_lost": "Minecraft is not the active window. Click on the game "
                       "and ask me again — I will not send keys to whatever is "
                       "in front instead.",

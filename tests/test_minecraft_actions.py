@@ -30,6 +30,7 @@ from minecraft.input_backend import (                                  # noqa: E
 )
 from minecraft.ledger import InputLedger, button_token                 # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
+from minecraft.controller import MinecraftController                   # noqa: E402
 from test_minecraft_controller import FakeLocator, FakeProcess         # noqa: E402
 
 
@@ -50,9 +51,9 @@ class _Case(unittest.TestCase):
         except Exception:
             pass
 
-    def open(self, interaction=True, duration=60.0):
+    def open(self, authorized=True, duration=60.0):
         return self.controller.start_session(duration_s=duration,
-                                             allow_interaction=interaction)
+                                             authorized=authorized)
 
     def assert_nothing_held(self):
         self.assertEqual(self.controller.ledger.held(), frozenset())
@@ -253,11 +254,11 @@ class TestNothingActsWithoutASession(_Case):
         self.assertEqual(self.backend.button_downs(), [])
         self.assertEqual(self.backend.downs(), [])
 
-    def test_attack_needs_the_interaction_grant(self):
-        self.open(interaction=False)
+    def test_attack_needs_an_authorized_session(self):
+        self.open(authorized=False)
         result = self.controller.attack({"duration": 0.05})
         self.assertFalse(result.ok)
-        self.assertEqual(result.stopped_reason, "interaction_not_granted")
+        self.assertEqual(result.stopped_reason, "not_authorized")
         self.assertEqual(self.backend.button_downs(), [])
 
 
@@ -307,6 +308,140 @@ class TestActionsReleaseEverything(_Case):
         self.assertTrue(result.ok, result.error)
         self.assertIn("f3", self.backend.downs())
         self.assert_nothing_held()
+
+
+class TestPhase4Actions(_Case):
+    """Mining, building, interacting, items and the inventory."""
+
+    def test_every_new_action_works_in_one_authorized_session(self):
+        self.open()
+        for action, params in (("mine", {"duration": 0.05}),
+                               ("place", {}), ("interact", {}),
+                               ("eat", {"duration": 0.05}), ("drop", {}),
+                               ("inventory", {"state": "open"}),
+                               ("inventory", {"state": "close"})):
+            with self.subTest(action=action):
+                result = self.controller.execute_action(action, params)
+                self.assertTrue(result.ok, result.error)
+        self.assert_nothing_held()
+
+    def test_mining_holds_the_attack_button(self):
+        self.open()
+        self.controller.mine({"duration": 0.05})
+        self.assertEqual(self.backend.button_downs(), ["left"])
+        self.assertEqual(self.backend.button_ups(), ["left"])
+
+    def test_placing_uses_the_other_button_and_is_a_tap(self):
+        self.open()
+        result = self.controller.place({})
+        self.assertEqual(self.backend.button_downs(), ["right"])
+        self.assertLess(result.actual_duration_ms, 400)
+
+    def test_placing_refuses_a_duration(self):
+        """A held right-click places block after block as the view drifts —
+        an agent asked for one block would build a trail of them."""
+        self.open()
+        with self.assertRaises(InvalidAction):
+            self.controller.place({"duration": 2.0})
+        self.assertEqual(self.backend.button_downs(), [])
+
+    def test_dropping_a_whole_stack_is_not_available(self):
+        self.open()
+        with self.assertRaises(InvalidAction):
+            self.controller.drop({"all": True})
+        self.assertEqual(self.backend.downs(), [])
+
+    def test_opening_and_closing_the_inventory_use_different_keys(self):
+        """Close is ESC, not E again. If the inventory state were misread,
+        a toggle would open it exactly when we wanted it shut; ESC does
+        nothing when nothing is open, which fails harmlessly."""
+        self.open()
+        self.controller.inventory({"state": "open"})
+        self.controller.inventory({"state": "close"})
+        self.assertIn("e", self.backend.downs())
+        self.assertIn("esc", self.backend.downs())
+
+    def test_an_invalid_inventory_state_presses_nothing(self):
+        self.open()
+        with self.assertRaises(InvalidAction):
+            self.controller.inventory({"state": "sideways"})
+        self.assertEqual(self.backend.downs(), [])
+
+    def test_mining_is_bounded_like_everything_else(self):
+        spec = action_spec.parse_mine({"duration": 30})
+        self.assertEqual(spec.duration, action_spec.MAX_MINE_DURATION_S)
+        self.assertTrue(spec.clamped)
+
+    def test_one_mine_cannot_finish_a_log(self):
+        """Deliberate. Breaking an oak log takes about three seconds, and a
+        single action that could do it would remove the need to observe
+        between swings — which is where verification lives."""
+        self.assertLess(action_spec.MAX_MINE_DURATION_S, 3.0)
+
+    def test_losing_focus_mid_mine_releases_the_button(self):
+        self.open()
+        self.locator.foreground = False
+        result = self.controller.mine({"duration": 2.0})
+        self.assertFalse(result.ok)
+        self.assert_nothing_held()
+
+
+class TestExecuteAction(_Case):
+    """The single entry point the planner and the task runner both use."""
+
+    def test_an_invented_action_is_refused_not_dispatched(self):
+        self.open()
+        for invented in ("press", "type", "key_down", "run", "chat",
+                         "command", "exec", "", None):
+            with self.subTest(action=invented):
+                result = self.controller.execute_action(invented, {})
+                self.assertFalse(result.ok)
+                self.assertEqual(result.stopped_reason, "unknown_action")
+        self.assertEqual(self.backend.downs(), [])
+        self.assertEqual(self.backend.button_downs(), [])
+
+    def test_the_action_table_holds_no_input_primitive(self):
+        for forbidden in ("press", "type", "key_down", "key_up", "hotkey",
+                          "send_keys", "button_down", "move_mouse_relative",
+                          "chat", "command"):
+            self.assertNotIn(forbidden, MinecraftController.ACTIONS)
+
+    def test_every_action_in_the_table_exists(self):
+        for action, method in MinecraftController.ACTIONS.items():
+            with self.subTest(action=action):
+                self.assertTrue(hasattr(self.controller, method))
+
+
+class TestEmergencyStop(_Case):
+    """F12's code path, under the name the rest of the system uses."""
+
+    def test_emergency_stop_releases_everything(self):
+        self.open()
+        self.controller.ledger.hold("w")
+        self.controller.ledger.hold_button("left")
+        report = self.controller.emergency_stop()
+        self.assertTrue(report["stopped"])
+        self.assertTrue(report["clean"])
+        self.assert_nothing_held()
+
+    def test_emergency_stop_revokes_the_authorization(self):
+        """One confirmation grants gameplay; F12 takes it back. The next
+        action must need a fresh confirmation, not resume quietly."""
+        self.open()
+        self.controller.emergency_stop()
+        result = self.controller.execute_action("mine", {"duration": 0.05})
+        self.assertFalse(result.ok)
+        self.assertEqual(self.backend.button_downs(), [])
+
+    def test_emergency_stop_works_with_nothing_running(self):
+        """It must never refuse, never raise, and never need a session."""
+        report = self.controller.emergency_stop()
+        self.assertTrue(report["stopped"])
+
+    def test_emergency_stop_is_idempotent(self):
+        self.open()
+        for _ in range(3):
+            self.assertTrue(self.controller.emergency_stop()["stopped"])
 
 
 class TestFocusGrace(unittest.TestCase):

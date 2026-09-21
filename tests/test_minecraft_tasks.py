@@ -28,9 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from minecraft import skills, task_runner, verification as verify_mod  # noqa: E402
 from minecraft.controller import ActionResult                          # noqa: E402
 from minecraft.state import BlockRef, INFERRED, WorldState, empty_state  # noqa: E402
+from minecraft.progress import ProgressMonitor                          # noqa: E402
 from minecraft.task_runner import (                                    # noqa: E402
     COMPLETED, FAILED, INCOMPLETE, MAX_TASK_STEPS, STOPPED, Step, TaskRunner,
 )
+from minecraft import task_runner                                      # noqa: E402
 
 
 class FakeController:
@@ -52,6 +54,12 @@ class FakeController:
     def look(self, p): return self._record("look", p)
     def jump(self, p): return self._record("jump", p)
     def attack(self, p): return self._record("attack", p)
+    def mine(self, p): return self._record("mine", p)
+    def place(self, p): return self._record("place", p)
+    def interact(self, p): return self._record("interact", p)
+    def eat(self, p): return self._record("eat", p)
+    def drop(self, p): return self._record("drop", p)
+    def inventory(self, p): return self._record("inventory", p)
     def use_item(self, p): return self._record("use_item", p)
     def sneak(self, p): return self._record("sneak", p)
     def sprint(self, p): return self._record("sprint", p)
@@ -77,10 +85,36 @@ def runner(controller=None, source=None):
 # ── Adversarial skills ───────────────────────────────────────────────────────
 
 class Forever:
-    """Never says it is done. The step limit is the only thing that stops it."""
+    """Never says it is done, and never shows progress either.
+
+    With no readable state every verdict is UNVERIFIABLE, so this now trips
+    the blind-streak detector before the step limit. Used for the stuck
+    tests; use ForeverProductive when the step limit itself is the subject."""
     name = goal = "forever"
     def plan(self, state, index, history):
         return Step(action="jump", params={})
+
+
+class ForeverProductive:
+    """Never finishes, but every step visibly achieves something.
+
+    This is what the step limit is actually for: a task that is working
+    perfectly and simply has no end. Stuck detection must NOT fire here, or
+    the limit would never be the thing that stops a healthy task."""
+    name = goal = "forever productive"
+    def plan(self, state, index, history):
+        return Step(action="move", params={"direction": "forward"},
+                    expectation=verify_mod.moved(min_distance=0.1))
+
+
+class WalkingSource:
+    """A world where the player really does move each time it is read."""
+    def __init__(self):
+        self.n = 0
+    def read(self):
+        self.n += 1
+        return WorldState(position=(float(self.n), 64.0, 0.0),
+                          source="test", confidence=INFERRED)
 
 
 class Smuggler:
@@ -117,11 +151,13 @@ class Immediate:
 
 class TestTasksAlwaysStop(unittest.TestCase):
 
-    def test_an_endless_skill_hits_the_step_limit(self):
+    def test_a_healthy_endless_skill_hits_the_step_limit(self):
+        """Working perfectly, simply never finishing. Stuck detection must not
+        fire, or the limit would never be what stops a healthy task."""
         controller = FakeController()
-        result = runner(controller).run(Forever())
+        result = runner(controller, WalkingSource()).run(ForeverProductive())
         self.assertEqual(result.status, INCOMPLETE)
-        self.assertEqual(result.reason, "step_limit")
+        self.assertEqual(result.reason, task_runner.STEP_LIMIT)
         self.assertEqual(result.steps_taken, MAX_TASK_STEPS)
         self.assertEqual(len(controller.calls), MAX_TASK_STEPS)
 
@@ -130,17 +166,20 @@ class TestTasksAlwaysStop(unittest.TestCase):
         module allows — otherwise the limit is a suggestion."""
         for asked in (50, 999, 10 ** 9):
             with self.subTest(max_steps=asked):
-                result = runner().run(Forever(), max_steps=asked)
+                result = runner(FakeController(), WalkingSource()).run(
+                    ForeverProductive(), max_steps=asked)
                 self.assertEqual(result.steps_taken, MAX_TASK_STEPS)
 
     def test_a_caller_may_ask_for_fewer(self):
-        result = runner().run(Forever(), max_steps=3)
+        result = runner(FakeController(), WalkingSource()).run(
+            ForeverProductive(), max_steps=3)
         self.assertEqual(result.steps_taken, 3)
 
     def test_a_nonsense_limit_falls_back_to_the_ceiling(self):
         for asked in ("lots", None, -5, 0):
             with self.subTest(max_steps=repr(asked)):
-                result = runner().run(Forever(), max_steps=asked)
+                result = runner(FakeController(), WalkingSource()).run(
+                    ForeverProductive(), max_steps=asked)
                 self.assertLessEqual(result.steps_taken, MAX_TASK_STEPS)
                 self.assertGreaterEqual(result.steps_taken, 1)
 
@@ -200,6 +239,118 @@ class TestExternalStopsEndTasks(unittest.TestCase):
         self.assertEqual(result.reason, "focus_lost")
         self.assertEqual(result.steps_taken, 3)
         self.assertLess(result.steps_taken, MAX_TASK_STEPS)
+
+
+class TestStuckAndTime(unittest.TestCase):
+    """Two bounds the step limit does not provide.
+
+    A task walking into a wall is using its budget perfectly and achieving
+    nothing; a task whose steps are slow can run for minutes inside twenty
+    steps. Both end in "incomplete", but with reasons a user can act on."""
+
+    class WallSource:
+        """Position never changes, however much you walk."""
+        def read(self):
+            return WorldState(position=(10.0, 64.0, 5.0), source="test",
+                              confidence=INFERRED)
+
+    class Walker:
+        name = goal = "walk into a wall"
+        def plan(self, state, index, history):
+            return Step(action="move", params={"direction": "forward"},
+                        expectation=verify_mod.moved(min_distance=0.5))
+
+    def test_walking_into_a_wall_stops_before_the_step_limit(self):
+        controller = FakeController()
+        result = runner(controller, self.WallSource()).run(self.Walker())
+        self.assertEqual(result.status, INCOMPLETE)
+        self.assertIn(task_runner.STUCK, result.reason)
+        self.assertLess(result.steps_taken, MAX_TASK_STEPS)
+
+    def test_the_reason_describes_the_wall_not_the_budget(self):
+        """"I ran out of steps" tells the user nothing. "I tried four times
+        and nothing changed" tells them there is something in the way."""
+        result = runner(FakeController(), self.WallSource()).run(self.Walker())
+        self.assertIn("nothing changed", result.reason)
+        self.assertIn("move", result.reason)
+
+    def test_progress_is_reported_in_the_payload(self):
+        result = runner(FakeController(), self.WallSource()).run(self.Walker())
+        progress = result.as_dict()["progress"]
+        self.assertTrue(progress["stuck"])
+        self.assertEqual(progress["stuck_reason"], "no_progress")
+
+    def test_a_task_that_runs_too_long_stops_on_the_clock(self):
+        """Independent of the step count: twenty slow steps can outlive the
+        attention of whoever asked for it."""
+        ticks = {"t": 0.0}
+
+        def clock():
+            ticks["t"] += 5.0
+            return ticks["t"]
+
+        r = TaskRunner(FakeController(), WalkingSource(),
+                       sleeper=lambda _s: None, max_seconds=12.0,
+                       clock=clock)
+        result = r.run(ForeverProductive())
+        self.assertEqual(result.status, INCOMPLETE)
+        self.assertEqual(result.reason, task_runner.TIME_LIMIT)
+        self.assertLess(result.steps_taken, MAX_TASK_STEPS)
+
+    def test_the_runtime_ceiling_cannot_be_raised_by_a_caller(self):
+        r = TaskRunner(FakeController(), WalkingSource(),
+                       sleeper=lambda _s: None, max_seconds=10 ** 6)
+        self.assertLessEqual(r._max_seconds, task_runner.MAX_TASK_SECONDS)
+
+
+class TestReplanning(unittest.TestCase):
+
+    class WallSource:
+        def read(self):
+            return WorldState(position=(1.0, 2.0, 3.0), source="test",
+                              confidence=INFERRED)
+
+    class Stubborn:
+        """Keeps walking, and offers a different approach when told it is
+        stuck."""
+        name = goal = "get past"
+        def __init__(self):
+            self.replans = 0
+        def plan(self, state, index, history):
+            return Step(action="move", params={"direction": "forward"},
+                        expectation=verify_mod.moved(min_distance=0.5))
+        def replan(self, state, reason, history):
+            self.replans += 1
+            return "try jumping" if self.replans == 1 else None
+
+    def test_a_stuck_skill_is_offered_one_chance_to_change_approach(self):
+        skill = self.Stubborn()
+        result = runner(FakeController(), self.WallSource()).run(skill)
+        self.assertGreaterEqual(skill.replans, 1)
+        self.assertEqual(result.status, INCOMPLETE)
+
+    def test_a_skill_with_no_replan_simply_stops(self):
+        """The right default. Silently continuing a strategy that
+        demonstrably is not working is how an agent burns its whole budget."""
+        class NoReplan:
+            name = goal = "no replan"
+            def plan(self, state, index, history):
+                return Step(action="move", params={"direction": "forward"},
+                            expectation=verify_mod.moved(min_distance=0.5))
+        result = runner(FakeController(), self.WallSource()).run(NoReplan())
+        self.assertIn(task_runner.STUCK, result.reason)
+
+    def test_a_replan_that_raises_does_not_crash_the_task(self):
+        class Angry:
+            name = goal = "angry"
+            def plan(self, state, index, history):
+                return Step(action="move", params={"direction": "forward"},
+                            expectation=verify_mod.moved(min_distance=0.5))
+            def replan(self, state, reason, history):
+                raise RuntimeError("no idea")
+        result = runner(FakeController(), self.WallSource()).run(Angry())
+        self.assertEqual(result.status, INCOMPLETE)
+        self.assertIn(task_runner.STUCK, result.reason)
 
 
 # ── The planner boundary ─────────────────────────────────────────────────────
@@ -293,6 +444,27 @@ class TestTasksVerify(unittest.TestCase):
         self.assertIn(verify_mod.SUCCESS, statuses)
         self.assertIn(verify_mod.FAILED, statuses)
 
+    def test_collect_logs_counts_broken_blocks_not_claimed_items(self):
+        """It cannot see the inventory, so it counts what it watched
+        disappear. A weaker claim, and the true one — an item that dropped out
+        of reach was never picked up."""
+        class Forest:
+            def __init__(self): self.n = 0
+            def read(self):
+                self.n += 1
+                name = "air" if self.n % 2 == 0 else "oak_log"
+                return WorldState(
+                    target_block=BlockRef(x=self.n, y=64, z=0, name=name),
+                    rotation=(self.n * 10.0, 0.0),
+                    source="f3", confidence=INFERRED)
+
+        controller = FakeController()
+        result = runner(controller, Forest()).run(skills.CollectLogs(count=3))
+        self.assertEqual(result.status, COMPLETED)
+        self.assertEqual(sum(1 for n, _ in controller.calls if n == "mine"), 3)
+        self.assertIn("cannot see the inventory", result.reason)
+        self.assertNotIn("collected", result.reason.split("not items")[0])
+
     def test_swings_that_did_not_break_it_are_recorded_as_failures(self):
         """Not as successes, and not hidden. The per-step trail is what makes
         "I swung four times and it broke on the fourth" a true sentence."""
@@ -310,13 +482,15 @@ class TestTasksVerify(unittest.TestCase):
                             "the swing WAS delivered — only the goal failed")
 
     def test_a_blind_task_never_claims_success(self):
-        """No state source output at all: the actions happen, and the summary
-        must say it could not verify any of them."""
+        """No state source output at all. The actions happen; the task must
+        not report an achievement, and now stops rather than spending its
+        whole budget learning nothing."""
         result = runner(FakeController(), StaticSource()).run(
-            skills.WalkForward(seconds=4.0))
+            skills.WalkForward(seconds=20.0))
+        self.assertNotEqual(result.status, COMPLETED)
         self.assertEqual(result.verified_steps, 0)
         self.assertGreater(result.unverifiable_steps, 0)
-        self.assertIn("could not verify", result.describe())
+        self.assertIn(task_runner.STUCK, result.reason)
 
     def test_an_action_with_no_expectation_is_unverifiable_not_success(self):
         class NoCheck:
@@ -396,8 +570,8 @@ class TestSkills(unittest.TestCase):
         self.assertEqual(controller.calls, [])
 
     def test_the_things_it_cannot_do_are_named_rather_than_attempted(self):
-        for name in ("collect_wood", "craft_item", "build_structure",
-                     "return_to_base"):
+        for name in ("craft_item", "build_structure", "return_to_base",
+                     "count_inventory"):
             with self.subTest(skill=name):
                 self.assertIn(name, skills.NOT_YET_POSSIBLE)
                 self.assertNotIn(name, skills.available())

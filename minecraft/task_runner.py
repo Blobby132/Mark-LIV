@@ -68,11 +68,20 @@ from dataclasses import dataclass, field
 
 from minecraft import verification as verify_mod
 from minecraft.errors import InvalidAction
+from minecraft.progress import ProgressMonitor
 from minecraft.state import empty_state
 
 MAX_TASK_STEPS = 20
 """Hard ceiling on steps in one task. Not a parameter, not configurable from a
 tool call: a caller may ask for FEWER, never more."""
+
+MAX_TASK_SECONDS = 120.0
+"""Wall-clock ceiling on one task, independent of the step limit.
+
+Both are needed and neither implies the other. Twenty steps of bounded moves
+is under a minute; twenty steps that each wait on a slow screen capture is
+several. A task that has been running for two minutes has outlived the
+attention of whoever asked for it, whatever its step count says."""
 
 MIN_OBSERVATION_INTERVAL_S = 0.25
 """The floor between steps. Minecraft runs at 20 ticks per second, so anything
@@ -86,17 +95,28 @@ INCOMPLETE = "incomplete"
 STOPPED = "stopped"
 FAILED = "failed"
 
+# Why an INCOMPLETE task stopped.
+STEP_LIMIT = "step_limit"
+TIME_LIMIT = "time_limit"
+STUCK = "stuck"
+
 # The complete set of actions a skill may ask for. A name outside this table is
 # not forwarded anywhere — see the module docstring.
 DISPATCH = {
     "move":           "move",
     "look":           "look",
     "jump":           "jump",
-    "attack":         "attack",
-    "use_item":       "use_item",
     "sneak":          "sneak",
     "sprint":         "sprint",
+    "attack":         "attack",
+    "mine":           "mine",
+    "place":          "place",
+    "interact":       "interact",
+    "use_item":       "use_item",
+    "eat":            "eat",
+    "drop":           "drop",
     "hotbar_select":  "hotbar_select",
+    "inventory":      "inventory",
 }
 
 ALLOWED_ACTIONS = tuple(sorted(DISPATCH))
@@ -156,6 +176,7 @@ class TaskResult:
     max_steps: int = MAX_TASK_STEPS
     records: tuple = ()
     final_state: dict = field(default_factory=dict)
+    progress: dict = field(default_factory=dict)
 
     @property
     def completed(self) -> bool:
@@ -182,6 +203,7 @@ class TaskResult:
             "unverifiable_steps": self.unverifiable_steps,
             "records": [r.as_dict() for r in self.records],
             "final_state": self.final_state,
+            "progress": self.progress,
         }
 
     def describe(self) -> str:
@@ -217,14 +239,18 @@ class TaskRunner:
 
     def __init__(self, controller, state_source, observer=None,
                  interval_s: float = DEFAULT_OBSERVATION_INTERVAL_S,
-                 sleeper=None):
+                 sleeper=None, max_seconds: float = MAX_TASK_SECONDS,
+                 clock=None):
         self._controller = controller
         self._state_source = state_source
         self._observer = observer
         self._interval = max(MIN_OBSERVATION_INTERVAL_S, float(interval_s))
         # Injectable so tests do not spend real seconds waiting.
         self._sleep = sleeper if sleeper is not None else time.sleep
+        self._clock = clock if clock is not None else time.monotonic
+        self._max_seconds = max(1.0, min(float(max_seconds), MAX_TASK_SECONDS))
         self._cancel = threading.Event()
+        self.progress = ProgressMonitor()
 
     def cancel(self, reason: str = "cancelled") -> None:
         """Ask the running task to stop at the next step boundary.
@@ -247,6 +273,9 @@ class TaskRunner:
         limit = self._resolve_limit(max_steps)
 
         records: list = []
+        self.progress.reset()
+        deadline = self._clock() + self._max_seconds
+
         # The one observation before the loop. Every later one comes from a
         # step's "after" and is reused as the next step's "before".
         state = self._read_state()
@@ -255,6 +284,10 @@ class TaskRunner:
             blocked = self._stop_reason()
             if blocked:
                 return self._result(STOPPED, goal, blocked, records, state)
+
+            if self._clock() >= deadline:
+                return self._result(INCOMPLETE, goal, TIME_LIMIT, records,
+                                    state)
 
             try:
                 step = skill.plan(state, index, tuple(records))
@@ -276,11 +309,23 @@ class TaskRunner:
 
             record, state = self._execute(index, step, state)
             records.append(record)
+            self.progress.record(step.action, record.verification)
+
+            # Stuck: the same action, the same relevant state, over and over.
+            # The step limit would catch this eventually; catching it here
+            # means the answer is "there is a wall" rather than "I ran out of
+            # steps", and it gives a skill the chance to try something else.
+            if self.progress.stuck:
+                alternative = self._replan(skill, state, tuple(records))
+                if alternative is None:
+                    return self._result(INCOMPLETE, goal,
+                                        f"{STUCK}: {self.progress.explain()}",
+                                        records, state)
+                self.progress.reset()
 
             self._sleep(self._interval)
 
-        return self._result(
-            INCOMPLETE, goal, "step_limit", records, state)
+        return self._result(INCOMPLETE, goal, STEP_LIMIT, records, state)
 
     # ── one step ─────────────────────────────────────────────────────────────
 
@@ -321,6 +366,24 @@ class TaskRunner:
         ), after
 
     # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _replan(self, skill, state, history):
+        """Give the skill one chance to change approach when it is stuck.
+
+        Optional: a skill with no `replan` is simply not asked, and the task
+        ends. That is the right default — silently continuing a strategy that
+        demonstrably is not working is how an agent burns its whole budget.
+
+        A skill that replans gets its progress history cleared, so the next
+        approach is judged on its own rather than inheriting the failure count
+        of the one before."""
+        replan = getattr(skill, "replan", None)
+        if not callable(replan):
+            return None
+        try:
+            return replan(state, self.progress.stuck_reason(), history)
+        except Exception:
+            return None
 
     def _resolve_limit(self, requested) -> int:
         """A caller may ask for fewer steps than the ceiling, never more."""
@@ -366,12 +429,14 @@ class TaskRunner:
             status=status, goal=goal, reason=reason,
             steps_taken=len(records), max_steps=MAX_TASK_STEPS,
             records=tuple(records), final_state=state.as_dict(),
+            progress=self.progress.as_dict(),
         )
 
 
 __all__ = [
     "TaskRunner", "TaskResult", "Step", "StepRecord",
-    "MAX_TASK_STEPS", "MIN_OBSERVATION_INTERVAL_S",
+    "MAX_TASK_STEPS", "MAX_TASK_SECONDS", "MIN_OBSERVATION_INTERVAL_S",
     "DEFAULT_OBSERVATION_INTERVAL_S", "DISPATCH", "ALLOWED_ACTIONS",
     "COMPLETED", "INCOMPLETE", "STOPPED", "FAILED",
+    "STEP_LIMIT", "TIME_LIMIT", "STUCK",
 ]

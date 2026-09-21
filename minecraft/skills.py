@@ -228,11 +228,126 @@ class BreakBlock:
             return None
 
         return Step(
-            action="attack",
+            action="mine",
             params={"duration": self.swing_seconds},
             expectation=verify_mod.block_broken(self.expected or None),
             note=f"swing {step_index + 1}",
         )
+
+
+@dataclass
+class PlaceBlock:
+    """Select a slot, then place one block against what the crosshair is on.
+
+    Two steps rather than one because they fail differently: the wrong slot
+    means the wrong block, and no valid surface means nothing happens at all.
+    Reporting "placed" for either would be a lie of a different kind.
+
+    HONEST LIMIT ON VERIFICATION
+        Placement is confirmed by the targeted block changing — the new block
+        is now what the crosshair sees. That works when aiming at the face a
+        block lands on and fails when it lands out of view, so the result can
+        be UNVERIFIABLE even when the block really was placed. Confirming it
+        properly needs the inventory count, which is not on the F3 overlay."""
+
+    slot: int = 1
+    _placed: bool = False
+
+    name = "place_block"
+    verifiable_with = ("target_block",)
+
+    @property
+    def goal(self) -> str:
+        return f"place the block in slot {self.slot}"
+
+    @property
+    def done_reason(self) -> str:
+        return ("placed, as far as the crosshair can tell" if self._placed
+                else "nothing was placed")
+
+    def plan(self, state, step_index: int, history: tuple):
+        if step_index == 0:
+            return Step(action="hotbar_select", params={"slot": self.slot},
+                        expectation=verify_mod.holding_slot(self.slot),
+                        note=f"select slot {self.slot}")
+        if step_index == 1:
+            return Step(action="place", params={},
+                        expectation=verify_mod.target_changed(),
+                        note="place one block")
+        self._placed = any(
+            r.verification.get("status") == verify_mod.SUCCESS
+            for r in history)
+        return None
+
+
+@dataclass
+class CollectLogs:
+    """Find a tree, mine it, repeat. The first genuinely useful goal.
+
+    WHAT IT CAN AND CANNOT COUNT
+        It cannot count logs. Inventory contents are not on the F3 overlay, so
+        "collect 4 logs" cannot be verified as four — only as four blocks
+        observed to disappear. That is a weaker claim and it is the one the
+        result makes: `logs_broken`, not `logs_collected`. An item that
+        dropped out of reach still counts as broken and was never picked up.
+
+        Confirming collection needs the mod bridge. Until then this reports
+        what it saw rather than what it hopes."""
+
+    count: int = 4
+    sweep_steps: int = 10
+    delta_px: int = 100
+
+    name = "collect_logs"
+    verifiable_with = ("target_block",)
+
+    _broken: int = 0
+    _last_target: str = ""
+
+    @property
+    def goal(self) -> str:
+        return f"break {self.count} log(s)"
+
+    @property
+    def done_reason(self) -> str:
+        return (f"broke {self._broken} of {self.count} log(s) — I cannot see "
+                f"the inventory, so I am reporting blocks that disappeared, "
+                f"not items picked up")
+
+    def plan(self, state, step_index: int, history: tuple):
+        # Count from the record, not from a local tally: a swing whose
+        # verification says the block went is the only evidence that counts.
+        self._broken = sum(
+            1 for r in history
+            if r.step.get("action") == "mine"
+            and r.verification.get("status") == verify_mod.SUCCESS)
+        if self._broken >= self.count:
+            return None
+
+        block = state.target_block
+        name = getattr(block, "name", None) if block else None
+
+        if name in LOG_BLOCKS:
+            self._last_target = name
+            return Step(action="mine", params={"duration": 1.0},
+                        expectation=verify_mod.block_broken(name),
+                        note=f"mine {name} ({self._broken}/{self.count})")
+
+        # Nothing wooden under the crosshair: sweep the view looking for some.
+        return Step(action="look", params={"dx": self.delta_px, "dy": 0},
+                    expectation=verify_mod.turned(min_degrees=2.0),
+                    note=f"looking for a log ({self._broken}/{self.count})")
+
+    def replan(self, state, reason, history):
+        """Stuck: stop mining and look elsewhere.
+
+        The commonest cause is a log that will not break because it is out of
+        reach, which no number of extra swings fixes. Turning is a cheap,
+        bounded alternative and the progress monitor gets reset, so the new
+        approach is judged on its own."""
+        if reason == "no_progress":
+            return "sweep for a different log"
+        return None
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -242,6 +357,8 @@ BUILTIN_SKILLS = {
     "survey": Survey,
     "find_block": FindBlock,
     "break_block": BreakBlock,
+    "place_block": PlaceBlock,
+    "collect_logs": CollectLogs,
 }
 
 
@@ -267,8 +384,11 @@ def available() -> tuple:
 # Named here rather than in prose so the tool description, the status report
 # and the manual check all quote the same list.
 NOT_YET_POSSIBLE = {
-    "collect_wood": "needs inventory counts, which are not on the F3 overlay.",
-    "craft_item": "needs the inventory and the crafting UI.",
+    "craft_item": "needs to read the inventory and the crafting grid, "
+                  "neither of which is on the F3 overlay.",
+    "count_inventory": "inventory contents are not on the F3 overlay. "
+                       "`collect_logs` reports blocks broken instead, which "
+                       "is a weaker and honest claim.",
     "find_iron": "needs to see the world, not just the block under the crosshair.",
     "mine_ore": "needs inventory counts to confirm what was collected.",
     "eat_food": "needs hunger and the inventory.",
@@ -280,5 +400,6 @@ NOT_YET_POSSIBLE = {
 
 __all__ = [
     "Skill", "WalkForward", "Survey", "FindBlock", "BreakBlock",
+    "PlaceBlock", "CollectLogs",
     "BUILTIN_SKILLS", "create", "available", "LOG_BLOCKS", "NOT_YET_POSSIBLE",
 ]

@@ -28,6 +28,8 @@ WHAT MAKES THE BARGAIN HONEST
 
 from __future__ import annotations
 
+from core import capabilities as core_caps
+
 import threading
 import time
 import uuid
@@ -43,6 +45,40 @@ means a forgotten session ends sooner."""
 
 MIN_SESSION_SECONDS = 5.0
 
+GAMEPLAY_CAPABILITIES = frozenset({
+    core_caps.MINECRAFT_MOVEMENT,
+    core_caps.MINECRAFT_LOOK,
+    core_caps.MINECRAFT_COMBAT,
+    core_caps.MINECRAFT_MINING,
+    core_caps.MINECRAFT_BUILD,
+    core_caps.MINECRAFT_ITEMS,
+    core_caps.MINECRAFT_INVENTORY,
+    core_caps.MINECRAFT_INTERACT,
+    core_caps.MINECRAFT_TASK,
+})
+"""What ONE confirmation buys.
+
+This frozenset is the authorization. It is defined here, in source, and there
+is no function anywhere that adds to it at runtime -- so "what may a session
+do" is a question answered by reading this file, not by inspecting state that
+something could have changed.
+
+Chat, launch and command are deliberately absent. A grant to play the game is
+not a grant to talk to strangers on a server, start processes, or reach a
+command line, and none of those becomes available because a session is open."""
+
+GRANT_SUMMARY = (
+    "walk, jump, sprint, sneak, look around, attack, mine and break blocks, "
+    "place blocks, use and drop items, select hotbar slots, open and use the "
+    "inventory, and interact with blocks and entities"
+)
+"""What the confirmation banner says the grant covers, in the user's words.
+
+Kept next to the frozenset it describes so the two cannot drift: a capability
+added above without a mention here would be a grant the user was never told
+about, which is the failure mode that makes session-level consent worse than
+per-action consent rather than better."""
+
 
 @dataclass
 class Session:
@@ -56,19 +92,20 @@ class Session:
     granted_seconds: float
     cancel: threading.Event = field(default_factory=threading.Event)
     ended_reason: str = ""
-    allow_interaction: bool = False
+    authorized: bool = False
     _ended: bool = False
 
     # ── what this grant covers ───────────────────────────────────────────────
     #
-    # Movement and looking come with any session. Mining and placing do not:
-    # they change the world, and undoing a mistake in survival means finding
-    # the block again. So they need a session opened with interaction asked
-    # for by name, and the confirmation for that session says so in as many
-    # words.
+    # `authorized` is set only by SessionManager.start(), which the controller
+    # calls only from inside the broker's approved-run callback -- so it is
+    # true only after a human pressed CONFIRM on a banner that named
+    # GRANT_SUMMARY. The model has no parameter that sets it and no path that
+    # reaches it.
     #
-    # This flag, not the capability verdict, is what makes attack safe. See
-    # MINECRAFT_ATTACK in core/capabilities.py.
+    # This flag, not the capability verdicts, is what makes mining safe. The
+    # table says an action is the kind of thing that may happen; the session
+    # says it may happen to YOUR world, now, for the next few minutes.
 
     @property
     def active(self) -> bool:
@@ -80,6 +117,21 @@ class Session:
     @property
     def expired(self) -> bool:
         return time.monotonic() >= self.expires_at
+
+    def is_authorized(self) -> bool:
+        """Live AND approved. Both, always — an expired authorisation is not
+        an authorisation, and this is the single question every gameplay
+        action asks before it touches an input."""
+        return bool(self.authorized) and self.active
+
+    def covers(self, capability: str) -> bool:
+        """Does this session's grant extend to `capability`?
+
+        Membership of GAMEPLAY_CAPABILITIES, not a prefix match on
+        "minecraft.": a prefix would silently swallow every capability added
+        to the namespace later, including chat and command, which is exactly
+        the accident this guards."""
+        return self.is_authorized() and capability in GAMEPLAY_CAPABILITIES
 
     @property
     def remaining(self) -> float:
@@ -99,7 +151,9 @@ class Session:
             "remaining_seconds": round(self.remaining, 1),
             "age_seconds": round(self.age, 1),
             "ended_reason": self.ended_reason,
-            "allow_interaction": self.allow_interaction,
+            "authorized": self.is_authorized(),
+            "covers": sorted(GAMEPLAY_CAPABILITIES) if self.is_authorized()
+                      else [],
         }
 
 
@@ -118,14 +172,16 @@ class SessionManager:
 
     def start(self, duration_s: float | None = None,
               owner: str = "user",
-              allow_interaction: bool = False) -> Session:
+              authorized: bool = False) -> Session:
         """Open a session. Raises RuntimeError if one is already live.
 
         Called from inside the broker's approved-run callback, so by the time
         this executes a human has pressed CONFIRM.
 
-        `allow_interaction` defaults to False so that a caller who forgets to
-        pass it gets the safe session, not the destructive one."""
+        `authorized` defaults to False so a caller who forgets it gets a
+        session that can do nothing, rather than one that can do everything.
+        The only caller that passes True is the controller, and only from
+        inside the broker's approved-run callback."""
         requested = float(duration_s if duration_s is not None
                           else DEFAULT_SESSION_SECONDS)
         granted = max(MIN_SESSION_SECONDS,
@@ -145,7 +201,7 @@ class SessionManager:
                 expires_at=now + granted,
                 requested_seconds=requested,
                 granted_seconds=granted,
-                allow_interaction=bool(allow_interaction),
+                authorized=bool(authorized),
             )
             return self._session
 
@@ -230,5 +286,6 @@ class SessionManager:
                 pass          # a listener fault must not block the teardown
 
 
-__all__ = ["Session", "SessionManager", "MAX_SESSION_SECONDS",
+__all__ = ["Session", "SessionManager", "GAMEPLAY_CAPABILITIES",
+           "GRANT_SUMMARY", "MAX_SESSION_SECONDS",
            "DEFAULT_SESSION_SECONDS", "MIN_SESSION_SECONDS"]

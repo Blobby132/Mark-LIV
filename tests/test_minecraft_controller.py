@@ -371,17 +371,18 @@ class TestSessionExpiry(_ControllerCase):
                                        "duration": 0.05})
         self.assertTrue(result.ok, result.error)
 
-    def test_asking_for_interaction_replaces_a_session_without_it(self):
+    def test_asking_for_authorization_replaces_an_unauthorized_session(self):
         """A grant is not widened in place: the confirmation the user answered
         for the first session described a narrower one than they would end up
         with."""
-        first = self.open_session()
+        first = self.controller.start_session(duration_s=30,
+                                              authorized=False)
         upgraded = self.controller.start_session(duration_s=30,
-                                                 allow_interaction=True)
+                                                 authorized=True)
         self.assertFalse(upgraded["reused_existing"])
         self.assertNotEqual(upgraded["session"]["session_id"],
                             first["session"]["session_id"])
-        self.assertTrue(upgraded["session"]["allow_interaction"])
+        self.assertTrue(upgraded["session"]["authorized"])
 
     def test_release_inputs_does_not_end_the_session(self):
         """The distinction that stop() was wrongly standing in for."""

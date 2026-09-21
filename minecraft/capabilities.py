@@ -25,40 +25,37 @@ from __future__ import annotations
 
 from core import capabilities as core_caps
 
-PHASE = "3"
+PHASE = "4"
 """Bumped when a later phase enables more. Recorded in the audit log so a log
 line can be read against the code that produced it."""
 
 ENABLED = frozenset({
     core_caps.MINECRAFT_OBSERVE,
     core_caps.MINECRAFT_READ_STATE,
-    core_caps.MINECRAFT_CONTROL_SESSION,
-    core_caps.MINECRAFT_MOVE,
-    core_caps.MINECRAFT_LOOK,
-    core_caps.MINECRAFT_JUMP,
+    core_caps.MINECRAFT_CONTROL,
     core_caps.MINECRAFT_STOP,
-    # Phase 3: interacting with the world, and doing it more than once.
-    core_caps.MINECRAFT_ATTACK,
-    core_caps.MINECRAFT_USE_ITEM,
-    core_caps.MINECRAFT_HOTBAR,
-    core_caps.MINECRAFT_SNEAK,
-    core_caps.MINECRAFT_SPRINT,
+    # Ordinary gameplay. All of it reachable after ONE confirmation.
+    core_caps.MINECRAFT_MOVEMENT,
+    core_caps.MINECRAFT_LOOK,
+    core_caps.MINECRAFT_COMBAT,
+    core_caps.MINECRAFT_MINING,
+    core_caps.MINECRAFT_BUILD,
+    core_caps.MINECRAFT_ITEMS,
+    core_caps.MINECRAFT_INVENTORY,
+    core_caps.MINECRAFT_INTERACT,
     core_caps.MINECRAFT_TASK,
 })
-"""What Phase 3 can attempt: everything Phase 2 could, plus mining, placing,
-hotbar selection, sneaking, sprinting, and bounded multi-step tasks.
+"""What Phase 4 can attempt: everything an ordinary player does with the
+keyboard and mouse.
 
-Deliberately still absent: inventory, chat, command, launch.
+Deliberately still absent: chat, slash commands, launching the game.
 
-Note that attack and use_item being in this set is NOT what makes them
-reachable. They additionally require a session opened with interaction
-granted — see `Session.allow_interaction`. This set says "the code exists";
-the session says "you may use it on my world"."""
+Being in this set is NOT what makes a capability reachable. Every one of them
+additionally requires a session whose grant covers it — see
+`Session.covers`. This set says "the code exists"; the session says "you may
+use it on my world, now, for the next few minutes"."""
 
 DISABLED_REASON = {
-    core_caps.MINECRAFT_INVENTORY:
-        "Inventory handling is not built yet — it needs a real state source to "
-        "know what is in which slot.",
     core_caps.MINECRAFT_CHAT:
         "Chat is not built yet. On a server it reaches other people, so it "
         "will need its own confirmation when it is.",

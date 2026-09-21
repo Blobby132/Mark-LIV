@@ -93,7 +93,7 @@ def countdown(seconds: int, why: str) -> None:
 def main() -> int:
     print(f"""
 {RULE}
-  MARK-LIV — MINECRAFT PHASE 3 MANUAL CHECK
+  MARK-LIV — MINECRAFT PHASE 4 MANUAL CHECK
 {RULE}
 
   Before you start:
@@ -106,19 +106,25 @@ def main() -> int:
     * Nothing here is autonomous. Every step asks first, and you can
       answer 'q' at any prompt to stop.
 
-  What this checks, in order:
-     1. Minecraft process detection       8. Tap SPACE
-     2. Minecraft window detection        9. Read the F3 debug overlay
-     3. Foreground focus                 10. Report your position
-     4. Capture one Minecraft-only frame 11. Aim at a block
-     5. Relative mouse movement          12. Attack, and VERIFY the result
-     6. Hold W for 0.5s                  13. Select a hotbar slot
-     7. Hold A for 0.5s                  14. Use an item
-                                         15. Emergency stop (F12)
-                                         16. Everything released
+  ONE CONFIRMATION
+    The session you approve at step 5 covers every gameplay action in this
+    check — walking, looking, jumping, attacking, mining, placing, items,
+    the inventory and interaction. You should not be asked again.
+    If any later step asks you to confirm something, that is a bug and I
+    want to know.
 
-  Steps 12 and 14 change the world (they break and place blocks), so they
-  are asked for separately and you can skip them. Use a throwaway world.
+  What this checks, in order:
+     1. Minecraft process detection      10. Report your position
+     2. Minecraft window detection       11. Aim at a block
+     3. Foreground focus                 12. Mine it, and VERIFY it broke
+     4. Capture one Minecraft-only frame 13. Select a hotbar slot
+     5. ONE session confirmation         14. Place a block, and verify
+     6. Relative mouse movement          15. Open and close the inventory
+     7. Hold W / Hold A                  16. Interact with a block
+     8. Tap SPACE, sprint, sneak         17. Emergency stop (F12)
+     9. Read the F3 debug overlay        18. Everything released
+
+  Steps 12, 14 and 16 change the world. Use a throwaway creative world.
 """)
     pause("Press Enter when Minecraft is open and you are ready.")
 
@@ -347,7 +353,7 @@ def main() -> int:
         print("  it did because I held the button down.")
         print()
         if aimed and aimed != "air" and ask(f"Break the {aimed}?") \
-                and ensure_session(controller, interaction=True):
+                and ensure_session(controller):
             session_open = True
             print("  Click back on Minecraft.")
             countdown(4, "Breaking in:")
@@ -392,7 +398,7 @@ def main() -> int:
         print("  Put a placeable block in slot 3 and aim at the ground.")
         print("  THIS PLACES A BLOCK.")
         if ask("Try using/placing what is in your hand?") \
-                and ensure_session(controller, interaction=True):
+                and ensure_session(controller):
             session_open = True
             pause("Aim at the ground, click back on Minecraft, press Enter.")
             countdown(3, "Using in:")
@@ -402,6 +408,68 @@ def main() -> int:
             record("use item", placed and result.ok)
         else:
             record("use item", False, "skipped")
+
+        # ── Phase 4: sprint, sneak, place, inventory, interact ───────────────
+        heading("Sprint and sneak")
+        if ask("Ready? I will sprint forward, then sneak.") \
+                and ensure_session(controller):
+            countdown(3, "Sprinting in:")
+            sprinted = controller.sprint({"duration": 0.6,
+                                          "direction": "forward"})
+            print(f"  {sprinted.describe()}")
+            countdown(2, "Sneaking in:")
+            sneaked = controller.sneak({"duration": 0.6})
+            print(f"  {sneaked.describe()}")
+            seen = ask("Did you sprint forward and then crouch?")
+            record("sprint + sneak", seen and sprinted.ok and sneaked.ok)
+        else:
+            record("sprint + sneak", False, "skipped")
+
+        heading("Place a block")
+        print("  Put a placeable block in slot 3 and aim at the ground.")
+        print("  THIS PLACES A BLOCK.")
+        if ask("Place a block from slot 3?") and ensure_session(controller):
+            pause("Aim at the ground, click back on Minecraft, press Enter.")
+            countdown(3, "Placing in:")
+            outcome = TaskRunner(controller, source, observer=observer).run(
+                mc_skills.PlaceBlock(slot=3))
+            print(f"\n  {outcome.describe()}")
+            for entry in outcome.records:
+                print(f"    {entry.step['action']:<14} "
+                      f"{entry.verification['status']:<12} "
+                      f"{entry.verification['reason']}")
+            placed = ask("Did a block actually appear?")
+            record("place block", placed)
+            print("  Note: placement is confirmed by the targeted block")
+            print("  changing, which misses a block that lands out of view.")
+        else:
+            record("place block", False, "skipped")
+
+        heading("Open and close the inventory")
+        if ask("Open the inventory?") and ensure_session(controller):
+            countdown(2, "Opening in:")
+            opened = controller.inventory({"state": "open"})
+            print(f"  {opened.describe()}")
+            saw = ask("Did the inventory screen open?")
+            countdown(2, "Closing in:")
+            closed = controller.inventory({"state": "close"})
+            print(f"  {closed.describe()}")
+            shut = ask("Did it close again?")
+            record("inventory open/close", saw and shut and opened.ok)
+        else:
+            record("inventory open/close", False, "skipped")
+
+        heading("Interact with a block")
+        print("  Aim at a door, chest, crafting table or lever.")
+        if ask("Try interacting with it?") and ensure_session(controller):
+            pause("Aim at it, click back on Minecraft, press Enter.")
+            countdown(3, "Interacting in:")
+            result = controller.interact({})
+            print(f"  {result.describe()}")
+            worked = ask("Did it open / toggle / respond?")
+            record("interact", worked and result.ok)
+        else:
+            record("interact", False, "skipped")
 
         heading("Emergency stop")
         print(f"  {controller.emergency.describe()}")
@@ -470,27 +538,23 @@ def main() -> int:
             print("  (Control session closed.)")
 
 
-def ensure_session(controller, interaction: bool = False) -> bool:
-    """Make sure a live session exists, with the grant this step needs.
+def ensure_session(controller) -> bool:
+    """Make sure an authorised session exists.
 
-    The later steps involve reading prompts and looking at the game, which
-    takes longer than a session lasts — so by the time you answer, the one
-    opened earlier has usually expired. Rather than failing a check for a
-    reason that has nothing to do with what it is testing, open a fresh one.
+    In the app there is ONE confirmation and it covers every gameplay action,
+    so there is nothing to upgrade here and no second tier to ask about. This
+    only exists because the later steps involve reading prompts and looking at
+    the game, which takes longer than a session lasts — so by the time you
+    answer, the one opened earlier has often expired. Failing a check for that
+    reason would say nothing about what the check is testing.
 
     Returns False if it could not, so the caller records a skip rather than
     walking into a refusal."""
     current = controller.sessions.current
-    if current is not None and current.active:
-        if not interaction or current.allow_interaction:
-            return True
-        # Upgrading a grant is not a thing: end this one and open a session
-        # that was asked for with interaction from the start.
-        controller.stop("reopening with interaction")
-
+    if current is not None and current.is_authorized():
+        return True
     try:
-        controller.start_session(duration_s=120, owner="manual check",
-                                 allow_interaction=interaction)
+        controller.start_session(duration_s=120, owner="manual check")
         return True
     except Exception as e:
         print(f"  Could not open a session: {e}")
@@ -516,7 +580,8 @@ def summarise() -> int:
         print("  the relative-mouse step failed, since that one decides whether")
         print("  looking around can work at all.")
     else:
-        print(f"  All {len(results)} checks passed. Phase 3 works on your machine.")
+        print(f"  All {len(results)} checks passed. Phase 4 works on your "
+          f"machine.")
     return 1 if failed else 0
 
 

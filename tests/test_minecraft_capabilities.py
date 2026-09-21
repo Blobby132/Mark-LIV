@@ -70,8 +70,7 @@ class TestCentralTableOwnsTheVerdicts(unittest.TestCase):
         # attack and use_item left this list in Phase 3 — they are built now.
         # What replaced their phase-gate protection is asserted below, in
         # TestWorldChangingActionsNeedAGrant.
-        for capability in (core_caps.MINECRAFT_INVENTORY,
-                           core_caps.MINECRAFT_CHAT,
+        for capability in (core_caps.MINECRAFT_CHAT,
                            core_caps.MINECRAFT_LAUNCH):
             with self.subTest(capability=capability):
                 self.assertTrue(core_caps.is_known(capability))
@@ -81,8 +80,7 @@ class TestCentralTableOwnsTheVerdicts(unittest.TestCase):
     def test_a_disabled_capability_would_still_confirm_if_it_were_enabled(self):
         # Defence in depth: removing the phase gate must not silently make
         # these free.
-        for capability in (core_caps.MINECRAFT_INVENTORY,
-                           core_caps.MINECRAFT_LAUNCH,
+        for capability in (core_caps.MINECRAFT_LAUNCH,
                            core_caps.MINECRAFT_CHAT):
             with self.subTest(capability=capability):
                 self.assertTrue(core_caps.requires_confirmation(capability))
@@ -94,19 +92,15 @@ class TestCentralTableOwnsTheVerdicts(unittest.TestCase):
         self.assertIn(core_caps.MINECRAFT_STOP, mc_phase.ENABLED)
 
 
-class TestWorldChangingActionsNeedAGrant(unittest.TestCase):
-    """The replacement for the CONFIRM verdict attack used to carry.
+class TestOneConfirmationCoversGameplay(unittest.TestCase):
+    """The Phase 4 consent model, and the thing that makes it safe.
 
-    In Phase 2, `minecraft.attack` was CONFIRM because it was unimplemented.
-    Building it made a per-call confirmation actively harmful — breaking one
-    log takes several swings, so CONFIRM meant a dialog per swing, and a
-    dialog per swing teaches people to dismiss dialogs unread.
+    There is exactly ONE confirmation in this namespace: minecraft.control.
+    Approving it authorises a session, and that session's grant — not the
+    capability verdicts — is what stands between a model and your world.
 
-    So the consent moved to the session and got more specific. These tests
-    assert that it actually moved, rather than evaporated: the verdict is now
-    ALLOW, and the thing standing between a model and your world is
-    `Session.allow_interaction`. If someone ever deletes that check, this
-    fails."""
+    Every gameplay verdict is ALLOW, so if `Session.covers` were ever deleted
+    the whole subsystem would be wide open. These tests are what would notice."""
 
     def _controller(self):
         import sys as _sys
@@ -121,61 +115,112 @@ class TestWorldChangingActionsNeedAGrant(unittest.TestCase):
             process_module=FakeProcess(), start_watchers=False,
             focus_wait_s=0.0), backend
 
-    def test_the_verdict_alone_does_not_make_attack_reachable(self):
-        self.assertEqual(core_caps.decision_for(core_caps.MINECRAFT_ATTACK),
-                         core_caps.ALLOW)
-        controller, backend = self._controller()
-        try:
-            controller.start_session(duration_s=30)      # no grant asked for
-            result = controller.attack({"duration": 0.05})
-            self.assertFalse(result.ok)
-            self.assertEqual(result.stopped_reason, "interaction_not_granted")
-            # And no button was pressed at all — refused before the input,
-            # not after it.
-            self.assertEqual(backend.button_downs(), [])
-        finally:
-            controller.stop("test")
+    GAMEPLAY = [
+        ("move", {"direction": "forward", "duration": 0.05}),
+        ("jump", {}), ("look", {"dx": 30, "dy": 0}),
+        ("sneak", {"duration": 0.05}), ("sprint", {"duration": 0.05}),
+        ("attack", {"duration": 0.05}), ("mine", {"duration": 0.05}),
+        ("place", {}), ("interact", {}), ("use_item", {}),
+        ("eat", {"duration": 0.05}), ("drop", {}),
+        ("hotbar_select", {"slot": 3}), ("inventory", {"state": "open"}),
+    ]
 
-    def test_use_item_needs_the_same_grant(self):
-        controller, backend = self._controller()
-        try:
-            controller.start_session(duration_s=30)
-            result = controller.use_item({"duration": 0.05})
-            self.assertFalse(result.ok)
-            self.assertEqual(result.stopped_reason, "interaction_not_granted")
-            self.assertEqual(backend.button_downs(), [])
-        finally:
-            controller.stop("test")
-
-    def test_a_granted_session_allows_it_and_still_releases(self):
-        controller, backend = self._controller()
-        try:
-            controller.start_session(duration_s=30, allow_interaction=True)
-            result = controller.attack({"duration": 0.05})
-            self.assertTrue(result.ok, result.error)
-            self.assertEqual(backend.button_downs(), ["left"])
-            self.assertEqual(backend.button_ups(), ["left"])
-            self.assertEqual(controller.ledger.held(), frozenset())
-        finally:
-            controller.stop("test")
-
-    def test_movement_does_not_need_the_grant(self):
-        """The grant is about changing the world, not about control. Walking
-        in a session that did not ask for interaction must still work."""
+    def test_one_confirmed_session_covers_every_gameplay_action(self):
+        """The headline promise: approve once, then play."""
         controller, _ = self._controller()
         try:
-            controller.start_session(duration_s=30)
-            result = controller.move({"direction": "forward",
-                                      "duration": 0.05})
-            self.assertTrue(result.ok, result.error)
+            controller.start_session(duration_s=120)
+            for action, params in self.GAMEPLAY:
+                with self.subTest(action=action):
+                    result = controller.execute_action(action, params)
+                    self.assertTrue(result.ok,
+                                    f"{action} refused: {result.error}")
         finally:
             controller.stop("test")
 
-    def test_the_default_session_does_not_grant_interaction(self):
-        """A caller who forgets the flag gets the safe session."""
+    def test_an_unauthorized_session_refuses_every_one_of_them(self):
+        """And refuses before any input, not after."""
+        controller, backend = self._controller()
+        try:
+            controller.sessions.start(duration_s=60, authorized=False)
+            for action, params in self.GAMEPLAY:
+                with self.subTest(action=action):
+                    result = controller.execute_action(action, params)
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.stopped_reason, "not_authorized")
+            self.assertEqual(backend.downs(), [])
+            self.assertEqual(backend.button_downs(), [])
+        finally:
+            controller.stop("test")
+
+    def test_the_gate_answers_before_parameters_are_validated(self):
+        """An unauthorised caller gets one answer, whatever it passes.
+
+        Validating first told them about a bad parameter instead of the
+        missing authorisation — the less useful answer, and a way to probe the
+        parameter rules of an action they may not take."""
+        controller, backend = self._controller()
+        try:
+            controller.sessions.start(duration_s=60, authorized=False)
+            for action, nonsense in (("place", {"duration": 99}),
+                                     ("drop", {"all": True}),
+                                     ("hotbar_select", {"slot": 42}),
+                                     ("move", {"direction": "sideways"})):
+                with self.subTest(action=action):
+                    result = controller.execute_action(action, nonsense)
+                    self.assertEqual(result.stopped_reason, "not_authorized")
+            self.assertEqual(backend.downs(), [])
+        finally:
+            controller.stop("test")
+
+    def test_the_grant_does_not_extend_to_chat_or_commands(self):
+        """A session to play the game is not a session to talk to strangers
+        or reach a command line. Membership, not a "minecraft." prefix."""
+        from minecraft.session import SessionManager
+        session = SessionManager().start(duration_s=60, authorized=True)
+        for capability in (core_caps.MINECRAFT_CHAT,
+                           core_caps.MINECRAFT_COMMAND,
+                           core_caps.MINECRAFT_LAUNCH):
+            with self.subTest(capability=capability):
+                self.assertFalse(session.covers(capability))
+
+    def test_the_default_session_is_not_authorized(self):
+        """A caller who forgets the flag gets a session that can do nothing,
+        rather than one that can do everything."""
         from minecraft.session import SessionManager
         session = SessionManager().start(duration_s=30)
-        self.assertFalse(session.allow_interaction)
+        self.assertFalse(session.authorized)
+        self.assertFalse(session.is_authorized())
+        self.assertFalse(session.covers(core_caps.MINECRAFT_MOVEMENT))
+
+    def test_an_expired_authorization_is_not_an_authorization(self):
+        from minecraft.session import SessionManager
+        session = SessionManager().start(duration_s=30, authorized=True)
+        self.assertTrue(session.is_authorized())
+        session.expires_at = 0.0
+        self.assertFalse(session.is_authorized())
+        self.assertFalse(session.covers(core_caps.MINECRAFT_MINING))
+
+    def test_ending_the_session_revokes_the_authorization(self):
+        controller, backend = self._controller()
+        controller.start_session(duration_s=120)
+        controller.stop("done")
+        result = controller.execute_action("mine", {"duration": 0.05})
+        self.assertFalse(result.ok)
+        self.assertEqual(backend.button_downs(), [])
+
+    def test_control_is_the_only_gameplay_confirmation(self):
+        """If a second one ever appears, "approve once and play" is no longer
+        true and this is where that gets noticed."""
+        confirms = [c for c in core_caps.in_namespace("minecraft")
+                    if core_caps.decision_for(c) == core_caps.CONFIRM]
+        self.assertIn(core_caps.MINECRAFT_CONTROL, confirms)
+        for capability in confirms:
+            with self.subTest(capability=capability):
+                self.assertNotIn(capability, mc_phase.ENABLED - {
+                    core_caps.MINECRAFT_CONTROL},
+                    f"{capability} is enabled AND confirms — that is a "
+                    f"second confirmation during gameplay")
 
 
 class TestToolRefusesDisabledCapabilities(unittest.TestCase):

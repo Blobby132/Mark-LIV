@@ -35,7 +35,8 @@ from minecraft.errors import CapabilityDisabled, InvalidAction, MinecraftError
 from minecraft.observation import Observer
 from minecraft.state import VisionStateSource
 from minecraft.session import (
-    DEFAULT_SESSION_SECONDS, MAX_SESSION_SECONDS, MIN_SESSION_SECONDS,
+    DEFAULT_SESSION_SECONDS, GRANT_SUMMARY, MAX_SESSION_SECONDS,
+    MIN_SESSION_SECONDS,
 )
 from minecraft.task_runner import MAX_TASK_STEPS, TaskRunner
 
@@ -94,28 +95,38 @@ def _reset_for_tests(controller=None, observer=None, state_source=None) -> None:
 # ── Capability resolution ────────────────────────────────────────────────────
 
 _CAPABILITY_BY_ACTION = {
+    # Reading. No session needed.
     "status":        capabilities.MINECRAFT_OBSERVE,
     "observe":       capabilities.MINECRAFT_OBSERVE,
     "read_state":    capabilities.MINECRAFT_READ_STATE,
-    "start_session": capabilities.MINECRAFT_CONTROL_SESSION,
+    "toggle_debug":  capabilities.MINECRAFT_READ_STATE,
+
+    # THE confirmation, and the way out of it.
+    "start_session": capabilities.MINECRAFT_CONTROL,
     "end_session":   capabilities.MINECRAFT_STOP,
     "stop":          capabilities.MINECRAFT_STOP,
-    "move":          capabilities.MINECRAFT_MOVE,
+
+    # Gameplay. All covered by the one session grant.
+    "move":          capabilities.MINECRAFT_MOVEMENT,
+    "jump":          capabilities.MINECRAFT_MOVEMENT,
+    "sneak":         capabilities.MINECRAFT_MOVEMENT,
+    "sprint":        capabilities.MINECRAFT_MOVEMENT,
     "look":          capabilities.MINECRAFT_LOOK,
-    "jump":          capabilities.MINECRAFT_JUMP,
-    "attack":        capabilities.MINECRAFT_ATTACK,
-    "mine":          capabilities.MINECRAFT_ATTACK,
-    "use_item":      capabilities.MINECRAFT_USE_ITEM,
-    "place":         capabilities.MINECRAFT_USE_ITEM,
-    "hotbar_select": capabilities.MINECRAFT_HOTBAR,
-    "sneak":         capabilities.MINECRAFT_SNEAK,
-    "sprint":        capabilities.MINECRAFT_SPRINT,
-    "toggle_debug":  capabilities.MINECRAFT_READ_STATE,
+    "attack":        capabilities.MINECRAFT_COMBAT,
+    "mine":          capabilities.MINECRAFT_MINING,
+    "place":         capabilities.MINECRAFT_BUILD,
+    "build":         capabilities.MINECRAFT_BUILD,
+    "interact":      capabilities.MINECRAFT_INTERACT,
+    "use_item":      capabilities.MINECRAFT_ITEMS,
+    "eat":           capabilities.MINECRAFT_ITEMS,
+    "drop":          capabilities.MINECRAFT_ITEMS,
+    "hotbar_select": capabilities.MINECRAFT_ITEMS,
+    "inventory":     capabilities.MINECRAFT_INVENTORY,
     "run_task":      capabilities.MINECRAFT_TASK,
+
     # Named so they resolve to their real capability and are refused by the
     # phase gate with an explanation, rather than falling through to the
     # unknown-action branch and getting a vaguer answer.
-    "inventory":     capabilities.MINECRAFT_INVENTORY,
     "chat":          capabilities.MINECRAFT_CHAT,
     "say":           capabilities.MINECRAFT_CHAT,
     "command":       capabilities.MINECRAFT_COMMAND,
@@ -134,7 +145,14 @@ def _mc_capability(params: dict) -> str:
 
 
 def _mc_guard(params: dict) -> dict:
-    """What the confirmation banner says. Only `start_session` shows one."""
+    """What the confirmation banner says.
+
+    Only `start_session` shows one, and it is the only confirmation in this
+    whole subsystem. So it has to actually inform: it names every kind of
+    action it is buying, in the user's words, because session-level consent is
+    only better than per-action consent when the person knows what they are
+    agreeing to. A vague banner here would make this worse than confirming
+    every swing, not better."""
     action = str((params or {}).get("action", "")).lower().strip()
     if action != "start_session":
         return {"summary": f"Minecraft: {action or 'unknown'}"}
@@ -146,30 +164,20 @@ def _mc_guard(params: dict) -> dict:
     except (TypeError, ValueError):
         seconds = DEFAULT_SESSION_SECONDS
 
-    interact = bool((params or {}).get("allow_interaction"))
-    summary = (f"Let me control Minecraft for {int(seconds)} seconds"
-               + (" — INCLUDING breaking and placing blocks" if interact
-                  else ""))
-
-    detail = (
-        "I can walk, turn and jump inside the Minecraft window only, and "
-        "only while it is the window in front. Alt-Tab or F12 stops me "
-        "immediately. I cannot type in chat, run commands, or touch "
-        "anything outside the game."
-    )
-    if interact:
-        # Spelled out rather than implied: this is the grant that replaces a
-        # confirmation per swing, so it has to actually inform.
-        detail += (
-            "\n\nThis session ALSO lets me mine blocks and use/place items. "
-            "That changes your world and I cannot undo it — use a creative or "
-            "throwaway world if you are not sure."
-        )
-    else:
-        detail += ("\n\nThis session does NOT let me break or place "
-                   "anything.")
-
-    return {"summary": summary, "detail": detail}
+    return {
+        "summary": f"Allow JARVIS to play Minecraft for {int(seconds)} seconds?",
+        "detail": (
+            f"This ONE approval lets me {GRANT_SUMMARY} — without asking "
+            f"again for each action.\n\n"
+            f"It lasts {int(seconds)} seconds and ends early if you press "
+            f"F12, Alt-Tab away, or close the game. I only send input while "
+            f"the Minecraft window is in front.\n\n"
+            f"Mining and placing change your world and I cannot undo them, so "
+            f"use a world you do not mind changing.\n\n"
+            f"This does NOT let me type in chat, run slash commands, or touch "
+            f"anything outside Minecraft."
+        ),
+    }
 
 
 # ── Result shaping ───────────────────────────────────────────────────────────
@@ -248,7 +256,6 @@ def minecraft_control(parameters: dict = None, player=None,
             info = controller.start_session(
                 duration_s=params.get("duration_s"),
                 owner=str(params.get("owner", "user"))[:40],
-                allow_interaction=bool(params.get("allow_interaction")),
             )
             if player:
                 player.write_log("[minecraft] control session started")
@@ -261,8 +268,9 @@ def minecraft_control(parameters: dict = None, player=None,
                         f"{info['session']['remaining_seconds']:.0f}s left on "
                         f"the session that is already open. No need to start "
                         f"another; just tell me what to do.{warning}\n{info}")
-            return (f"Minecraft control session open for "
-                    f"{info['session']['granted_seconds']:.0f}s. "
+            return (f"Minecraft session open for "
+                    f"{info['session']['granted_seconds']:.0f}s — I can now "
+                    f"{GRANT_SUMMARY} without asking again. "
                     f"{info['emergency_stop']}{warning}\n{info}")
 
         if action in ("end_session", "stop"):
@@ -289,11 +297,29 @@ def minecraft_control(parameters: dict = None, player=None,
         if action == "look":
             return _result_line(controller.look(params), player)
 
-        if action in ("attack", "mine"):
+        if action == "attack":
             return _result_line(controller.attack(params), player)
 
-        if action in ("use_item", "place"):
+        if action == "mine":
+            return _result_line(controller.mine(params), player)
+
+        if action in ("place", "build"):
+            return _result_line(controller.place(params), player)
+
+        if action == "interact":
+            return _result_line(controller.interact(params), player)
+
+        if action == "use_item":
             return _result_line(controller.use_item(params), player)
+
+        if action == "eat":
+            return _result_line(controller.eat(params), player)
+
+        if action == "drop":
+            return _result_line(controller.drop(params), player)
+
+        if action == "inventory":
+            return _result_line(controller.inventory(params), player)
 
         if action == "hotbar_select":
             return _result_line(controller.hotbar_select(params), player)
@@ -354,7 +380,8 @@ def _run_task(controller, params: dict, player=None) -> str:
                 f"{', '.join(sorted(mc_skills.NOT_YET_POSSIBLE))}.")
 
     options = {}
-    for key in ("seconds", "direction", "expected", "swings", "steps"):
+    for key in ("seconds", "direction", "expected", "swings", "steps",
+                "count", "slot"):
         if key in params:
             options[key] = params[key]
 
@@ -398,29 +425,38 @@ def _status_line(status: dict) -> str:
 TOOL = {
     "name": "minecraft_control",
     "description": (
-        "Observes, understands and controls Minecraft Java Edition. Use for "
-        "any request about looking at or playing Minecraft.\n"
-        "READING: status (is it running, is it in front), observe (capture "
-        "the window), read_state (position, facing, biome, and the block "
-        "under the crosshair — needs the F3 overlay open), toggle_debug "
-        "(press F3 to open/close that overlay).\n"
-        "CONTROL: start_session asks the user for permission for up to 300 "
-        "seconds; nothing below works until they confirm. Pass "
-        "allow_interaction=true ONLY if the task needs to break or place "
-        "blocks — it changes their world and is asked for separately. Then: "
-        "move (direction, duration<=2s), look (dx/dy in PIXELS, <=400 each — "
-        "degrees are NOT supported), jump, sneak, sprint, hotbar_select "
-        "(slot 1-9), attack (duration<=2s), use_item (duration<=2s), stop.\n"
-        "TASKS: run_task performs a bounded multi-step job, observing and "
-        "verifying between steps. task=walk_forward|survey|find_block|"
-        "break_block. It stops by itself at 20 steps.\n"
-        "IMPORTANT: one attack does NOT break a block — breaking an oak log "
-        "takes several. Never say a block broke, a tree was chopped or "
-        "anything was collected unless a result says so: check "
-        "verification.status == 'success', not just ok == true. 'unverifiable' "
-        "means I could not see whether it worked — say that, do not guess. "
-        "Movement only works while Minecraft is the window in front; if the "
-        "user switches away it stops by itself."
+        "Plays Minecraft Java Edition. Use for any request about looking at "
+        "or playing Minecraft.\n"
+        "ONE CONFIRMATION: call start_session once. The user approves a "
+        "single banner and that covers ALL gameplay for the session — "
+        "movement, looking, jumping, sprinting, sneaking, attacking, mining, "
+        "placing, items, the hotbar, the inventory and interaction. Do NOT "
+        "ask them to confirm individual actions, and do NOT call "
+        "start_session again while one is open; if you are unsure, call "
+        "status.\n"
+        "READING (no session needed): status, observe, read_state, "
+        "toggle_debug (presses F3, which read_state needs).\n"
+        "GAMEPLAY: move (direction, duration<=2s), look (dx/dy in PIXELS, "
+        "<=400 each — degrees are NOT supported), jump, sneak, sprint, "
+        "attack, mine, place, interact, use_item, eat, drop, hotbar_select "
+        "(slot 1-9), inventory (state=open|close), stop.\n"
+        "TASKS: run_task does a bounded multi-step job, observing and "
+        "verifying between steps: walk_forward, survey, find_block, "
+        "break_block, place_block, collect_logs. It stops itself at 20 "
+        "steps, after two minutes, or when it detects it is making no "
+        "progress.\n"
+        "REPORTING RESULTS HONESTLY — this matters most:\n"
+        "  * One mine does NOT break a block. Breaking an oak log takes "
+        "several. Never say a block broke, a tree was chopped or wood was "
+        "collected unless verification.status == 'success'.\n"
+        "  * 'unverifiable' means I could not SEE whether it worked. Say "
+        "that plainly; do not treat it as success or as failure.\n"
+        "  * I cannot read the inventory at all, so I can never confirm an "
+        "item was picked up — only that a block disappeared. Say 'broke' not "
+        "'collected'.\n"
+        "  * ok == true only means the input reached the game.\n"
+        "Movement only works while Minecraft is the window in front. If the "
+        "user alt-tabs or presses F12 everything stops and the session ends."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -430,7 +466,8 @@ TOOL = {
                 "description": (
                     "status | observe | read_state | toggle_debug | "
                     "start_session | end_session | move | look | jump | "
-                    "sneak | sprint | hotbar_select | attack | use_item | "
+                    "sneak | sprint | attack | mine | place | interact | "
+                    "use_item | eat | drop | hotbar_select | inventory | "
                     "run_task | stop"),
             },
             "direction": {
@@ -464,18 +501,21 @@ TOOL = {
                 "description": ("For start_session: how many seconds of "
                                 "control to ask for, up to 300."),
             },
-            "allow_interaction": {
-                "type": "BOOLEAN",
-                "description": (
-                    "For start_session. False by default. True also asks "
-                    "permission to break and place blocks, which changes the "
-                    "user's world and cannot be undone. Only ask for it when "
-                    "the task actually needs it."),
+            "state": {
+                "type": "STRING",
+                "description": "For inventory: open | close.",
             },
             "task": {
                 "type": "STRING",
                 "description": ("For run_task: walk_forward | survey | "
-                                "find_block | break_block."),
+                                "find_block | break_block | place_block | "
+                                "collect_logs."),
+            },
+            "count": {
+                "type": "INTEGER",
+                "description": ("For collect_logs: how many logs to break. "
+                                "Note I cannot read the inventory, so I "
+                                "report blocks broken, not items collected."),
             },
             "seconds": {
                 "type": "NUMBER",
