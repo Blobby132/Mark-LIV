@@ -204,6 +204,7 @@ class _StopCase(unittest.TestCase):
         self.controller = MinecraftController(
             backend=self.backend, locator=self.locator, sessions=self.sessions,
             process_module=self.process, start_watchers=False,
+            focus_wait_s=0.0,
         )
 
     def tearDown(self):
@@ -275,7 +276,7 @@ class TestEmergencyStop(_StopCase):
         controller = MinecraftController(
             backend=self.backend, locator=self.locator,
             sessions=SessionManager(), process_module=self.process,
-            emergency=watcher, start_watchers=False,
+            emergency=watcher, start_watchers=False, focus_wait_s=0.0,
         )
         controller.start_session(duration_s=60)
         controller.ledger.hold("w")

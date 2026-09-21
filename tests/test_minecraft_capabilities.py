@@ -118,7 +118,8 @@ class TestWorldChangingActionsNeedAGrant(unittest.TestCase):
         backend = FakeInputBackend()
         return MinecraftController(
             backend=backend, locator=FakeLocator(), sessions=SessionManager(),
-            process_module=FakeProcess(), start_watchers=False), backend
+            process_module=FakeProcess(), start_watchers=False,
+            focus_wait_s=0.0), backend
 
     def test_the_verdict_alone_does_not_make_attack_reachable(self):
         self.assertEqual(core_caps.decision_for(core_caps.MINECRAFT_ATTACK),

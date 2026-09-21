@@ -80,7 +80,7 @@ class _ControllerCase(unittest.TestCase):
         self.controller = MinecraftController(
             backend=self.backend, locator=self.locator,
             sessions=self.sessions, process_module=self.process,
-            start_watchers=False,
+            start_watchers=False, focus_wait_s=0.0,
         )
 
     def tearDown(self):

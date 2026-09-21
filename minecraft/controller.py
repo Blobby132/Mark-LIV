@@ -66,6 +66,28 @@ SUPERVISOR_SECONDS = 0.2
 # Enough that a normal action finishing its own release is never pre-empted.
 DEADMAN_GRACE_SECONDS = 0.5
 
+FOCUS_WAIT_SECONDS = 4.0
+"""How long an action will wait, BEFORE it starts, for Minecraft to come back
+to the front.
+
+WHY THIS IS NOT A HOLE IN THE FOCUS GUARD
+    Confirming a control session necessarily takes focus away from Minecraft:
+    the confirmation is a JARVIS window, and clicking it puts JARVIS in front.
+    So the first action after a confirmation was ALWAYS refused with
+    focus_lost, and the user saw a burst of commands and a character standing
+    still. The guard was right every time and the feature was unusable.
+
+    Waiting is not the same as relaxing. Nothing is sent while the window is
+    not focused — the guard still has to pass before a single key goes down,
+    and it is re-checked every tick for the whole duration afterwards. The
+    only change is that a refusal a second too early becomes a short wait for
+    the user to click back on the game.
+
+    It applies only to focus_lost, and only before an action starts. A missing
+    session, an expired one, a closed game or a lost window fail immediately
+    as they always did, and focus lost DURING an action still stops it inside
+    one tick."""
+
 
 @dataclass(frozen=True)
 class ActionResult:
@@ -114,7 +136,8 @@ class MinecraftController:
     guarding, not the typing."""
 
     def __init__(self, backend=None, locator=None, sessions=None,
-                 process_module=None, emergency=None, start_watchers=True):
+                 process_module=None, emergency=None, start_watchers=True,
+                 focus_wait_s: float = FOCUS_WAIT_SECONDS):
         self._backend = backend if backend is not None else create_backend()
         self._locator = locator if locator is not None else Locator()
         self._sessions = sessions if sessions is not None else SessionManager()
@@ -131,6 +154,9 @@ class MinecraftController:
         self._supervisor: threading.Thread | None = None
         self._supervisor_stop = threading.Event()
         self._watchers_enabled = start_watchers
+        # Injectable so the tests that assert a focus refusal do not each
+        # spend the grace period waiting for a fake window to come forward.
+        self._focus_wait_s = max(0.0, float(focus_wait_s))
 
         self._sessions.on_end(self._on_session_end)
 
@@ -191,6 +217,25 @@ class MinecraftController:
             return "window_unusable"
         return ""
 
+    def _await_focus(self, seconds: float | None = None) -> str:
+        """Wait briefly for Minecraft to come back to the front.
+
+        Returns the guard's verdict when it stops waiting. Only `focus_lost`
+        is waited on: every other refusal is a condition that waiting cannot
+        fix, and pausing on those would just make failure slower.
+
+        See FOCUS_WAIT_SECONDS for why this does not weaken the guard."""
+        if seconds is None:
+            seconds = self._focus_wait_s
+        deadline = time.monotonic() + max(0.0, seconds)
+        reason = self._guard()
+        while reason == "focus_lost" and time.monotonic() < deadline:
+            if self._cancel.is_set():
+                break
+            time.sleep(TICK_SECONDS)
+            reason = self._guard()
+        return reason
+
     def _require_ready(self) -> None:
         """Turn a guard failure into the right exception, for the pre-flight
         check. During an action the string form is used instead."""
@@ -215,8 +260,10 @@ class MinecraftController:
                 "I cannot tell which window has focus on this platform, so I "
                 "will not send input to Minecraft."),
             "focus_lost": WindowNotFocused(
-                "Minecraft is not the active window, so I will not send it "
-                "any input — it would go to whatever is in front instead."),
+                "Minecraft is not the active window. I waited a few seconds "
+                "for it to come to the front and it did not, so I sent "
+                "nothing — the keys would have gone to whatever is in front "
+                "instead. Click on the Minecraft window and ask me again."),
             "window_unusable": WindowNotFound(
                 "The Minecraft window is too small to be the game right now."),
         }.get(reason, EmergencyStop(reason))
@@ -381,6 +428,8 @@ class MinecraftController:
         error_class = error = ""
         released: tuple = ()
 
+        self._await_focus()
+
         try:
             self._require_ready()
         except Exception as e:
@@ -533,6 +582,8 @@ class MinecraftController:
         spec = action_spec.parse_look(params or {})
         started = time.monotonic()
 
+        self._await_focus()
+
         try:
             self._require_ready()
         except Exception as e:
@@ -611,8 +662,9 @@ def _explain(reason: str | None) -> str:
     return {
         "interaction_not_granted": "This session does not allow mining or "
                                    "placing blocks.",
-        "focus_lost": "Minecraft stopped being the active window, so I let go "
-                      "of everything and stopped.",
+        "focus_lost": "Minecraft is not the active window. Click on the game "
+                      "and ask me again — I will not send keys to whatever is "
+                      "in front instead.",
         "focus_unknown": "I could not confirm Minecraft had focus, so I "
                          "stopped rather than risk sending keys elsewhere.",
         "process_gone": "Minecraft closed, so I let go of everything.",
@@ -630,4 +682,5 @@ def _explain(reason: str | None) -> str:
 
 
 __all__ = ["MinecraftController", "ActionResult", "TICK_SECONDS",
-           "SUPERVISOR_SECONDS", "DEADMAN_GRACE_SECONDS"]
+           "SUPERVISOR_SECONDS", "DEADMAN_GRACE_SECONDS",
+           "FOCUS_WAIT_SECONDS"]

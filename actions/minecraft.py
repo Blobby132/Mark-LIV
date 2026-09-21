@@ -174,16 +174,27 @@ def _mc_guard(params: dict) -> dict:
 
 # ── Result shaping ───────────────────────────────────────────────────────────
 
-def _result_line(result) -> str:
+def _result_line(result, player=None) -> str:
     """One sentence for the model, plus the structured detail it needs.
 
     The sentence never claims more than happened: a move cut short by focus
-    loss reads as stopped, not done."""
-    payload = result.as_dict()
-    line = result.describe()
-    if result.ok:
-        return f"{line}\n{payload}"
-    return f"{line}\n{payload}"
+    loss reads as stopped, not done.
+
+    It is also written to the HUD. Without that, a refused action was visible
+    only to the model: the user saw a burst of tool calls and a character
+    standing still, with no way to find out that every one of them had been
+    turned down for a reason that was sitting in a return value. A safety
+    refusal nobody can see is indistinguishable from a bug."""
+    if player:
+        if result.ok:
+            player.write_log(f"[minecraft] {result.action}: ok "
+                             f"({result.actual_duration_ms}ms)")
+        else:
+            player.write_log(f"[minecraft] {result.action} REFUSED: "
+                             f"{result.stopped_reason or result.error_class}")
+            if result.error:
+                player.write_log(f"[minecraft] {result.error}")
+    return f"{result.describe()}\n{result.as_dict()}"
 
 
 # ── The handler ──────────────────────────────────────────────────────────────
@@ -231,7 +242,7 @@ def minecraft_control(parameters: dict = None, player=None,
             return f"{state.describe()}{extra}\n{state.as_dict()}"
 
         if action == "toggle_debug":
-            return _result_line(controller.toggle_debug_overlay())
+            return _result_line(controller.toggle_debug_overlay(), player)
 
         if action == "start_session":
             info = controller.start_session(
@@ -265,28 +276,28 @@ def minecraft_control(parameters: dict = None, player=None,
             return f"Minecraft control stopped.{detail}\n{outcome}"
 
         if action == "move":
-            return _result_line(controller.move(params))
+            return _result_line(controller.move(params), player)
 
         if action == "jump":
-            return _result_line(controller.jump(params))
+            return _result_line(controller.jump(params), player)
 
         if action == "look":
-            return _result_line(controller.look(params))
+            return _result_line(controller.look(params), player)
 
         if action in ("attack", "mine"):
-            return _result_line(controller.attack(params))
+            return _result_line(controller.attack(params), player)
 
         if action in ("use_item", "place"):
-            return _result_line(controller.use_item(params))
+            return _result_line(controller.use_item(params), player)
 
         if action == "hotbar_select":
-            return _result_line(controller.hotbar_select(params))
+            return _result_line(controller.hotbar_select(params), player)
 
         if action == "sneak":
-            return _result_line(controller.sneak(params))
+            return _result_line(controller.sneak(params), player)
 
         if action == "sprint":
-            return _result_line(controller.sprint(params))
+            return _result_line(controller.sprint(params), player)
 
         if action == "run_task":
             return _run_task(controller, params, player)

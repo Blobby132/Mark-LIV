@@ -42,7 +42,7 @@ class _Case(unittest.TestCase):
         self.controller = MinecraftController(
             backend=self.backend, locator=self.locator,
             sessions=self.sessions, process_module=FakeProcess(),
-            start_watchers=False)
+            start_watchers=False, focus_wait_s=0.0)
 
     def tearDown(self):
         try:
@@ -307,6 +307,99 @@ class TestActionsReleaseEverything(_Case):
         self.assertTrue(result.ok, result.error)
         self.assertIn("f3", self.backend.downs())
         self.assert_nothing_held()
+
+
+class TestFocusGrace(unittest.TestCase):
+    """Confirming a session takes focus away from Minecraft — the dialog is a
+    JARVIS window. Without a grace period the first action after every
+    confirmation was refused, which made the feature unusable while the guard
+    was technically right every time.
+
+    Waiting is not relaxing: nothing is sent unless the guard passes."""
+
+    def _controller(self, wait):
+        self.backend = FakeInputBackend()
+        self.locator = FakeLocator()
+        return MinecraftController(
+            backend=self.backend, locator=self.locator,
+            sessions=SessionManager(), process_module=FakeProcess(),
+            start_watchers=False, focus_wait_s=wait)
+
+    def test_an_action_waits_for_focus_to_come_back(self):
+        controller = self._controller(wait=2.0)
+        try:
+            controller.start_session(duration_s=60)
+            self.locator.foreground = False
+
+            # Focus returns after a few probes, as it would when the user
+            # clicks back on the game.
+            probes = {"n": 0}
+            original = self.locator.probe
+
+            def probe_then_focus():
+                probes["n"] += 1
+                if probes["n"] > 3:
+                    self.locator.foreground = True
+                return original()
+
+            self.locator.probe = probe_then_focus
+            result = controller.move({"direction": "forward",
+                                      "duration": 0.05})
+            self.assertTrue(result.ok, result.error)
+            self.assertIn("w", self.backend.downs())
+        finally:
+            controller.stop("test")
+
+    def test_nothing_is_sent_if_focus_never_returns(self):
+        """The guard still has the final say — the wait only postpones it."""
+        controller = self._controller(wait=0.3)
+        try:
+            controller.start_session(duration_s=60)
+            self.locator.foreground = False
+            result = controller.move({"direction": "forward",
+                                      "duration": 0.5})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.stopped_reason, "focus_lost")
+            self.assertEqual(self.backend.downs(), [])
+        finally:
+            controller.stop("test")
+
+    def test_conditions_waiting_cannot_fix_fail_immediately(self):
+        """A missing session is not going to fix itself in four seconds, and
+        pausing on it would only make the refusal slower."""
+        import time as _time
+        controller = self._controller(wait=5.0)
+        started = _time.monotonic()
+        result = controller.move({"direction": "forward", "duration": 0.05})
+        elapsed = _time.monotonic() - started
+        self.assertFalse(result.ok)
+        self.assertEqual(result.stopped_reason, "no_session")
+        self.assertLess(elapsed, 1.0, "it waited on a condition waiting "
+                                      "cannot fix")
+
+    def test_focus_lost_during_an_action_still_stops_it(self):
+        """The grace period is only before an action starts. Once keys are
+        down, losing focus must still stop within a tick."""
+        controller = self._controller(wait=2.0)
+        try:
+            controller.start_session(duration_s=60)
+            original = self.locator.probe
+            calls = {"n": 0}
+
+            def lose_focus_midway():
+                calls["n"] += 1
+                if calls["n"] > 2:
+                    self.locator.foreground = False
+                return original()
+
+            self.locator.probe = lose_focus_midway
+            result = controller.move({"direction": "forward", "duration": 2.0})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.stopped_reason, "focus_lost")
+            self.assertLess(result.actual_duration_ms, 2000)
+            self.assertEqual(controller.ledger.held(), frozenset())
+        finally:
+            controller.stop("test")
 
 
 if __name__ == "__main__":
