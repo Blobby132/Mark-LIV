@@ -50,6 +50,7 @@ A BETTER READER, LATER
 from __future__ import annotations
 
 import io
+import sys
 
 # Threshold above which a pixel is treated as text rather than world. The F3
 # overlay is drawn in near-white; everything dimmer is the game behind it.
@@ -86,6 +87,7 @@ class TesseractReader:                                 # pragma: no cover
 
     name = "tesseract"
     available = True
+    version = "unknown"
 
     def __init__(self, engine, image_module, scale: int = DEFAULT_SCALE):
         self._engine = engine
@@ -104,17 +106,40 @@ class TesseractReader:                                 # pragma: no cover
         return self._engine.image_to_string(image) or ""
 
     def describe(self) -> str:
-        return "OCR via Tesseract (optional extra)."
+        return f"OCR via Tesseract {self.version}."
 
 
-_INSTALL_HELP = (
-    "Reading the F3 overlay needs OCR, which is not set up. Two steps:\n"
-    "  1. pip install pytesseract\n"
-    "  2. install the Tesseract program itself (it is not a Python package) "
-    "from https://github.com/UB-Mannheim/tesseract/wiki\n"
+_TESSERACT_DOWNLOAD = "https://github.com/UB-Mannheim/tesseract/wiki"
+
+_NOT_WORKING_TAIL = (
     "Without it I can still see the screen and control the game; I just "
     "cannot read the numbers off it."
 )
+
+
+def _missing_package_help(name: str, detail: str) -> str:
+    """Name the ONE thing that is missing, and the interpreter it is missing
+    from.
+
+    Listing both install steps whenever anything was absent was the same
+    unhelpfulness this codebase keeps fixing elsewhere: it cannot tell "you
+    have not installed the package" from "you installed it into a different
+    Python", and those have completely different fixes. Printing
+    sys.executable makes the second one visible instead of invisible, which
+    matters because `pip install X` and `py script.py` routinely resolve to
+    different interpreters on Windows."""
+    return (
+        f"Reading the F3 overlay needs the '{name}' package, which this "
+        f"Python cannot import ({detail}).\n"
+        f"  Interpreter: {sys.executable}\n"
+        f"  Install it into THAT interpreter with:\n"
+        f'    "{sys.executable}" -m pip install {name}\n'
+        f"  (Using plain `pip install` can install into a different Python, "
+        f"which looks exactly like not installing it at all.)\n"
+        f"  You will also need the Tesseract PROGRAM, separately, from "
+        f"{_TESSERACT_DOWNLOAD}\n"
+        f"{_NOT_WORKING_TAIL}"
+    )
 
 
 def create_reader(scale: int = DEFAULT_SCALE):
@@ -123,23 +148,38 @@ def create_reader(scale: int = DEFAULT_SCALE):
     Imports are inside the function on purpose: at module level they would
     make importing `core` probe for an OCR engine, and would put pytesseract
     into the import graph of everything that touches core."""
+    # Imported separately so the failure names the package that is actually
+    # missing. Together, a missing Pillow reported as "install pytesseract".
     try:
         import pytesseract
-        from PIL import Image
-    except Exception:
-        return UnavailableReader(_INSTALL_HELP)
+    except Exception as exc:
+        return UnavailableReader(
+            _missing_package_help("pytesseract",
+                                  f"{type(exc).__name__}: {exc}"))
 
     try:
-        pytesseract.get_tesseract_version()
-    except Exception:
+        from PIL import Image
+    except Exception as exc:
         return UnavailableReader(
-            "pytesseract is installed but the Tesseract program is not on "
-            "PATH. Install it from "
-            "https://github.com/UB-Mannheim/tesseract/wiki, then reopen the "
-            "terminal so PATH is picked up."
+            _missing_package_help("pillow", f"{type(exc).__name__}: {exc}"))
+
+    try:
+        version = pytesseract.get_tesseract_version()
+    except Exception as exc:
+        return UnavailableReader(
+            f"The 'pytesseract' package is installed, but the Tesseract "
+            f"PROGRAM it drives is not on PATH ({type(exc).__name__}).\n"
+            f"  Install it from {_TESSERACT_DOWNLOAD} — the 64-bit .exe, "
+            f"ticking 'Add to PATH' — then close and REOPEN your terminal so "
+            f"PATH is picked up.\n"
+            f"  If it is already installed, its folder (usually "
+            f"C:\\Program Files\\Tesseract-OCR) is missing from PATH.\n"
+            f"{_NOT_WORKING_TAIL}"
         )
 
-    return TesseractReader(pytesseract, Image, scale=scale)
+    reader = TesseractReader(pytesseract, Image, scale=scale)
+    reader.version = str(version)
+    return reader
 
 
 def is_available() -> bool:

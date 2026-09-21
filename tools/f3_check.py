@@ -42,6 +42,10 @@ RULE = "─" * 72
 
 def main() -> int:
     print(f"{RULE}\n  MARK-LIV — can I read your Minecraft screen?\n{RULE}")
+    # Printed up front because "installed it but the script cannot see it" is
+    # nearly always two different interpreters, and that is invisible unless
+    # you say which one is running.
+    print(f"\n  Running on: {sys.executable}")
     print("\n  Open Minecraft and press F3 so the debug overlay is showing.")
     print("  This sends no input and starts no session — it only looks.\n")
     try:
