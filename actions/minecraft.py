@@ -525,7 +525,14 @@ def _run_task(controller, params: dict, player=None) -> str:
             # same `look` action and completely different situations.
             # Dropping it made these logs unreadable after the fact.
             note = entry.step.get("note", "")
+            # Two different ways a hold ends short, and they mean opposite
+            # things: the guard stopping it, and mining letting go because
+            # the block went. Neither was visible in this log, which is why
+            # a 126ms swing looked like nothing at all.
             cut = entry.action_result.get("stopped_reason") or ""
+            if not cut:
+                cut = (entry.action_result.get("requested") or {}).get(
+                    "stopped_early") or ""
             line = (f"[minecraft]   {entry.index + 1}. {action} "
                     f"{held}ms -> {verdict}")
             if note:

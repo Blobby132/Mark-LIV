@@ -432,57 +432,107 @@ A CALIBRATION, NOT A CONSTANT
     somebody calibrates it properly there is exactly one number to change."""
 
 
-# The measured figure for THIS machine, learned from watching real turns.
+# What this machine's mouse actually does, learned from watching real turns.
+# SIGNED: a negative scale means this machine turns the opposite way from the
+# convention, and dividing by it produces the right direction automatically.
 # None until something has measured one.
-_measured_px_per_degree = None
+_yaw_scale = None            # pixels per degree of yaw, signed
+_pitch_scale = None          # pixels per degree of pitch, signed
 
 MIN_PX_PER_DEGREE = 0.5
 MAX_PX_PER_DEGREE = 60.0
 
+AIM_DAMPING = 0.85
+"""How much of the computed correction to actually send.
+
+Slightly under one, on purpose. Aiming is a feedback loop running at one
+observation per step, and a loop that always asks for the whole remaining
+error rings when its gain estimate is even slightly high -- overshoot,
+correct, overshoot the other way, forever. That is not a hypothetical: it is
+forty consecutive `look` steps at the same log, which is what this was doing
+before the scale was measured rather than assumed.
+
+Undershooting converges. Overshooting does not."""
+
 
 def pixels_per_degree() -> float:
-    """What to actually use: the measured figure if there is one.
+    """Magnitude only, for things that sweep a fixed amount."""
+    if _yaw_scale is None:
+        return PIXELS_PER_DEGREE
+    return abs(_yaw_scale)
 
-    PIXELS_PER_DEGREE is the starting guess. This is what replaces it once a
-    real turn has been watched, which is the only way to know -- the figure
-    depends on a sensitivity slider nothing in the bridge reports."""
-    return _measured_px_per_degree or PIXELS_PER_DEGREE
+
+def observe_turn(sent_dx, sent_dy, before_rotation, after_rotation) -> None:
+    """Learn from one look: how far each axis moved, and which way.
+
+    THE SIGN IS THE POINT
+        Whether positive mouse dy looks up or down, and whether positive dx
+        increases or decreases yaw, are conventions two layers apart --
+        Minecraft's angles and the operating system's mouse deltas -- that
+        nothing in the bridge reports. Guess either one wrong and every
+        correction doubles the error.
+
+        Measuring a SIGNED scale settles both questions at once: if this
+        machine turns the other way, the measurement comes out negative, and
+        the next correction divides by it and points the right way. There is
+        no separate "is it inverted" flag to get out of step with this.
+
+    Readings too small to mean anything are discarded rather than averaged
+    in -- the rotation is reported to a few decimals and the mouse moves in
+    whole pixels, so a two degree turn measures terribly."""
+    global _yaw_scale, _pitch_scale
+    try:
+        yaw_before, pitch_before = float(before_rotation[0]), float(before_rotation[1])
+        yaw_after, pitch_after = float(after_rotation[0]), float(after_rotation[1])
+    except (TypeError, IndexError, ValueError):
+        return
+
+    _yaw_scale = _blend(_yaw_scale, sent_dx,
+                        yaw_difference(yaw_before, yaw_after))
+    _pitch_scale = _blend(_pitch_scale, sent_dy, pitch_after - pitch_before)
+
+
+def _blend(current, pixels, degrees):
+    """One axis' new estimate, or the old one when the reading is useless."""
+    try:
+        pixels, degrees = float(pixels), float(degrees)
+    except (TypeError, ValueError):
+        return current
+    if abs(degrees) < 3.0 or abs(pixels) < 40.0:
+        return current
+    measured = pixels / degrees                      # signed, deliberately
+    if not MIN_PX_PER_DEGREE <= abs(measured) <= MAX_PX_PER_DEGREE:
+        return current
+    if current is None or (current > 0) != (measured > 0):
+        # First reading, or the direction disagrees with what we thought.
+        # Believe the measurement outright rather than averaging towards a
+        # sign that is wrong -- half way between +8 and -8 is zero.
+        return measured
+    return current * 0.5 + measured * 0.5
 
 
 def calibrate(pixels_sent: float, degrees_turned: float):
-    """Learn the mouse scale from one observed turn, or ignore it.
-
-    Returns the new figure, or None when the turn was not worth measuring.
-
-    DELIBERATELY UNFUSSY
-        Both readings are rounded (the game reports yaw to a few decimals,
-        and the mouse moves in whole pixels), so a tiny turn measures
-        terribly. Anything under a few degrees or a few dozen pixels is
-        thrown away rather than averaged in.
-
-        The result is clamped to a sane range, because the failure this
-        guards against is not a slightly wrong number -- it is one absurd
-        reading (a turn that coincided with the player moving their own
-        mouse) permanently poisoning every later turn."""
-    global _measured_px_per_degree
-    if abs(degrees_turned) < 3.0 or abs(pixels_sent) < 40.0:
+    """Learn the yaw scale alone. Kept for callers that only turn sideways."""
+    global _yaw_scale
+    updated = _blend(_yaw_scale, pixels_sent, degrees_turned)
+    if updated is None or updated == _yaw_scale:
         return None
-    measured = abs(pixels_sent) / abs(degrees_turned)
-    if not MIN_PX_PER_DEGREE <= measured <= MAX_PX_PER_DEGREE:
-        return None
-    if _measured_px_per_degree is None:
-        _measured_px_per_degree = measured
-    else:
-        # Blended, so one odd reading moves it rather than replacing it.
-        _measured_px_per_degree = (_measured_px_per_degree * 0.5
-                                   + measured * 0.5)
-    return _measured_px_per_degree
+    _yaw_scale = updated
+    return abs(_yaw_scale)
 
 
 def reset_calibration() -> None:
-    """Forget what was measured. For tests, and for a fresh session."""
-    global _measured_px_per_degree
-    _measured_px_per_degree = None
+    """Forget what was measured. For tests, and for a fresh process."""
+    global _yaw_scale, _pitch_scale
+    _yaw_scale = None
+    _pitch_scale = None
+
+
+def calibration() -> dict:
+    """What has been measured so far, for logs and diagnostics."""
+    return {"yaw_px_per_degree": _yaw_scale,
+            "pitch_px_per_degree": _pitch_scale,
+            "default": PIXELS_PER_DEGREE}
 
 
 def yaw_to(origin, target) -> float:
@@ -546,8 +596,15 @@ def aim_at(position, rotation, target,
     dyaw = yaw_difference(yaw_now, yaw_wanted)
     dpitch = pitch_wanted - pitch_now
 
-    scale = pixels_per_degree() if px_per_degree is None else px_per_degree
-    return (int(round(dyaw * scale)), int(round(dpitch * scale)),
+    if px_per_degree is not None:
+        yaw_scale = pitch_scale = px_per_degree
+    else:
+        yaw_scale = _yaw_scale if _yaw_scale is not None else PIXELS_PER_DEGREE
+        pitch_scale = (_pitch_scale if _pitch_scale is not None
+                       else PIXELS_PER_DEGREE)
+
+    return (int(round(dyaw * yaw_scale * AIM_DAMPING)),
+            int(round(dpitch * pitch_scale * AIM_DAMPING)),
             math.hypot(dyaw, dpitch))
 
 
@@ -557,7 +614,10 @@ def look_delta_for(current_yaw: float, desired_yaw: float,
 
     Positive dx turns right, which is increasing yaw in Minecraft's
     convention."""
-    scale = pixels_per_degree() if px_per_degree is None else px_per_degree
+    if px_per_degree is not None:
+        scale = px_per_degree
+    else:
+        scale = _yaw_scale if _yaw_scale is not None else PIXELS_PER_DEGREE
     return int(round(yaw_difference(current_yaw, desired_yaw) * scale))
 
 
@@ -566,6 +626,7 @@ __all__ = [
     "yaw_to", "yaw_difference", "look_delta_for", "PIXELS_PER_DEGREE",
     "pitch_to", "aim_at", "EYE_HEIGHT",
     "pixels_per_degree", "calibrate", "reset_calibration",
+    "observe_turn", "calibration", "AIM_DAMPING",
     "line_is_walkable" if False else "furthest_clear", "MAX_SMOOTHING",
     "MAX_STEP_UP", "MAX_DROP", "MAX_NODES", "MAX_PATH_LENGTH",
     "HAZARDS", "LIQUIDS", "LOG_BLOCKS", "CATEGORIES",

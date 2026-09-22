@@ -478,7 +478,6 @@ class NavigateTo:
     _walked: int = 0
     _stalls: int = 0
     _hopped: bool = False
-    _look_sign: int = 1
     _aiming_at: float | None = None
     _skip_to: int = 0
     _seen_at: tuple | None = None
@@ -684,11 +683,11 @@ class NavigateTo:
 
         if abs(wanted) < 3.0 or abs(turned) < 1.0:
             return
-        if (turned > 0) != (wanted > 0):
-            # It went the wrong way. Flip, and do not measure a scale from a
-            # turn whose direction was wrong.
-            self._look_sign = -self._look_sign
-            return
+        # The measurement itself carries the sign: a machine that turns the
+        # other way produces a negative scale, and the next correction
+        # divides by it and points the right way. There is no separate
+        # "inverted" flag here any more, because two mechanisms correcting
+        # the same error get out of step and fight.
         nav.calibrate(sent, turned)
 
     def _follow_path(self, state, local):
@@ -715,7 +714,7 @@ class NavigateTo:
 
         off_by = nav.yaw_difference(current, desired)
         if abs(off_by) > YAW_TOLERANCE_DEG:
-            dx = self._look_sign * nav.look_delta_for(current, desired)
+            dx = nav.look_delta_for(current, desired)
             self._aiming_at = desired
             return Step(
                 action="look",
@@ -888,6 +887,7 @@ class CollectLogs:
     delta_px: int | None = None
     aim_tolerance_deg: float = 6.0
     reach: float = 4.0
+    max_aim_steps: int = 6
 
     name = "collect_logs"
     verifiable_with = ("surface", "target_block", "inventory")
@@ -899,6 +899,9 @@ class CollectLogs:
     _last_target: str = ""
     _blind: bool = False
     _used_the_map: bool = False
+    _aim_target: tuple | None = None
+    _aim_tries: int = 0
+    _aim_gave_up: str = ""
     _walker: object = None
     _walk_failed: str = ""
 
@@ -922,8 +925,9 @@ class CollectLogs:
             return CANNOT_SEE_TARGET
         how = (" (found by the terrain scan)" if self._used_the_map
                else " (found by sweeping the crosshair)")
-        if self._walk_failed and self._done < self.count:
-            return f"{self._progress_text()}{how}. {self._walk_failed}"
+        trouble = self._walk_failed or self._aim_gave_up
+        if trouble and self._done < self.count:
+            return f"{self._progress_text()}{how}. {trouble}"
         return f"{self._progress_text()}{how}"
 
     def _progress_text(self) -> str:
@@ -1015,10 +1019,29 @@ class CollectLogs:
         self._walker = None
         dx, dy, error = nav.aim_at(state.position, state.rotation,
                                    target.position)
+
+        if target.position != self._aim_target:
+            self._aim_target = target.position
+            self._aim_tries = 0
+
         if error > self.aim_tolerance_deg and (dx or dy):
-            return Step(action="look", params={"dx": dx, "dy": dy},
-                        expectation=verify_mod.turned(min_degrees=1.0),
-                        note=f"aim at {target.name} {target.position}")
+            # Aiming is a feedback loop, and a loop that is not converging
+            # will not start. Six attempts is generous for a correction that
+            # should take one or two; past that, swinging anyway is more
+            # use than turning forever, and the log says the aim was never
+            # settled rather than pretending it was.
+            if self._aim_tries < self.max_aim_steps:
+                self._aim_tries += 1
+                return Step(
+                    action="look", params={"dx": dx, "dy": dy},
+                    expectation=verify_mod.turned(min_degrees=1.0),
+                    note=(f"aim at {target.name} {target.position} "
+                          f"({error:.0f}° off, try {self._aim_tries} of "
+                          f"{self.max_aim_steps})"))
+            self._aim_gave_up = (
+                f"I could not settle the crosshair on {target.name} at "
+                f"{target.position} — after {self.max_aim_steps} corrections "
+                f"it was still {error:.0f}° off. I swung anyway.")
 
         self._last_target = target.name
         # Best evidence first: the inventory if it is readable, then the block

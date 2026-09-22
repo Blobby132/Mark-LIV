@@ -466,7 +466,8 @@ class NavigateToTests(unittest.TestCase):
         world = Inverted(flat())
         skill = skills.create("navigate_to", destination=(5, 5))
         result = run(world, skill)
-        self.assertEqual(skill._look_sign, -1, "it never noticed the flip")
+        self.assertLess(nav.calibration()["yaw_px_per_degree"], 0,
+                        "it never measured the flip")
         self.assertFalse(skill.failed, result.reason)
         self.assertLess(world.distance_to((5, 5)), 2.0)
 
@@ -817,6 +818,95 @@ class SweepingAndCalibrationTests(unittest.TestCase):
                      max_steps=3)
         notes = " ".join(r.step["note"] for r in result.records)
         self.assertIn("no terrain scan", notes)
+
+
+class AimingConvergesTests(unittest.TestCase):
+    """The failure that burned 43 steps looking at one log.
+
+    It aimed at the same oak log forty times and never settled. Aiming was
+    open loop: it computed a correction from an assumed mouse scale, sent it,
+    and never checked what actually happened. Get the scale slightly high, or
+    either axis' sign backwards, and the loop cannot converge — it overshoots,
+    corrects, overshoots the other way, forever.
+    """
+
+    def setUp(self):
+        nav.reset_calibration()
+        self.addCleanup(nav.reset_calibration)
+
+    def machine(self, yaw_scale=1.0, pitch_scale=1.0):
+        """A TreeWorld whose mouse behaves unlike the assumed default."""
+        outer = self
+
+        class Machine(TreeWorld):
+            def look(self, params):
+                params = {
+                    "dx": self._clamp(params.get("dx", 0)) * yaw_scale,
+                    "dy": self._clamp(params.get("dy", 0)) * pitch_scale,
+                }
+                return SimWorld.look(self, params)
+
+        # A log at eye level, two blocks away: needs both axes to be right.
+        return Machine(flat(), [NearbyBlock(2, 64, 0, "oak_log", True)],
+                       position=(0.5, 64.0, 0.5), yaw=180.0)
+
+    def test_it_settles_on_a_machine_with_an_inverted_pitch(self):
+        """Pitch had NO self-correction at all — the sign flag only ever
+        covered yaw. An aim that is right sideways and upside down
+        vertically never lands on the block."""
+        world = self.machine(pitch_scale=-1.0)
+        skill = skills.create("collect_logs", count=1)
+        result = run(world, skill)
+        self.assertEqual(len(world.broken), 1,
+                         f"never broke it. {skill.done_reason}")
+        self.assertLess(nav.calibration()["pitch_px_per_degree"], 0,
+                        "it never measured the inverted pitch")
+
+    def test_it_settles_when_both_axes_are_inverted(self):
+        world = self.machine(yaw_scale=-1.0, pitch_scale=-1.0)
+        skill = skills.create("collect_logs", count=1)
+        run(world, skill)
+        self.assertEqual(len(world.broken), 1, skill.done_reason)
+
+    def test_it_settles_when_the_mouse_is_far_more_sensitive(self):
+        """The overshoot case. Four times the assumed movement per pixel
+        means every full correction sails past by three times the error."""
+        world = self.machine(yaw_scale=4.0, pitch_scale=4.0)
+        skill = skills.create("collect_logs", count=1)
+        run(world, skill)
+        self.assertEqual(len(world.broken), 1, skill.done_reason)
+
+    def test_aiming_does_not_eat_the_whole_budget(self):
+        """Even unconvergeable, it must stop turning and say so. Forty
+        looks at one log is not persistence, it is a loop with a step limit
+        for a brake."""
+        class Stubborn(TreeWorld):
+            def look(self, params):
+                # Turns a little, never towards anything useful.
+                return SimWorld.look(self, {"dx": 30, "dy": 0})
+
+        world = Stubborn(flat(), [NearbyBlock(2, 66, 0, "oak_log", True)],
+                         position=(0.5, 64.0, 0.5))
+        skill = skills.create("collect_logs", count=1)
+        result = run(world, skill)
+        looks = sum(1 for r in result.records if r.step["action"] == "look")
+        self.assertLessEqual(looks, 12,
+                             f"{looks} looks without settling")
+        self.assertTrue(skill._aim_gave_up,
+                        "it never admitted the aim was not settling")
+
+    def test_it_reports_an_aim_it_never_settled(self):
+        """Swinging anyway is fine. Reporting it as a clean hit is not."""
+        class Stubborn(TreeWorld):
+            def look(self, params):
+                return SimWorld.look(self, {"dx": 30, "dy": 0})
+
+        world = Stubborn(flat(), [NearbyBlock(2, 66, 0, "oak_log", True)],
+                         position=(0.5, 64.0, 0.5))
+        skill = skills.create("collect_logs", count=1)
+        run(world, skill)
+        self.assertTrue(skill.failed)
+        self.assertIn("could not settle", skill.done_reason)
 
 
 class TheModelsViewOfTheWorldTests(unittest.TestCase):

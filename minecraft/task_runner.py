@@ -383,11 +383,17 @@ class TaskRunner:
             having to remember to ask for it.
 
             It is a measurement, not a decision: the skills still choose
-            where to look, and `action_spec` still bounds what is sent."""
+            where to look, and `action_spec` still bounds what is sent.
+
+            Both axes, because pitch has its own convention and its own
+            chance of being backwards, and an aim that is right sideways and
+            inverted vertically never lands on the block."""
         if record.step.get("action") != "look":
             return
         try:
-            asked = float(record.step.get("params", {}).get("dx", 0))
+            params = record.step.get("params", {})
+            asked = float(params.get("dx", 0) or 0)
+            asked_dy = float(params.get("dy", 0) or 0)
             was = record.state_before["rotation"][0]
             now = record.state_after["rotation"][0]
         except (KeyError, TypeError, IndexError, ValueError):
@@ -396,7 +402,11 @@ class TaskRunner:
             return
         sent = max(-action_spec.MAX_LOOK_DELTA_PX,
                    min(asked, action_spec.MAX_LOOK_DELTA_PX))
-        nav.calibrate(sent, nav.yaw_difference(was, now))
+        sent_dy = max(-action_spec.MAX_LOOK_DELTA_PX,
+                      min(asked_dy, action_spec.MAX_LOOK_DELTA_PX))
+        nav.observe_turn(sent, sent_dy,
+                         record.state_before["rotation"],
+                         record.state_after["rotation"])
 
     @staticmethod
     def _account(skill, state, records) -> None:
