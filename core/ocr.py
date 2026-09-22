@@ -50,7 +50,48 @@ A BETTER READER, LATER
 from __future__ import annotations
 
 import io
+import os
 import sys
+
+# Where the Windows installer actually puts tesseract.exe.
+#
+# PATH is the documented way to find it and the least reliable one: the
+# UB-Mannheim installer does not always offer to set it, setting it needs the
+# terminal reopened, and a user who did everything right still gets "not on
+# PATH" with no clue which step failed. Every one of those ends up as "OCR is
+# broken" in a bug report.
+#
+# So PATH is tried first, and these are checked when it fails. Fixed absolute
+# paths, not a search: nothing here takes a user-supplied string, and no
+# directory is scanned.
+_WINDOWS_INSTALL_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+
+
+def _local_install_paths() -> tuple:
+    """Per-user install locations, which depend on the account."""
+    out = []
+    for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("PROGRAMFILES"),
+                 os.environ.get("USERPROFILE")):
+        if not base:
+            continue
+        out.append(os.path.join(base, "Tesseract-OCR", "tesseract.exe"))
+        out.append(os.path.join(base, "Programs", "Tesseract-OCR",
+                                "tesseract.exe"))
+    return tuple(out)
+
+
+def _find_tesseract_exe() -> str:
+    """An installed tesseract.exe that PATH did not expose, or ''."""
+    for candidate in _WINDOWS_INSTALL_PATHS + _local_install_paths():
+        try:
+            if candidate and os.path.isfile(candidate):
+                return candidate
+        except Exception:
+            continue
+    return ""
 
 # Threshold above which a pixel is treated as text rather than world. The F3
 # overlay is drawn in near-white; everything dimmer is the game behind it.
@@ -165,21 +206,38 @@ def create_reader(scale: int = DEFAULT_SCALE):
 
     try:
         version = pytesseract.get_tesseract_version()
-    except Exception as exc:
-        return UnavailableReader(
-            f"The 'pytesseract' package is installed, but the Tesseract "
-            f"PROGRAM it drives is not on PATH ({type(exc).__name__}).\n"
-            f"  Install it from {_TESSERACT_DOWNLOAD} — the 64-bit .exe, "
-            f"ticking 'Add to PATH' — then close and REOPEN your terminal so "
-            f"PATH is picked up.\n"
-            f"  If it is already installed, its folder (usually "
-            f"C:\\Program Files\\Tesseract-OCR) is missing from PATH.\n"
-            f"{_NOT_WORKING_TAIL}"
-        )
+    except Exception:
+        # Not on PATH. Look where the installer puts it before giving up —
+        # "installed correctly but PATH was never set" is the single most
+        # common way this fails, and it is entirely fixable from here.
+        found = _find_tesseract_exe()
+        if found:
+            try:
+                pytesseract.pytesseract.tesseract_cmd = found
+                version = pytesseract.get_tesseract_version()
+            except Exception as exc:
+                return UnavailableReader(
+                    f"Found Tesseract at {found} but could not run it "
+                    f"({type(exc).__name__}: {exc}).\n{_NOT_WORKING_TAIL}")
+        else:
+            return UnavailableReader(_tesseract_missing_help())
 
     reader = TesseractReader(pytesseract, Image, scale=scale)
     reader.version = str(version)
     return reader
+
+
+def _tesseract_missing_help() -> str:
+    return (
+        "The 'pytesseract' package is installed, but the Tesseract PROGRAM "
+        "it drives is not installed.\n"
+        "  Easiest:  winget install --id UB-Mannheim.TesseractOCR\n"
+        f"  Or download the 64-bit installer from {_TESSERACT_DOWNLOAD}\n"
+        "  I look in the usual install folders as well as PATH, so you do "
+        "not need to set PATH yourself — but you do need to reopen this "
+        "terminal after installing.\n"
+        f"{_NOT_WORKING_TAIL}"
+    )
 
 
 def is_available() -> bool:
