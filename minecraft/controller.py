@@ -138,7 +138,8 @@ class MinecraftController:
 
     def __init__(self, backend=None, locator=None, sessions=None,
                  process_module=None, emergency=None, start_watchers=True,
-                 focus_wait_s: float = FOCUS_WAIT_SECONDS):
+                 focus_wait_s: float = FOCUS_WAIT_SECONDS,
+                 progress_probe=None):
         self._backend = backend if backend is not None else create_backend()
         self._locator = locator if locator is not None else Locator()
         self._sessions = sessions if sessions is not None else SessionManager()
@@ -158,6 +159,12 @@ class MinecraftController:
         # Injectable so the tests that assert a focus refusal do not each
         # spend the grace period waiting for a fake window to come forward.
         self._focus_wait_s = max(0.0, float(focus_wait_s))
+
+        # A callable returning something comparable that changes when the
+        # thing being mined changes. A plain callable rather than a state
+        # source: this package stays input-only, and the controller should
+        # not learn how to read the game just to know when to stop pressing.
+        self._progress_probe = progress_probe
 
         self._sessions.on_end(self._on_session_end)
 
@@ -217,6 +224,18 @@ class MinecraftController:
         if info.rect is None or not info.rect.usable:
             return "window_unusable"
         return ""
+
+    def _probe(self):
+        """The current value of whatever the caller said to watch, or None.
+
+        Never raises and never blocks for long: this runs inside the hold
+        loop, and an exception here would escape past the release."""
+        if self._progress_probe is None:
+            return None
+        try:
+            return self._progress_probe()
+        except Exception:
+            return None
 
     def _await_focus(self, seconds: float | None = None) -> str:
         """Wait briefly for Minecraft to come back to the front.
@@ -464,8 +483,8 @@ class MinecraftController:
                                  clamped)
 
     def _hold_inputs(self, keys: tuple, buttons: tuple, seconds: float,
-                     action: str, requested: dict,
-                     clamped: bool) -> ActionResult:
+                     action: str, requested: dict, clamped: bool,
+                     stop_when_changed: bool = False) -> ActionResult:
         """Hold keys and/or mouse buttons for up to `seconds`, re-checking the
         world every tick.
 
@@ -499,6 +518,9 @@ class MinecraftController:
         with self._lock:
             self._action_in_flight = action
 
+        baseline = self._probe() if stop_when_changed else None
+        finished_early = False
+
         try:
             for key in keys:
                 self._ledger.hold(key)
@@ -514,6 +536,16 @@ class MinecraftController:
                     if reason in ("focus_lost", "focus_unknown"):
                         focused_throughout = False
                     break
+
+                # Mining: let go the moment the target changes. Holding on
+                # past that wastes the rest of the budget and starts breaking
+                # whatever was revealed behind it.
+                if stop_when_changed and baseline is not None:
+                    current = self._probe()
+                    if current is not None and current != baseline:
+                        finished_early = True
+                        break
+
                 remaining = deadline - time.monotonic()
                 time.sleep(min(TICK_SECONDS, max(0.0, remaining)))
 
@@ -536,6 +568,9 @@ class MinecraftController:
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
         ok = stopped_reason is None and not error
+        if finished_early:
+            requested = dict(requested)
+            requested["stopped_early"] = "the target changed"
 
         return ActionResult(
             ok=ok, action=action, requested=requested,
@@ -614,10 +649,27 @@ class MinecraftController:
                                  action, spec.as_dict(), spec.clamped)
 
     def mine(self, params: dict | None = None) -> ActionResult:
-        """Hold attack against a block. Says nothing about whether it broke —
-        that is verification's job, and one swing usually will not."""
-        return self._gameplay(core_caps.MINECRAFT_MINING, "mine",
-                              action_spec.parse_mine, params)
+        """Hold attack until the block changes, or until the time runs out.
+
+        WHY THIS ONE ACTION WATCHES WHILE IT WORKS
+            Minecraft resets breaking progress the instant the button comes
+            up. Every other action here can be a fixed hold because nothing
+            in the game cares whether it was continuous; mining is the
+            exception, and a mine implemented as repeated short swings does
+            damage that is thrown away between each one. It looks exactly
+            like hitting too weakly.
+
+            So the hold runs long, and a probe watches the target so it can
+            stop the moment the block goes rather than spending the whole
+            budget. Without a probe it is a plain timed hold -- still
+            correct, just wasteful, and the result says which it was."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_MINING, "mine")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_mine(params or {})
+        return self._hold_inputs((), spec.buttons, spec.duration, "mine",
+                                 spec.as_dict(), spec.clamped,
+                                 stop_when_changed=True)
 
     def place(self, params: dict | None = None) -> ActionResult:
         return self._gameplay(core_caps.MINECRAFT_BUILD, "place",

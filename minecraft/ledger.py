@@ -46,10 +46,26 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-# A key held longer than this is a bug, not an instruction. The controller
+# An input held longer than this is a bug, not an instruction. The controller
 # enforces per-action limits; this is the backstop for the case where the
 # controller itself is wedged, checked by the supervisor in controller.py.
-MAX_HOLD_SECONDS = 2.5
+#
+# RAISED FROM 2.5 FOR MINING, AND WHY THAT IS ACCEPTABLE
+#     Minecraft resets block-breaking progress the instant the button comes
+#     up, so mining cannot be done in repeated short swings -- that was a real
+#     bug, and it looked like "JARVIS does not hit hard enough". Breaking an
+#     oak log by hand takes about three seconds and stone with a pickaxe
+#     longer, so the hold has to be continuous and this backstop has to be
+#     above it or the supervisor would cut every successful mine short.
+#
+#     What this costs: a wedged controller could now hold an input for twelve
+#     seconds instead of two and a half. That window is narrower than it
+#     sounds, because the deadman is the LAST of the stops rather than the
+#     first -- focus loss still releases within one 40ms tick, F12 is
+#     immediate, and the mine loop itself releases as soon as the block
+#     breaks. The deadman only matters if the action thread has stopped
+#     ticking entirely, which is the rare case it was always for.
+MAX_HOLD_SECONDS = 12.0
 
 _RELEASE_ATTEMPTS = 2
 

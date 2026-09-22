@@ -49,10 +49,25 @@ _observer: Observer | None = None
 _state_source = None
 
 
+def _target_probe():
+    """What the crosshair is on, for the mining loop to watch.
+
+    Returns None when nothing can read it, which the controller treats as "no
+    probe" and falls back to a plain timed hold. Deliberately cheap: it runs
+    every 40ms while a block is being broken."""
+    try:
+        block = _get_state_source().read().target_block
+    except Exception:
+        return None
+    if block is None:
+        return None
+    return (block.name, block.x, block.y, block.z)
+
+
 def _get_controller() -> MinecraftController:
     global _controller, _observer
     if _controller is None:
-        _controller = MinecraftController()
+        _controller = MinecraftController(progress_probe=_target_probe)
         _observer = Observer(_controller._locator)
     return _controller
 

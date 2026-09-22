@@ -372,11 +372,28 @@ class TestPhase4Actions(_Case):
         self.assertEqual(spec.duration, action_spec.MAX_MINE_DURATION_S)
         self.assertTrue(spec.clamped)
 
-    def test_one_mine_cannot_finish_a_log(self):
-        """Deliberate. Breaking an oak log takes about three seconds, and a
-        single action that could do it would remove the need to observe
-        between swings — which is where verification lives."""
-        self.assertLess(action_spec.MAX_MINE_DURATION_S, 3.0)
+    def test_one_mine_can_actually_break_a_log(self):
+        """The bug this replaces: mining was capped at 2.0s "so that swings
+        had to be observed between", which assumed damage accumulates across
+        swings. It does not — Minecraft resets breaking progress the instant
+        the button comes up, so every short swing started from zero and
+        nothing ever broke. It presented as hitting too weakly.
+
+        An oak log needs about three continuous seconds by hand."""
+        self.assertGreater(action_spec.MAX_MINE_DURATION_S, 3.0)
+        self.assertGreaterEqual(action_spec.DEFAULT_MINE_DURATION_S, 3.0)
+
+    def test_the_deadman_outlasts_the_longest_mine(self):
+        """Otherwise the supervisor would cut every successful mine short and
+        report it as a failure it caused itself."""
+        from minecraft.ledger import MAX_HOLD_SECONDS
+        self.assertGreater(MAX_HOLD_SECONDS, action_spec.MAX_MINE_DURATION_S)
+
+    def test_only_mining_got_the_longer_bound(self):
+        """Movement staying at two seconds is the point: mining's bound is set
+        by the game, not by a general relaxation of caution."""
+        self.assertEqual(action_spec.MAX_MOVE_DURATION_S, 2.0)
+        self.assertEqual(action_spec.MAX_INTERACT_DURATION_S, 1.0)
 
     def test_losing_focus_mid_mine_releases_the_button(self):
         self.open()
@@ -384,6 +401,105 @@ class TestPhase4Actions(_Case):
         result = self.controller.mine({"duration": 2.0})
         self.assertFalse(result.ok)
         self.assert_nothing_held()
+
+
+class TestMiningStopsWhenTheBlockGoes(unittest.TestCase):
+    """Holding on after the block breaks wastes the rest of the budget and
+    starts breaking whatever was revealed behind it."""
+
+    def _controller(self, probe):
+        self.backend = FakeInputBackend()
+        self.locator = FakeLocator()
+        controller = MinecraftController(
+            backend=self.backend, locator=self.locator,
+            sessions=SessionManager(), process_module=FakeProcess(),
+            start_watchers=False, focus_wait_s=0.0, progress_probe=probe)
+        controller.start_session(duration_s=120)
+        return controller
+
+    def test_it_releases_as_soon_as_the_target_changes(self):
+        calls = {"n": 0}
+
+        def probe():
+            calls["n"] += 1
+            return "oak_log" if calls["n"] < 4 else "air"
+
+        controller = self._controller(probe)
+        try:
+            result = controller.mine({"duration": 8.0})
+            self.assertTrue(result.ok, result.error)
+            # Far short of the eight seconds asked for.
+            self.assertLess(result.actual_duration_ms, 3000)
+            self.assertIn("stopped_early", result.requested)
+        finally:
+            controller.stop("test")
+
+    def test_it_holds_the_full_time_when_nothing_changes(self):
+        controller = self._controller(lambda: "bedrock")
+        try:
+            result = controller.mine({"duration": 0.3})
+            self.assertTrue(result.ok, result.error)
+            self.assertGreaterEqual(result.actual_duration_ms, 250)
+            self.assertNotIn("stopped_early", result.requested)
+        finally:
+            controller.stop("test")
+
+    def test_no_probe_means_a_plain_timed_hold(self):
+        """Still correct, just wasteful — and the result does not pretend it
+        stopped early."""
+        controller = self._controller(None)
+        try:
+            result = controller.mine({"duration": 0.3})
+            self.assertTrue(result.ok, result.error)
+            self.assertNotIn("stopped_early", result.requested)
+        finally:
+            controller.stop("test")
+
+    def test_a_probe_that_throws_does_not_break_the_mine(self):
+        """It runs every 40ms inside the hold loop; an exception there would
+        escape past the release."""
+        def angry():
+            raise RuntimeError("no state")
+
+        controller = self._controller(angry)
+        try:
+            result = controller.mine({"duration": 0.3})
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(controller.ledger.held(), frozenset())
+        finally:
+            controller.stop("test")
+
+    def test_the_button_still_comes_up_on_focus_loss_mid_mine(self):
+        """The longer hold must not weaken the stop that matters most.
+
+        Focus is dropped PART WAY THROUGH, not before — losing it beforehand
+        is a pre-flight refusal that never presses anything, which proves
+        nothing about releasing a button already down. That distinction is
+        the whole point of the test, and getting it wrong the first time made
+        it pass for the wrong reason."""
+        controller = self._controller(lambda: "oak_log")
+        try:
+            original = self.locator.probe
+            seen = {"n": 0}
+
+            def lose_focus_midway():
+                seen["n"] += 1
+                if seen["n"] > 3:
+                    self.locator.foreground = False
+                return original()
+
+            self.locator.probe = lose_focus_midway
+
+            result = controller.mine({"duration": 8.0})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.stopped_reason, "focus_lost")
+            self.assertLess(result.actual_duration_ms, 2000)
+            # The button went down and came back up.
+            self.assertEqual(self.backend.button_downs(), ["left"])
+            self.assertEqual(self.backend.button_ups(), ["left"])
+            self.assertEqual(controller.ledger.held(), frozenset())
+        finally:
+            controller.stop("test")
 
 
 class TestExecuteAction(_Case):

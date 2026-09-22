@@ -52,14 +52,28 @@ MAX_USE_DURATION_S = 2.0
 MAX_SNEAK_DURATION_S = MAX_MOVE_DURATION_S
 MAX_SPRINT_DURATION_S = MAX_MOVE_DURATION_S
 
-MAX_MINE_DURATION_S = 2.0
-"""One sustained swing, not "until it breaks".
+MAX_MINE_DURATION_S = 10.0
+"""How long one mining action may hold the button.
 
-Breaking an oak log by hand takes about three seconds and stone takes much
-longer, so a single mine action deliberately CANNOT finish the job. That is
-not a limitation to work around: it is what forces the caller back through
-observation between swings, which is the only way anything downstream can
-tell a broken block from a held button."""
+WHY THIS IS NOT 2.0 LIKE EVERYTHING ELSE
+    It was, and mining did not work. Minecraft resets block-breaking progress
+    the moment the button comes up, so repeated short swings do not
+    accumulate damage -- each one starts from zero. Breaking an oak log by
+    hand takes about three seconds of CONTINUOUS holding, and stone with a
+    pickaxe longer.
+
+    So mining is the one action whose bound is set by the game rather than by
+    caution. Ten seconds covers hand-breaking most early-game blocks; it does
+    not cover obsidian, which is a limitation rather than an oversight.
+
+    The hold is not usually spent. With a state source attached the mine loop
+    watches the target and releases the instant it changes, so a log that
+    breaks at 3.1s costs 3.1 seconds. The bound is what happens when nothing
+    can see the block -- and then it IS spent, which is why it is not
+    thirty."""
+
+DEFAULT_MINE_DURATION_S = 4.0
+"""Long enough for wood by hand, short enough to notice a mistake."""
 
 MAX_INTERACT_DURATION_S = 1.0
 """Right-click on a door, chest or crafting table. Short: these are taps, and
@@ -402,7 +416,8 @@ def parse_mine(params: dict) -> HoldSpec:
                 f"the crosshair -- aim with 'look', confirm what you are "
                 f"aiming at with 'read_state', then mine."
             )
-    duration, requested = _bounded_duration(params, 1.0, MAX_MINE_DURATION_S)
+    duration, requested = _bounded_duration(params, DEFAULT_MINE_DURATION_S,
+                                            MAX_MINE_DURATION_S)
     return HoldSpec(action="mine", buttons=(ATTACK_BUTTON,),
                     duration=duration, requested_duration=requested)
 
@@ -511,6 +526,7 @@ __all__ = [
     "MAX_ATTACK_DURATION_S", "MAX_USE_DURATION_S", "MAX_SNEAK_DURATION_S",
     "MAX_SPRINT_DURATION_S", "HOTBAR_SLOTS", "MAX_MINE_DURATION_S",
     "MAX_INTERACT_DURATION_S", "MAX_EAT_DURATION_S", "PLACE_TAP_S",
+    "DEFAULT_MINE_DURATION_S",
     "INVENTORY_KEY", "DROP_KEY", "CLOSE_KEY",
     "JUMP_TAP_S", "MOVE_KEYS", "DIRECTIONS", "SNEAK_KEY", "SPRINT_KEY",
     "ATTACK_BUTTON", "USE_BUTTON",

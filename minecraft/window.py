@@ -115,6 +115,45 @@ class WindowInfo:
         }
 
 
+def _configure(library, name: str, argtypes, restype) -> None:
+    """Declare one function's signature, tolerating a missing symbol.
+
+    Tolerant because a missing user32 export should degrade to "I cannot tell"
+    rather than crash the probe -- but a PRESENT function with the wrong
+    signature is the failure this exists to prevent, and that one is silent."""
+    try:
+        function = getattr(library, name)
+        function.argtypes = argtypes
+        function.restype = restype
+    except Exception:
+        pass
+
+
+def same_handle(a, b) -> bool:
+    """Do these two window handles refer to the same window?
+
+    Compared on the low 32 bits, which is correct rather than merely
+    convenient: Windows HANDLE values are documented to be 32-bit significant
+    and sign-extended when widened, precisely so 32- and 64-bit code can
+    interoperate. So the low word IS the handle, and two values that agree
+    there are the same window.
+
+    Masking to 64 bits would NOT do: a handle returned through a signed 32-bit
+    int comes back sign-extended, so 0xFFFE1234 arrives as
+    0xFFFFFFFFFFFE1234, which differs from the real value in every high bit.
+    That was the bug -- the same window comparing unequal to itself.
+
+    The prototypes above should stop the truncation happening at all. This
+    stays as the second line of defence, because the failure is silent and
+    presents as user error."""
+    if a is None or b is None:
+        return False
+    try:
+        return (int(a) & 0xFFFFFFFF) == (int(b) & 0xFFFFFFFF)
+    except (TypeError, ValueError):
+        return False
+
+
 # ── Windows implementation ───────────────────────────────────────────────────
 
 def _probe_windows(pid: int | None) -> WindowInfo:
@@ -126,6 +165,36 @@ def _probe_windows(pid: int | None) -> WindowInfo:
 
     WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
                                      ctypes.c_void_p)
+
+    # ── Declare every prototype. This is not tidiness. ───────────────────────
+    #
+    # ctypes assumes a C `int` return -- 32 bits, signed -- for any function
+    # whose restype is not set. Window handles on 64-bit Windows are 64-bit
+    # pointers, so GetForegroundWindow's result was being truncated and
+    # sign-extended, and the comparison against the handle from EnumWindows
+    # (which arrives correctly as c_void_p) failed whenever the real handle
+    # did not happen to fit in 31 bits.
+    #
+    # The symptom was "Minecraft is open but another window has focus" while
+    # Minecraft plainly had focus -- intermittent across launches, because
+    # handle values change, which made it look like a user error rather than
+    # a bug. Passing an out-of-range handle INTO an undeclared function is
+    # the same fault in the other direction: ctypes raises, the enum loop
+    # swallows it, and the window silently goes missing.
+    _configure(user32, "GetForegroundWindow", [], ctypes.c_void_p)
+    _configure(user32, "IsWindowVisible", [ctypes.c_void_p], ctypes.c_bool)
+    _configure(user32, "GetWindowThreadProcessId",
+               [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)],
+               ctypes.c_ulong)
+    _configure(user32, "GetWindowTextLengthW", [ctypes.c_void_p],
+               ctypes.c_int)
+    _configure(user32, "GetWindowTextW",
+               [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int],
+               ctypes.c_int)
+    _configure(user32, "GetWindowRect",
+               [ctypes.c_void_p, ctypes.POINTER(_RECT)], ctypes.c_bool)
+    _configure(user32, "EnumWindows", [WNDENUMPROC, ctypes.c_void_p],
+               ctypes.c_bool)
     found: list[tuple[int, str, int]] = []      # (hwnd, title, area)
 
     def _pid_of(hwnd) -> int:
@@ -184,7 +253,7 @@ def _probe_windows(pid: int | None) -> WindowInfo:
                              height=int(rect.bottom - rect.top))
 
     try:
-        foreground = int(user32.GetForegroundWindow()) == hwnd
+        foreground = same_handle(user32.GetForegroundWindow(), hwnd)
     except Exception:
         return WindowInfo(found=True, handle=hwnd, title=title, pid=pid,
                           rect=window_rect, foreground=False, focus_known=False,
@@ -281,5 +350,5 @@ def describe() -> str:
             f"({rect.get('left')},{rect.get('top')}). {info.detail}")
 
 
-__all__ = ["WindowRect", "WindowInfo", "Locator", "describe",
+__all__ = ["WindowRect", "WindowInfo", "Locator", "describe", "same_handle",
            "MIN_WINDOW_W", "MIN_WINDOW_H"]
