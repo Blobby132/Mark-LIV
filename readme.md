@@ -277,11 +277,15 @@ JARVIS can observe and play Minecraft Java Edition, inside a bounded, revocable 
 
 **What it can do now.** Walk, turn, jump, sneak, sprint, select a hotbar slot, mine, place, interact, eat, drop, open the inventory. Run bounded multi-step tasks that observe and **verify** between every step: `walk_forward`, `survey`, `find_block`, `break_block`, `place_block`, `collect_logs`, `navigate_to`.
 
-**Navigation.** With the mod running, `navigate_to` reads the terrain scan, runs A\* over it, and walks the route — stepping up one block, dropping at most three, refusing diagonals that clip a corner. Straight stretches collapse into single long moves rather than one step per block, so crossing the scan costs three steps instead of nine. `look_around` answers "what is near me" in a sentence with coordinates, so the model never sees raw voxel data.
+**Navigation.** With the mod running, `navigate_to` reads the terrain scan, runs A\* over it, and walks the route. The player is modelled as a body, not a point: 0.6 blocks wide, two blocks tall, stepping up only 0.6 of a block (a slab) without jumping. The mod reports the headroom above every column, so a route under a low branch or a one-block ledge is refused rather than walked into. Where the route steps up a full block it walks **and** jumps in one action (`move_and_jump`) — the only way onto a ledge in Minecraft. Straight stretches become single long strides; near obstacles the strides are short. `look_around` answers "what is near me" in a sentence with coordinates.
 
-**It measures your mouse.** How many pixels of movement make a degree depends on your sensitivity slider, which nothing in the bridge reports. Rather than trust a constant, the first turn of a walk is a measurement: if it went the wrong way the sign flips, and the scale it observed is what every later turn uses.
+**When it gets stuck, it says why.** Eight kinds, each with its own recovery: a one-block step (hop), a wall or low ceiling (re-route), a mob in the way (go round it), unscanned ground (look again), a route over changed ground (re-plan), no route at all, input not landing (open ground and no movement — usually focus), and aiming that will not converge.
 
-An unknown column is **not** treated as air. A spot the scan did not reach is impassable, a destination outside the scan is refused rather than walked towards hopefully, and a tree behind a ravine comes back as "I can see it, there is no route" — not as a plan.
+**It measures your mouse.** The mod reports Minecraft's sensitivity slider and `minecraft/aiming.py` computes the exact pixels-per-degree from it. Only the *direction* of each axis is still observed, because nothing reports it. Aiming is closed-loop: correct, observe the real rotation, correct again.
+
+**Mining.** It holds attack only when the mod confirms the crosshair is on the exact block it means — a leaf in front of a log is never swung at. The hold length comes from Minecraft's own break-time formula (block hardness, tool, whether you are on the ground), and it lets go the moment the block goes. Success means that exact coordinate changed with the camera held still — or, when the inventory is readable, that the item arrived.
+
+**Perception.** The mod is authoritative. When it cannot say, a colour/texture classifier gives a *labelled guess* — `visual_high_confidence` or `visual_low_confidence` — which can steer the camera but can never authorise breaking anything.
 
 **Verification is the point.** "I held the attack button" and "the block broke" are different answers, and the system reports them separately. A swing that lands on an unbroken log is recorded as delivered-but-failed, not as success. When it cannot see the target at all, it says `unverifiable` rather than guessing either way. Evidence is ranked: the inventory beats a block vanishing from the scan, which beats the crosshair changing — and the result says which one it used.
 
@@ -299,7 +303,14 @@ Test it against a real game with a throwaway creative world:
 py tools\minecraft_manual_check.py
 ```
 
-It is interactive and never autonomous: it says what it is about to do, waits, does one bounded thing, and asks what you saw. The navigation steps skip themselves with a reason when the mod is not reporting terrain, and one of them measures your actual mouse sensitivity against the `PIXELS_PER_DEGREE` default.
+It is interactive and never autonomous: it says what it is about to do, waits, does one bounded thing, and asks what you saw. That one covers the raw input plumbing. For gameplay — aiming, mining with coordinate and inventory proof, hopping a step, going round a wall, safety stops and guided voice checks — run:
+
+```bat
+gameplay_check.bat
+gameplay_check.bat C      &:: just the mining section
+```
+
+**Voice diagnostics.** Type `voice check` in the HUD text box to see where your speech is going: frames captured, held back by a gate (and which one), queued, **dropped**, sent, transcribed, answered. If an utterance vanishes, JARVIS logs `VOICE_PIPELINE_LOST_INPUT` naming the stage it died at, or `VOICE_HEARD_BUT_UNANSWERED` when Gemini transcribed it and did nothing. Set `"voice_debug": true` in `config/api_keys.json` for a one-line summary after every turn. Proactive audio is now **off by default**; `"proactive_audio": true` restores it.
 
 ---
 

@@ -182,6 +182,7 @@ class WorldState:
     time_of_day: int | None = None         # 0-24000 ticks
     light_level: int | None = None         # 0-15
     mouse_sensitivity: float | None = None # the slider, 0..1
+    on_ground: bool | None = None          # mining in mid-air is 5x slower
     nearby_entities: tuple | None = None   # tuple[EntityRef, ...]
 
     # The ground underfoot and the things worth walking to. Both are lists of
@@ -209,7 +210,7 @@ class WorldState:
                "target_entity", "dimension", "biome", "weather",
                "time_of_day", "light_level", "nearby_entities",
                "surface", "notable_blocks", "scan_radius",
-               "mouse_sensitivity")
+               "mouse_sensitivity", "on_ground")
 
     def __post_init__(self):
         """Normalise provenance, then freeze it.

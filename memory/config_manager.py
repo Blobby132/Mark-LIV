@@ -248,6 +248,16 @@ def get_proactive_audio_enabled() -> bool:
     return bool(load_api_keys().get("proactive_audio", False))
 
 
+def get_voice_debug_enabled() -> bool:
+    """Print one line of voice-pipeline counters after every turn.
+
+    Off by default: it is for chasing "it heard me and did nothing", and the
+    watchdog already reports a lost utterance whether or not this is on. Set
+    "voice_debug": true in config/api_keys.json to see the counters move.
+    Type "voice check" in the HUD for the same information on demand."""
+    return bool(load_api_keys().get("voice_debug", False))
+
+
 def save_proactive_audio_enabled(enabled: bool) -> None:
     _save_flag("proactive_audio", enabled)
 

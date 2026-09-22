@@ -888,7 +888,8 @@ def ores(state) -> tuple:
     return tuple(out)
 
 
-def nearest_block(state, category: str, reachable_only: bool = False):
+def nearest_block(state, category: str, reachable_only: bool = False,
+                  exclude=None):
     """The closest block of a category, or None.
 
     `reachable_only` runs the pathfinder for each candidate, nearest first,
@@ -900,7 +901,9 @@ def nearest_block(state, category: str, reachable_only: bool = False):
     if position is None:
         return None
 
-    candidates = sorted(blocks_in_category(state, category),
+    skip = set(exclude or ())
+    candidates = sorted((b for b in blocks_in_category(state, category)
+                         if b.position not in skip),
                         key=lambda b: b.distance_to(position))
     if not reachable_only:
         return candidates[0] if candidates else None

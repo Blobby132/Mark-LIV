@@ -40,9 +40,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from minecraft import action_spec                                    # noqa: E402
 from minecraft import navigation as nav                               # noqa: E402
 from minecraft import skills, verification as verify_mod              # noqa: E402
+from minecraft import mining as mining_mod                           # noqa: E402
 from minecraft.controller import ActionResult                          # noqa: E402
 from minecraft.state import (                                          # noqa: E402
-    BlockRef, EXACT, NearbyBlock, EntityRef, UNKNOWN, WorldState, empty_state,
+    BlockRef, EXACT, ItemStack, NearbyBlock, EntityRef, UNKNOWN, WorldState,
+    empty_state,
 )
 from minecraft.task_runner import DISPATCH, TaskRunner                 # noqa: E402
 
@@ -624,18 +626,28 @@ class NavigateToTests(unittest.TestCase):
 class TreeWorld(SimWorld):
     """SimWorld plus trees you can walk to, aim at and break.
 
-    Mining only works when the player is within reach AND actually pointing
-    at the log, because those are the two things that went wrong in real
-    play: swinging from too far away, and swinging at the sky."""
+    It has a CROSSHAIR. The real bridge reports the block the crosshair is
+    on, with its coordinates and face, and the mining code now refuses to
+    swing unless that block is the log it means to break. So this world
+    raycasts from the eye along the view — through air, into the first log
+    or the ground — and reports what it hits, the way the game does.
+
+    Mining breaks what the crosshair is on, and only if the hold is at least
+    as long as Minecraft needs for that block. Those are the two rules the
+    real game enforces and the two things that went wrong in real play:
+    swinging at the wrong thing, and letting go too soon."""
 
     REACH = 4.5
-    AIM_TOLERANCE = 25.0
+    EYE = 1.62
 
-    def __init__(self, surface, logs, **kwargs):
+    def __init__(self, surface, logs, blocks=(), inventory=None, **kwargs):
         super().__init__(surface, **kwargs)
         self.logs = list(logs)
+        self.blocks = {b.position: b for b in blocks}   # leaves etc.
+        self.inventory = inventory                      # None: unreadable
         self.broken = []
         self.swings = 0
+        self.wrong_block_swings = 0
 
     @property
     def notable(self):
@@ -645,23 +657,86 @@ class TreeWorld(SimWorld):
     def notable(self, value):
         self.logs = list(value)
 
+    def crosshair(self):
+        """(position, name, face) of the first thing the view ray hits, or
+        None for sky within reach."""
+        yaw, pitch = math.radians(self.yaw), math.radians(self.pitch)
+        ux = -math.sin(yaw) * math.cos(pitch)
+        uy = -math.sin(pitch)
+        uz = math.cos(yaw) * math.cos(pitch)
+        ex, ey, ez = self.x, self.y + self.EYE, self.z
+        logs = {log.position: log for log in self.logs}
+        previous = (math.floor(ex), math.floor(ey), math.floor(ez))
+        distance = 0.0
+        while distance <= self.REACH:
+            px, py, pz = ex + ux * distance, ey + uy * distance, ez + uz * distance
+            cell = (math.floor(px), math.floor(py), math.floor(pz))
+            if cell != previous:
+                face = _entered_face(previous, cell)
+                if cell in logs:
+                    return cell, logs[cell].name, face
+                if cell in self.blocks:
+                    return cell, self.blocks[cell].name, face
+                ground = self.ground.get((cell[0], cell[2]))
+                if ground is not None and cell[1] <= ground.y:
+                    return cell, ground.name, face
+                previous = cell
+            distance += 0.02
+        return None
+
+    def read(self):
+        state = SimWorld.read(self)
+        hit = self.crosshair()
+        target = (BlockRef(name=hit[1], x=hit[0][0], y=hit[0][1],
+                           z=hit[0][2], face=hit[2])
+                  if hit else BlockRef(name="air"))
+        stacks = None
+        if self.inventory is not None:
+            stacks = tuple(ItemStack(slot=i, name=name, count=count)
+                           for i, (name, count) in enumerate(
+                               sorted(self.inventory.items())) if count)
+        return WorldState(
+            position=state.position, rotation=state.rotation,
+            surface=state.surface, notable_blocks=tuple(self.logs),
+            target_block=target, scan_radius=state.scan_radius,
+            inventory=stacks, on_ground=True, source="test", confidence=EXACT)
+
     def mine(self, params):
         self.swings += 1
         seconds = float(params.get("duration", 0))
-        here = (self.x, self.y, self.z)
-        for log in list(self.logs):
-            if log.distance_to(here) > self.REACH:
-                continue
-            _dx, _dy, error = nav.aim_at(here, (self.yaw, self.pitch),
-                                         log.position)
-            if error > self.AIM_TOLERANCE:
-                continue
-            if seconds < skills.MIN_USEFUL_MINE_S:
-                break          # a tap does not break a log, by design
-            self.logs.remove(log)
-            self.broken.append(log)
-            break
+        hit = self.crosshair()
+        log = None
+        if hit is not None:
+            log = next((l for l in self.logs if l.position == hit[0]), None)
+        if log is None:
+            self.wrong_block_swings += 1
+        else:
+            needed = mining_mod.estimate_break_duration(log.name).seconds
+            if seconds >= needed:
+                self.logs.remove(log)
+                self.broken.append(log)
+                if self.inventory is not None:
+                    self.inventory[log.name] = self.inventory.get(log.name, 0) + 1
+            # else: Minecraft throws the progress away when the button comes
+            # up, and nothing breaks however many times it is repeated.
         return self._result("mine", params, int(seconds * 1000))
+
+
+def _entered_face(previous, cell):
+    """Which face of `cell` a ray coming from `previous` passed through."""
+    dx, dy, dz = (previous[0] - cell[0], previous[1] - cell[1],
+                  previous[2] - cell[2])
+    if dy > 0:
+        return "up"
+    if dy < 0:
+        return "down"
+    if dx > 0:
+        return "east"
+    if dx < 0:
+        return "west"
+    if dz > 0:
+        return "south"
+    return "north"
 
 
 class CollectLogsWithAMapTests(unittest.TestCase):
@@ -701,8 +776,10 @@ class CollectLogsWithAMapTests(unittest.TestCase):
         holds = [r.step["params"]["duration"] for r in result.records
                  if r.step["action"] == "mine"]
         self.assertTrue(holds, "it never tried to mine")
+        needed = mining_mod.estimate_break_duration("oak_log").seconds
         for seconds in holds:
-            self.assertGreaterEqual(seconds, skills.MIN_USEFUL_MINE_S)
+            self.assertGreaterEqual(seconds, needed,
+                                    "held for less than an oak log needs")
 
     def test_it_collects_more_than_one(self):
         logs = [NearbyBlock(5, 64, 0, "oak_log", True),
@@ -1543,3 +1620,197 @@ class ClearanceParsingTests(unittest.TestCase):
         for version in (1, 2, 3):
             self.assertIn(f"markliv.minecraft.state/{version}",
                           mod_bridge.SUPPORTED_SCHEMAS)
+
+
+
+# ── Mining ───────────────────────────────────────────────────────────────────
+
+class BreakTimeTests(unittest.TestCase):
+    """Minecraft's own numbers (wiki, "Breaking"), not one fixed hold."""
+
+    def test_the_known_values(self):
+        est = mining_mod.estimate_break_duration
+        self.assertAlmostEqual(est("oak_log").seconds, 3.0)
+        self.assertAlmostEqual(est("oak_log", "wooden_axe").seconds, 1.5)
+        self.assertAlmostEqual(est("oak_log", "iron_axe").seconds, 0.5)
+        self.assertAlmostEqual(est("stone").seconds, 7.5)
+        self.assertAlmostEqual(est("stone", "wooden_pickaxe").seconds, 1.15)
+        self.assertAlmostEqual(est("dirt", "stone_shovel").seconds, 0.2)
+
+    def test_the_namespace_does_not_matter(self):
+        est = mining_mod.estimate_break_duration
+        self.assertEqual(est("minecraft:oak_log", "minecraft:iron_axe").seconds,
+                         est("oak_log", "iron_axe").seconds)
+
+    def test_breaking_is_not_the_same_as_getting(self):
+        """Stone by hand breaks, slowly, and drops nothing. Reporting that as
+        collecting stone would be a lie the inventory would catch."""
+        by_hand = mining_mod.estimate_break_duration("stone")
+        self.assertFalse(by_hand.drops)
+        self.assertIn("DROP NOTHING", by_hand.describe())
+        with_pick = mining_mod.estimate_break_duration("stone", "wooden_pickaxe")
+        self.assertTrue(with_pick.drops)
+
+    def test_ore_tiers(self):
+        est = mining_mod.estimate_break_duration
+        self.assertFalse(est("iron_ore", "wooden_pickaxe").drops)
+        self.assertTrue(est("iron_ore", "stone_pickaxe").drops)
+        self.assertFalse(est("diamond_ore", "stone_pickaxe").drops)
+        self.assertTrue(est("diamond_ore", "iron_pickaxe").drops)
+
+    def test_mid_air_is_five_times_slower(self):
+        est = mining_mod.estimate_break_duration
+        self.assertAlmostEqual(est("oak_log", on_ground=False).seconds,
+                               est("oak_log").seconds * 5, delta=0.1)
+
+    def test_bedrock_cannot_be_broken(self):
+        self.assertFalse(mining_mod.estimate_break_duration("bedrock").breakable)
+
+    def test_an_unknown_block_is_labelled_a_guess(self):
+        estimate = mining_mod.estimate_break_duration("some_modded_block")
+        self.assertFalse(estimate.known_block)
+        self.assertIn("guess", estimate.describe())
+
+    def test_the_hold_is_longer_than_the_estimate_and_bounded(self):
+        """Too short breaks NOTHING — Minecraft throws progress away when the
+        button comes up — so the hold errs long. It stops early anyway once
+        the bridge sees the block go."""
+        estimate = mining_mod.estimate_break_duration("oak_log")
+        self.assertGreater(estimate.hold_seconds(10.0), estimate.seconds)
+        stone = mining_mod.estimate_break_duration("obsidian")
+        self.assertLessEqual(stone.hold_seconds(10.0), 10.0)
+
+
+class CrosshairTargetingTests(unittest.TestCase):
+    """It swings only at the block it means to break."""
+
+    def setUp(self):
+        nav.reset_calibration()
+        self.addCleanup(nav.reset_calibration)
+
+    def test_crosshair_on_is_about_coordinates_not_angles(self):
+        state = WorldState(position=(0.5, 64, 0.5), rotation=(0.0, 0.0),
+                           target_block=BlockRef(name="oak_log", x=2, y=64,
+                                                 z=0, face="west"),
+                           source="t", confidence=EXACT)
+        self.assertTrue(mining_mod.crosshair_on(state, (2, 64, 0), "oak_log"))
+        self.assertFalse(mining_mod.crosshair_on(state, (2, 65, 0)),
+                         "the log above is a different block")
+        self.assertFalse(mining_mod.crosshair_on(state, (2, 64, 0), "stone"))
+
+    def test_a_leaf_in_front_of_the_log_is_never_mined(self):
+        """Pointed straight at the log with a leaf in the way, holding attack
+        breaks the leaf. The old check was "is the angle close", which said
+        yes, and swung."""
+        log = NearbyBlock(4, 65, 0, "oak_log", True)
+        leaf = NearbyBlock(3, 65, 0, "oak_leaves", True)
+        world = TreeWorld(flat(), [log], blocks=[leaf],
+                          position=(0.5, 64.0, 0.5), yaw=-90.0)
+        skill = skills.create("collect_logs", count=1)
+        run(world, skill, max_steps=20)
+        self.assertEqual(world.wrong_block_swings, 0,
+                         "it swung at something that was not a log")
+        self.assertIn(log, world.logs, "it cannot have broken a hidden log")
+        self.assertTrue(skill.failed)
+        self.assertIn("in the way", skill.done_reason)
+
+    def test_a_log_already_under_the_crosshair_is_mined_straight_away(self):
+        """No aiming ceremony when the bridge already says the crosshair is
+        on a log within reach."""
+        log = NearbyBlock(2, 65, 0, "oak_log", True)
+        world = TreeWorld(flat(), [log], position=(0.5, 64.0, 0.5), yaw=-90.0)
+        world.pitch = 0.0
+        self.assertEqual(world.crosshair()[0], (2, 65, 0))
+        result = run(world, skills.create("collect_logs", count=1))
+        self.assertEqual(result.records[0].step["action"], "mine")
+        self.assertEqual(len(world.broken), 1)
+
+    def test_every_swing_lands_on_a_log(self):
+        logs = [NearbyBlock(5, 64, 0, "oak_log", True),
+                NearbyBlock(5, 65, 0, "oak_log", True),
+                NearbyBlock(-4, 64, 3, "birch_log", True)]
+        world = TreeWorld(flat(), logs)
+        run(world, skills.create("collect_logs", count=3), max_steps=45)
+        self.assertEqual(world.wrong_block_swings, 0)
+        self.assertEqual(len(world.broken), 3)
+
+    def test_a_too_short_hold_breaks_nothing_in_the_simulation_too(self):
+        """The simulation enforces the rule that bit in the real game."""
+        log = NearbyBlock(2, 65, 0, "oak_log", True)
+        world = TreeWorld(flat(), [log], position=(0.5, 64.0, 0.5), yaw=-90.0)
+        world.mine({"duration": 1.0})
+        self.assertEqual(world.broken, [])
+        world.mine({"duration": 3.0})
+        self.assertEqual(len(world.broken), 1)
+
+
+class ExactCoordinateVerificationTests(unittest.TestCase):
+
+    def st(self, target, rotation=(0.0, 10.0), notable=None):
+        return WorldState(position=(0.5, 64, 0.5), rotation=rotation,
+                          target_block=target, notable_blocks=notable,
+                          source="t", confidence=EXACT)
+
+    def setUp(self):
+        self.log = BlockRef(name="oak_log", x=5, y=71, z=-232, face="north")
+        self.check = verify_mod.broke_block_at((5, 71, -232), "oak_log")
+
+    def test_camera_still_and_the_block_gone_is_success(self):
+        result = self.check.check(self.st(self.log),
+                                  self.st(BlockRef(name="air")))
+        self.assertEqual(result.status, verify_mod.SUCCESS)
+
+    def test_the_same_block_still_there_is_failure(self):
+        result = self.check.check(self.st(self.log), self.st(self.log))
+        self.assertEqual(result.status, verify_mod.FAILED)
+
+    def test_a_moved_camera_proves_nothing(self):
+        """Turning away from a block reads exactly like breaking it. The old
+        "the crosshair now sees air" check could not tell them apart."""
+        result = self.check.check(self.st(self.log),
+                                  self.st(BlockRef(name="air"),
+                                          rotation=(45.0, 10.0)))
+        self.assertEqual(result.status, verify_mod.UNVERIFIABLE)
+        self.assertIn("camera moved", result.reason)
+
+    def test_the_scan_beats_the_crosshair(self):
+        before = self.st(BlockRef(name="air"),
+                         notable=(NearbyBlock(5, 71, -232, "oak_log", True),))
+        after = self.st(BlockRef(name="air"), rotation=(90.0, 0.0),
+                        notable=())
+        # Even with the camera swung right round, the scan settles it.
+        self.assertEqual(self.check.check(before, after).status,
+                         verify_mod.SUCCESS)
+
+
+class InventoryCollectionTests(unittest.TestCase):
+    """"Collected 4" only when the inventory says 4."""
+
+    def test_it_counts_what_arrived_in_the_inventory(self):
+        logs = [NearbyBlock(5, 64, 0, "oak_log", True),
+                NearbyBlock(5, 65, 0, "oak_log", True)]
+        world = TreeWorld(flat(), logs, inventory={"oak_log": 2})
+        skill = skills.create("collect_logs", count=2)
+        run(world, skill, max_steps=45)
+        self.assertEqual(world.inventory["oak_log"], 4)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertIn("counted in the inventory", skill.done_reason)
+        self.assertIn("2 of 2", skill.done_reason)
+
+    def test_breaking_without_pickup_is_not_collecting(self):
+        """A block broken over lava is gone from the scan and never reaches
+        the inventory. With the inventory readable, the inventory decides."""
+        class NoPickup(TreeWorld):
+            def mine(self, params):
+                before = dict(self.inventory)
+                result = TreeWorld.mine(self, params)
+                self.inventory = before          # the drop was lost
+                return result
+
+        logs = [NearbyBlock(5, 64, 0, "oak_log", True)]
+        world = NoPickup(flat(), logs, inventory={"oak_log": 0})
+        skill = skills.create("collect_logs", count=1)
+        run(world, skill, max_steps=20)
+        self.assertEqual(len(world.broken), 1, "it did break the log")
+        self.assertTrue(skill.failed, "but it must not claim it collected it")
+        self.assertIn("0 of 1", skill.done_reason)

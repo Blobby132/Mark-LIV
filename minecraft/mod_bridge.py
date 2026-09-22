@@ -258,6 +258,8 @@ class ModBridgeStateSource:
             surface=_blocks(payload.get("surface")),
             notable_blocks=_blocks(payload.get("notable_blocks")),
             mouse_sensitivity=_number(payload.get("mouse_sensitivity")),
+            on_ground=(payload["on_ground"]
+                       if isinstance(payload.get("on_ground"), bool) else None),
             scan_radius=_integer((payload.get("scan") or {}).get("radius")
                                  if isinstance(payload.get("scan"), dict)
                                  else None),

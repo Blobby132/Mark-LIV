@@ -430,3 +430,83 @@ class TestValidation(_ControllerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── move_and_jump: a new input path, held to every existing rule ─────────────
+
+class TestMoveAndJump(_ControllerCase):
+    """Walking and jumping together is the only way onto a one-block ledge.
+    It is also the one genuinely new way this session presses keys, so it
+    gets the whole set of guarantees the older actions have."""
+
+    def test_it_is_refused_without_a_session(self):
+        result = self.controller.move_and_jump({"direction": "forward"})
+        self.assertFalse(result.ok)
+        self.assertEqual(self.backend.events, [], "input was sent with no session")
+
+    def test_it_presses_exactly_a_movement_key_and_space(self):
+        self.open_session()
+        result = self.controller.move_and_jump({"direction": "forward",
+                                                "duration": 0.15})
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(sorted(self.backend.downs()), ["space", "w"])
+        self.assert_nothing_held()
+
+    def test_there_is_no_way_to_name_another_key(self):
+        """Direction comes from the movement table; the jump key is a
+        constant. A caller that tries to name a key gets refused, not
+        obeyed."""
+        self.open_session()
+        for sneaky in ({"direction": "space"}, {"direction": "e"},
+                       {"direction": "escape"}, {"direction": "/"}):
+            with self.subTest(params=sneaky):
+                self.backend.events.clear()
+                # The same convention as `move`: bad parameters raise and
+                # send nothing, and the adapter turns that into a refusal.
+                with self.assertRaises(InvalidAction):
+                    self.controller.move_and_jump(sneaky)
+                self.assertEqual(self.backend.downs(), [])
+        self.backend.events.clear()
+        self.controller.move_and_jump({"direction": "forward", "key": "e",
+                                       "keys": ["t", "/"], "duration": 0.1})
+        self.assertEqual(sorted(self.backend.downs()), ["space", "w"],
+                         "an extra parameter reached the keyboard")
+
+    def test_it_is_bounded(self):
+        self.open_session()
+        started = time.monotonic()
+        result = self.controller.move_and_jump({"direction": "forward",
+                                                "duration": 30})
+        self.assertLess(time.monotonic() - started, 1.6)
+        self.assertTrue(result.clamped)
+        self.assert_nothing_held()
+
+    def test_focus_loss_stops_it_and_releases_both_keys(self):
+        self.open_session()
+
+        def _steal_focus():
+            time.sleep(0.1)
+            self.locator.foreground = False
+
+        threading.Thread(target=_steal_focus, daemon=True).start()
+        result = self.controller.move_and_jump({"direction": "forward",
+                                                "duration": 1.0})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.stopped_reason, "focus_lost")
+        self.assert_nothing_held("focus loss left a key down mid-hop")
+
+    def test_a_backend_failure_mid_hop_still_releases(self):
+        self.open_session()
+        self.backend._fail_on = "key_down"
+        result = self.controller.move_and_jump({"direction": "forward",
+                                                "duration": 0.2})
+        self.assertFalse(result.ok)
+        self.assert_nothing_held()
+
+    def test_it_needs_only_the_movement_grant(self):
+        """Not a new permission: both keys are ones `move` and `jump` already
+        press under the same capability."""
+        from actions import minecraft as adapter
+        from core import capabilities
+        self.assertEqual(adapter._mc_capability({"action": "move_and_jump"}),
+                         capabilities.MINECRAFT_MOVEMENT)

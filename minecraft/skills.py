@@ -45,6 +45,8 @@ from typing import Protocol
 
 from minecraft import action_spec, navigation as nav, verification as verify_mod
 from minecraft import stuck as stuck_mod
+from minecraft import aiming as aiming_mod
+from minecraft import mining as mining_mod
 from minecraft.state import UNKNOWN
 from minecraft.task_runner import Step
 
@@ -70,6 +72,11 @@ depend on reading the target check for it once and say what is missing."""
 # left asking for the old one second, which looks identical to the input not
 # working at all.
 MIN_USEFUL_MINE_S = 3.0
+
+MAX_SKIPPED_TARGETS = 4
+"""Logs to give up on (occluded, unreachable by aim) before the whole task
+does. Enough to work round a tree's leaves; not so many that a task with a
+real aiming problem burns its budget trying every log in the forest."""
 
 SWEEP_DEGREES = 18.0
 """How far a blind sweep turns between looks.
@@ -1036,6 +1043,13 @@ class NavigateTo:
             return "somewhere I cannot read"
 
 
+def nav_target(position, name):
+    """A minimal block reference: a position and a name, nothing invented."""
+    from minecraft.state import NearbyBlock
+    return NearbyBlock(x=position[0], y=position[1], z=position[2],
+                       name=str(name).split(":")[-1], solid=True)
+
+
 def _last_move_distance(history):
     """How far the last movement step actually carried the player, or None.
 
@@ -1109,6 +1123,9 @@ class CollectLogs:
     _aim_target: tuple | None = None
     _aim_tries: int = 0
     _aim_gave_up: str = ""
+    _aim_errors: list = field(default_factory=list)
+    _skip: set = field(default_factory=set)
+    _last_estimate: object = None
     _walker: object = None
     _walk_failed: str = ""
 
@@ -1204,9 +1221,17 @@ class CollectLogs:
     def _work_from_the_map(self, state, local, crosshair_readable,
                            history=()):
         """Nearest log: walk to it if it is far, aim and mine if it is close."""
-        target = nav.nearest_block(state, "log", reachable_only=True)
+        target = nav.nearest_block(state, "log", reachable_only=True,
+                                   exclude=self._skip)
         if target is None:
             seen = nav.nearest_block(state, "log")
+            if seen is not None and seen.position in self._skip \
+                    and self._aim_gave_up:
+                # The logs left are ones this task already gave up aiming at.
+                # Saying "no walkable route" here would be false — they are
+                # reachable; the crosshair would not land on them.
+                self._walk_failed = self._aim_gave_up
+                return None
             if seen is None:
                 self._walk_failed = (
                     f"The scan covered {local.known_columns} columns within "
@@ -1222,46 +1247,98 @@ class CollectLogs:
         if distance > self.reach:
             return self._walk_towards(state, target, history)
 
-        # Close enough to hit. Aim at it, then hold.
+        # Close enough to hit.
         self._walker = None
+
+        # The crosshair is the authority, not the angle. If the bridge says
+        # it is ALREADY on a log within reach, that is the log to mine —
+        # whichever one it is. A person standing at a trunk hits the log in
+        # front of them, not the one the planner happened to pick first.
+        under = self._log_under_crosshair(state)
+        if under is not None:
+            return self._mine(state, under)
+
+        # Aim at the chosen log, on the face turned towards us.
         dx, dy, error = nav.aim_at(state.position, state.rotation,
                                    target.position)
-
         if target.position != self._aim_target:
             self._aim_target = target.position
             self._aim_tries = 0
+            self._aim_errors = []
+        self._aim_errors.append(error)
 
-        if error > self.aim_tolerance_deg and (dx or dy):
-            # Aiming is a feedback loop, and a loop that is not converging
-            # will not start. Six attempts is generous for a correction that
-            # should take one or two; past that, swinging anyway is more
-            # use than turning forever, and the log says the aim was never
-            # settled rather than pretending it was.
-            if self._aim_tries < self.max_aim_steps:
-                self._aim_tries += 1
-                return Step(
-                    action="look", params={"dx": dx, "dy": dy},
-                    expectation=verify_mod.turned(min_degrees=1.0),
-                    note=(f"aim at {target.name} {target.position} "
-                          f"({error:.0f}° off, try {self._aim_tries} of "
-                          f"{self.max_aim_steps})"))
+        converging = stuck_mod.diagnose_aim(self._aim_errors)
+        if (error > self.aim_tolerance_deg and (dx or dy)
+                and self._aim_tries < self.max_aim_steps
+                and converging is None):
+            self._aim_tries += 1
+            return Step(
+                action="look", params={"dx": dx, "dy": dy},
+                expectation=verify_mod.turned(min_degrees=1.0),
+                note=(f"aim at {target.name} {target.position} "
+                      f"({error:.0f}° off, try {self._aim_tries} of "
+                      f"{self.max_aim_steps})"))
+
+        # Pointed as well as we are going to get, and the crosshair is NOT on
+        # a log. Something is in front of it — a leaf, the trunk's own edge,
+        # another block — or aiming stopped converging. Either way, holding
+        # attack now would break whatever IS under the crosshair, which is
+        # exactly the thing not to do. Try a different log instead.
+        seen = getattr(state, "target_block", None)
+        seen_name = getattr(seen, "name", None) or "nothing"
+        if converging is not None:
+            self._aim_gave_up = (f"I could not settle the crosshair on "
+                                 f"{target.name} at {target.position}: "
+                                 f"{converging.describe()}.")
+        else:
             self._aim_gave_up = (
-                f"I could not settle the crosshair on {target.name} at "
-                f"{target.position} — after {self.max_aim_steps} corrections "
-                f"it was still {error:.0f}° off. I swung anyway.")
+                f"I aimed at the {target.name} at {target.position} but the "
+                f"crosshair lands on {seen_name} — something is in the way.")
+        self._skip.add(target.position)
+        self._aim_target = None
+        if len(self._skip) > MAX_SKIPPED_TARGETS:
+            self._walk_failed = self._aim_gave_up
+            return None
+        return self._work_from_the_map(state, local, crosshair_readable,
+                                       history)
 
+    def _log_under_crosshair(self, state):
+        """The log the bridge says the crosshair is on, if it is within reach.
+
+        Returns a NearbyBlock-like object with a position and a name, or
+        None. Reach matters: a crosshair on a log eight blocks away is a
+        perfectly good aim that breaks nothing."""
+        target = getattr(state, "target_block", None)
+        if target is None or getattr(target, "name", None) not in LOG_BLOCKS:
+            return None
+        try:
+            position = (int(target.x), int(target.y), int(target.z))
+        except (TypeError, ValueError):
+            return None
+        if position in self._skip:
+            return None
+        if not aiming_mod.SHARED.within_reach(state.position, position):
+            return None
+        return nav_target(position, target.name)
+
+    def _mine(self, state, target):
+        """Hold attack on a block the crosshair is CONFIRMED to be on."""
         self._last_target = target.name
-        # Best evidence first: the inventory if it is readable, then the block
-        # vanishing from the scan, then the crosshair. Each is a weaker claim
-        # than the one before it and the reason line says which was used.
+        estimate = mining_mod.estimate_break_duration(target.name, state=state)
+        self._last_estimate = estimate
+        # Best evidence first: the inventory if it is readable, then the
+        # exact coordinate going. Each is a stronger claim than the crosshair
+        # alone, and the verdict's reason says which was used.
         if self._can_count:
             check = verify_mod.collected(target.name)
         else:
-            check = verify_mod.block_gone(target.position, target.name)
+            check = verify_mod.broke_block_at(target.position, target.name)
         return Step(action="mine",
-                    params={"duration": self._mine_seconds()},
+                    params={"duration": self._mine_seconds(estimate)},
                     expectation=check,
-                    note=f"mine {target.name} ({self._done}/{self.count})")
+                    note=(f"mine {target.name} at {target.position} "
+                          f"({self._done}/{self.count}; "
+                          f"{estimate.describe()})"))
 
     def _walk_towards(self, state, target, history=()):
         """Delegate the walking to the navigation skill.
@@ -1327,8 +1404,19 @@ class CollectLogs:
                           f"terrain scan, so I can only check the crosshair"))
 
     @staticmethod
-    def _mine_seconds() -> float:
-        return max(MIN_USEFUL_MINE_S, action_spec.DEFAULT_MINE_DURATION_S)
+    def _mine_seconds(estimate=None) -> float:
+        """How long to hold, from the break-time model when there is one.
+
+        Never below MIN_USEFUL_MINE_S when the estimate is missing, because
+        Minecraft discards breaking progress the moment the button comes up
+        and a too-short hold breaks nothing however often it is repeated.
+        With an estimate the hold can be shorter — dirt with a shovel is a
+        fifth of a second — and the controller still lets go early when the
+        bridge sees the block go."""
+        if estimate is None or not estimate.breakable:
+            return max(MIN_USEFUL_MINE_S, action_spec.DEFAULT_MINE_DURATION_S)
+        return max(0.25, estimate.hold_seconds(
+            action_spec.MAX_MINE_DURATION_S))
 
     def replan(self, state, reason, history):
         """Stuck: stop mining this log and look for another.

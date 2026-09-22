@@ -29,6 +29,7 @@ from core import ocr as core_ocr
 
 from minecraft import capabilities as mc_phase
 from minecraft import navigation as mc_nav
+from minecraft import perception as mc_perception
 from minecraft import skills as mc_skills
 from minecraft.controller import MinecraftController
 from minecraft.debug_overlay import DebugOverlayStateSource, NEEDS_MOD_BRIDGE
@@ -344,7 +345,10 @@ def minecraft_control(parameters: dict = None, player=None,
         if action == "look_around":
             state = _get_state_source().read()
             summary = mc_nav.summarise(state)
-            return f"{_around_line(state, summary)}\n{summary}"
+            seen = _what_is_under_the_crosshair(state)
+            summary["crosshair"] = seen.as_dict()
+            return (f"{_around_line(state, summary)} Under the crosshair: "
+                    f"{seen.describe()}.\n{summary}")
 
         if action == "toggle_debug":
             return _result_line(controller.toggle_debug_overlay(), player)
@@ -554,6 +558,24 @@ def _run_task(controller, params: dict, player=None) -> str:
     # The summary line is built to be un-overstatable: it says what was
     # verified, separately from what was attempted.
     return f"{result.describe()}\n{result.as_dict()}"
+
+
+def _what_is_under_the_crosshair(state):
+    """The bridge's answer if it has one; a visual guess only if it does not.
+
+    A frame is captured ONLY when the bridge cannot say. Vision is the
+    fallback, never a second opinion on the game's own data — and the result
+    carries its source so nothing downstream mistakes a colour match for a
+    block id."""
+    exact = mc_perception.from_bridge(state)
+    if exact is not None:
+        return exact
+    try:
+        shot = _get_observer().capture(compress=False)
+        frame = shot.frame if getattr(shot, "ok", False) else None
+    except Exception:
+        frame = None
+    return mc_perception.crosshair(None, frame)
 
 
 def _source_label(source) -> str:

@@ -122,6 +122,17 @@ class Expectation:
             )
 
         ok, detail = self.predicate(before, after)
+        # A predicate may answer None: the fields were readable, and they
+        # still do not settle it. "The target changed, but so did the
+        # camera" is that case -- neither a success nor a failure, and
+        # calling it either would be making something up.
+        if ok is None:
+            return Verification(
+                status=UNVERIFIABLE, goal=self.goal, delivered=delivered,
+                reason=detail,
+                before=_slim(before, self.fields),
+                after=_slim(after, self.fields),
+            )
         return Verification(
             status=SUCCESS if ok else FAILED, goal=self.goal,
             delivered=delivered, reason=detail,
@@ -433,6 +444,101 @@ def block_gone(position, name: str | None = None) -> Expectation:
                        fields=("notable_blocks",), predicate=predicate)
 
 
+CAMERA_STEADY_DEG = 1.5
+"""How little the view may move during a hold and still count as "still".
+
+The crosshair naming a different block proves the old one went ONLY if the
+camera did not move. Otherwise the new block is simply what the camera now
+points at, and the old one may be sitting there untouched."""
+
+
+def broke_block_at(position, name: str | None = None) -> Expectation:
+    """The block at an EXACT coordinate is gone.
+
+    THE EVIDENCE, STRONGEST FIRST
+        1. The terrain scan listed that coordinate before and does not list
+           it (or lists something else) after. Direct and unambiguous.
+        2. The crosshair was on that coordinate before, the camera has not
+           moved, and the crosshair is now on something else — air, or the
+           block that was behind it. With the camera still, the only thing
+           that can change what it sees is the block going.
+        3. The camera moved. Then a different target proves nothing at all,
+           and the verdict is UNVERIFIABLE rather than a guess either way.
+
+    "The crosshair now sees air" on its own was never enough: turning away
+    from a block produces exactly the same reading as breaking it."""
+    try:
+        where = (int(position[0]), int(position[1]), int(position[2]))
+    except (TypeError, IndexError, ValueError):
+        where = None
+    wanted = str(name or "").split(":")[-1] or None
+
+    def listed(state):
+        for source in (getattr(state, "notable_blocks", None),
+                       getattr(state, "surface", None)):
+            if source is None:
+                continue
+            for block in source:
+                if (block.x, block.y, block.z) == where:
+                    return block
+        return None
+
+    def target_at(state):
+        block = getattr(state, "target_block", None)
+        if block is None:
+            return None
+        try:
+            return (int(block.x), int(block.y), int(block.z)), block.name
+        except (TypeError, ValueError):
+            return None, getattr(block, "name", None)
+
+    def predicate(before, after):
+        if where is None:
+            return False, f"{position!r} is not a block coordinate."
+
+        # 1. The scan.
+        was, now = listed(before), listed(after)
+        if was is not None and (wanted is None or was.name == wanted):
+            if now is None or now.name != was.name:
+                return True, (f"the {was.name} at {where} is gone "
+                              f"(the terrain scan no longer lists it).")
+            # Still listed. That is a firm no — the scan does not lie about
+            # a coordinate it can see.
+            return False, f"the {now.name} at {where} is still there."
+
+        # 2. The crosshair, with the camera held still.
+        before_hit = target_at(before)
+        after_hit = target_at(after)
+        if before_hit is None or before_hit[0] != where:
+            return None, (f"I was not looking at {where} before the swing, "
+                          f"so nothing I see now says whether it broke.")
+        if not _camera_steady(before, after):
+            return None, ("the camera moved during the swing, so a different "
+                          "block under the crosshair proves nothing.")
+        if after_hit is not None and after_hit[0] == where \
+                and (wanted is None or after_hit[1] == wanted):
+            return False, (f"the crosshair is still on the {after_hit[1]} at "
+                           f"{where} — it did not break.")
+        seen = after_hit[1] if after_hit else "nothing"
+        return True, (f"the {wanted or 'block'} at {where} is gone: with the "
+                      f"camera still, the crosshair now sees {seen}.")
+
+    return Expectation(name="broke_block_at",
+                       goal=f"break the {wanted or 'block'} at {where}",
+                       fields=("target_block", "rotation"),
+                       predicate=predicate)
+
+
+def _camera_steady(before, after) -> bool:
+    try:
+        yaw = abs((after.rotation[0] - before.rotation[0] + 180.0) % 360.0
+                  - 180.0)
+        pitch = abs(after.rotation[1] - before.rotation[1])
+    except (TypeError, IndexError, AttributeError):
+        return False
+    return max(yaw, pitch) <= CAMERA_STEADY_DEG
+
+
 def unverifiable(goal: str, reason: str,
                  delivered: bool = False) -> Verification:
     """A verdict for an action with no expectation attached.
@@ -449,5 +555,6 @@ __all__ = [
     "SUCCESS", "FAILED", "UNVERIFIABLE", "STATUSES",
     "moved", "stayed_within", "turned", "block_broken", "looking_at",
     "target_changed", "holding_slot", "collected", "unverifiable",
-    "closer_to", "arrived_at", "block_gone",
+    "closer_to", "arrived_at", "block_gone", "broke_block_at",
+    "CAMERA_STEADY_DEG",
 ]

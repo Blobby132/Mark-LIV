@@ -95,8 +95,15 @@ def countdown(seconds: int, why: str) -> None:
 def main() -> int:
     print(f"""
 {RULE}
-  MARK-LIV — MINECRAFT PHASE 4 MANUAL CHECK
+  MARK-LIV — MINECRAFT INPUT & SAFETY BASICS
 {RULE}
+
+  This checks the raw plumbing: does a synthetic mouse delta move the
+  camera, do keys go down and come up, does F12 stop everything.
+
+  For gameplay — aiming at a block, mining it and proving it broke, hopping
+  a step, going round a wall, and the voice checks — run instead:
+      gameplay_check.bat
 
   Before you start:
     * Minecraft Java Edition should ALREADY BE OPEN.

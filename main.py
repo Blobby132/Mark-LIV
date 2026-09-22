@@ -71,6 +71,7 @@ from actions.background_monitor import (
 from actions.web_search        import _news as _fetch_news_sync
 from memory.config_manager     import (
     get_brief_enabled, get_media_resolution, get_proactive_audio_enabled,
+    get_voice_debug_enabled,
     get_push_to_talk_enabled, get_thinking_enabled, get_turn_tuning, get_voice,
     get_wake_word_enabled, save_wake_word_enabled,    get_input_device, get_output_device,
 )
@@ -604,6 +605,7 @@ class JarvisLive:
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
         self._voice            = VoiceDiagnostics()
+        self._voice_debug      = get_voice_debug_enabled()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._session_log: list[str] = []          # conversation turns for end-of-session summary
 
@@ -837,6 +839,13 @@ class JarvisLive:
         return url, key, f"{url}/auto-login?key={key}", manual
 
     def _on_text_command(self, text: str):
+        # Answered here, not sent to Gemini: the question is about the pipe
+        # the model is at the far end of, and asking the model would be
+        # asking the one party that cannot see it.
+        if str(text or "").strip().lower() in ("voice check", "voice status",
+                                                "/voice"):
+            self._report_voice_state()
+            return
         if not self._loop or not self.session:
             return
         # Respect wake-word sleep: a typed command must not be answered while
@@ -852,6 +861,32 @@ class JarvisLive:
             ),
             self._loop
         )
+
+    def _report_voice_state(self) -> None:
+        """Everything about the voice pipeline, right now, in the log."""
+        with self._speaking_lock:
+            speaking = self._is_speaking
+        flags = []
+        flags.append("JARVIS_SPEAKING" if speaking else "not speaking")
+        if self._tail_active():
+            flags.append(f"TAIL_ACTIVE "
+                         f"{max(0.0, self._tail_until - time.monotonic()):.2f}s")
+        if self._wake_enabled and not self._awake:
+            flags.append("ASLEEP (wake word)")
+        if self._ptt_enabled:
+            flags.append("push-to-talk " + ("HELD" if self._ptt_held
+                                             else "released"))
+        if self.ui.muted:
+            flags.append("MUTED")
+        if self._phone_active:
+            flags.append("phone has the mic")
+        flags.append("proactive audio " + ("ON" if (
+            self._enhanced_live and get_proactive_audio_enabled()) else "off"))
+        self.ui.write_log(f"SYS: voice — {' | '.join(flags)}")
+        self.ui.write_log(f"SYS: voice — {self._voice.describe()}")
+        if self._voice.last_loss:
+            self.ui.write_log(f"SYS: voice — last problem: "
+                              f"{self._voice.last_loss}")
 
     def _tail_active(self) -> bool:
         """True while the speakers may still be finishing our last sentence."""
@@ -1648,6 +1683,11 @@ class JarvisLive:
 
                         if sc.turn_complete:
                             self._voice.turn_complete(" ".join(in_buf).strip())
+                            if self._voice_debug:
+                                # One line per turn, never per frame: the
+                                # counters' SHAPE is the diagnosis, and a
+                                # line every 64ms would bury it.
+                                print(f"[VOICE] {self._voice.describe()}")
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
@@ -2182,10 +2222,10 @@ class JarvisLive:
             with self._speaking_lock:
                 speaking = self._is_speaking
             if not speaking and not self.ui.muted:
-                try:
-                    self.out_queue.put_nowait(chunk)
-                except asyncio.QueueFull:
-                    pass
+                # Same path as the PC microphone: a full queue drops the
+                # oldest frame and counts it, rather than silently losing
+                # the word just spoken on the phone.
+                self._enqueue_audio(chunk)
 
     def _on_phone_connected(self) -> None:
         self.ui.write_log("SYS: Phone connected via Remote Dashboard.")

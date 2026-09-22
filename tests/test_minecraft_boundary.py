@@ -38,6 +38,8 @@ ALLOWED_STDLIB = frozenset({
     "threading", "time", "typing", "uuid", "json", "math", "enum", "re",
     # A priority queue, for the pathfinder. Pure computation, no reach.
     "heapq",
+    # RGB to HSV, for the visual classifier. Pure arithmetic.
+    "colorsys",
     # MappingProxyType, to freeze a WorldState's per-field provenance so a
     # snapshot cannot be edited after the fact.
     "types",
