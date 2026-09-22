@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from minecraft import navigation
 from minecraft.mod_bridge import ModBridgeStateSource, state_file_path  # noqa: E402
 from minecraft.state import EXACT                                       # noqa: E402
 
@@ -163,15 +164,54 @@ def main() -> int:
                 print(f"  {'':<16}   {entity.name} at "
                       f"{entity.distance:.1f} blocks")
             continue
+        if name in ("surface", "notable_blocks"):
+            # Several hundred of these. Printing them raw buries everything
+            # else on the screen and tells you nothing you can act on.
+            print(f"  {name:<16} {len(value)} block(s)")
+            for block in value[:5]:
+                print(f"  {'':<16}   {block.name} at "
+                      f"({block.x}, {block.y}, {block.z})")
+            if len(value) > 5:
+                print(f"  {'':<16}   ... and {len(value) - 5} more")
+            continue
         if hasattr(value, "as_dict"):
             value = value.as_dict()
         print(f"  {name:<16} {value}")
 
+    print(f"\n{RULE}\n  CAN IT NAVIGATE?\n{RULE}")
+    local = navigation.LocalMap.from_state(state)
+    if not local.usable:
+        print("\n  NO — the bridge is running but it is not reporting")
+        print("  terrain. That is the OLD version of the mod.")
+        print("\n  Reinstall it and restart Minecraft:")
+        print("    install_mod.bat")
+        print("\n  Everything else above still works; JARVIS just cannot")
+        print("  walk anywhere on purpose until the terrain scan arrives.")
+        return 1
+
+    summary = navigation.summarise(state)
+    print(f"\n  YES — {summary['columns_seen']} columns of ground within "
+          f"{summary.get('scan_radius')} blocks.")
+    for label in ("log", "stone", "water"):
+        found = summary.get(f"nearest_{label}")
+        if found:
+            print(f"    nearest {label:<6} {found['name']} at "
+                  f"{tuple(found['position'])}, {found['distance']} away")
+    for label in ("hostile", "passive"):
+        found = summary.get(f"nearest_{label}")
+        if found:
+            print(f"    nearest {label:<6} {found['name']}, "
+                  f"{found['distance']} away")
+    if summary.get("ores_seen"):
+        print(f"    ores in view  {', '.join(summary['ores_seen'])}")
+    if not summary.get("nearest_log"):
+        print("    no logs in range — stand near some trees and run this")
+        print("    again if you want to test 'collect some wood'.")
+
     exact = state.fields_at_least(EXACT)
     print(f"\n{RULE}")
     print(f"  {len(exact)} field(s) known exactly. The bridge is working.")
-    print("  'JARVIS, collect some wood' can now count what it collected,")
-    print("  rather than guessing from blocks that disappeared.")
+    print("  Try: 'JARVIS, what's around me?' then 'walk to the nearest tree'.")
     return 0
 
 
