@@ -7,6 +7,7 @@ it by default, and every launcher puts its instances somewhere different. So
 this looks, copies, and says what it did.
 
     python tools/install_mod.py              install where it fits
+    python tools/install_mod.py --into DIR   install into one game directory
     python tools/install_mod.py --list       look, change nothing
     python tools/install_mod.py --all        every folder found (rarely right)
     python tools/install_mod.py --uninstall  remove it everywhere
@@ -221,10 +222,19 @@ def install_into(mods: Path, jar: Path) -> bool:
 
 
 def main() -> int:
-    argv = [a.lower() for a in sys.argv[1:]]
+    raw_argv = sys.argv[1:]
+    argv = [a.lower() for a in raw_argv]
     listing = "--list" in argv
     every = "--all" in argv
     removing = "--uninstall" in argv
+
+    # --into takes the guesswork out entirely: bridge_check reads the running
+    # game's --gameDir and can hand back the one directory that matters.
+    explicit = None
+    if "--into" in argv:
+        index = argv.index("--into")
+        if index + 1 < len(raw_argv):
+            explicit = Path(raw_argv[index + 1].strip('"'))
 
     print(f"{RULE}\n  MARK LIV — the Minecraft bridge mod\n{RULE}")
 
@@ -232,6 +242,17 @@ def main() -> int:
     if jar is None and not removing:
         print("\n  Could not find the mod jar in this download.")
         print(f"  Expected it in: {REPO / 'mods'}")
+        return 1
+
+    if explicit is not None and not removing:
+        mods = explicit if explicit.name == "mods" else explicit / "mods"
+        print(f"\n  Installing into the folder you named:\n    {mods}")
+        ok = install_into(mods, jar)
+        print(f"\n{RULE}")
+        if ok:
+            print("  Done. Restart Minecraft, load a world, then run:")
+            print("    py tools\\bridge_check.py")
+            return 0
         return 1
 
     found = find_mods_dirs()
