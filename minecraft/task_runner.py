@@ -67,6 +67,8 @@ import time
 from dataclasses import dataclass, field
 
 from minecraft import verification as verify_mod
+from minecraft import action_spec
+from minecraft import navigation as nav
 from minecraft.errors import InvalidAction
 from minecraft.progress import ProgressMonitor
 from minecraft.state import empty_state
@@ -338,6 +340,7 @@ class TaskRunner:
 
             record, state = self._execute(index, step, state)
             records.append(record)
+            self._learn_the_mouse(record)
             self.progress.record(step.action, record.verification)
 
             # Stuck: the same action, the same relevant state, over and over.
@@ -367,6 +370,33 @@ class TaskRunner:
         if summary:
             reason = f"{STEP_LIMIT}: {summary}"
         return self._result(INCOMPLETE, goal, reason, records, state)
+
+    @staticmethod
+    def _learn_the_mouse(record) -> None:
+        """Measure this machine's mouse sensitivity from any turn.
+
+        WHY IT LIVES HERE AND NOT IN A SKILL
+            How many pixels make a degree is a fact about the person's
+            hardware and settings, not about any particular skill's plan.
+            Every skill that turns produces the same evidence, and putting
+            the measurement here means a skill gets the benefit without
+            having to remember to ask for it.
+
+            It is a measurement, not a decision: the skills still choose
+            where to look, and `action_spec` still bounds what is sent."""
+        if record.step.get("action") != "look":
+            return
+        try:
+            asked = float(record.step.get("params", {}).get("dx", 0))
+            was = record.state_before["rotation"][0]
+            now = record.state_after["rotation"][0]
+        except (KeyError, TypeError, IndexError, ValueError):
+            return
+        if was is None or now is None:
+            return
+        sent = max(-action_spec.MAX_LOOK_DELTA_PX,
+                   min(asked, action_spec.MAX_LOOK_DELTA_PX))
+        nav.calibrate(sent, nav.yaw_difference(was, now))
 
     @staticmethod
     def _account(skill, state, records) -> None:

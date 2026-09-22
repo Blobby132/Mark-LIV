@@ -48,6 +48,7 @@ from minecraft.task_runner import MAX_TASK_STEPS, TaskRunner
 _controller: MinecraftController | None = None
 _observer: Observer | None = None
 _state_source = None
+_state_source_pinned = False
 
 
 def _target_probe():
@@ -83,28 +84,43 @@ def _get_state_source():
 
     Three implementations, in order of how much they can actually tell us:
 
-        mod bridge  — the game's own numbers. Everything, `exact`.
+        mod bridge  — the game's own numbers. Everything, `exact`, including
+                      the terrain around the player, which is what makes
+                      navigating possible at all.
         F3 overlay  — OCR of the debug screen. Position and the targeted
-                      block, `inferred`, and nothing about the inventory.
+                      block, `inferred`, and NOTHING about the terrain.
         vision      — an honest empty state. Reads nothing.
 
-    Re-resolved on every call rather than cached, because availability
-    genuinely changes: someone starts JARVIS, then starts Minecraft, then
-    loads a world, and each step makes a better source possible. Caching the
-    first answer meant the common order of events — assistant first, game
-    second — permanently pinned the worst source.
+    THE PREFERENCE IS RE-EVALUATED EVERY CALL, NOT JUST THE AVAILABILITY
+        An earlier version kept whatever it had picked for as long as that
+        source still worked. That reads as caching and is really a trap: the
+        ordinary sequence is JARVIS first, Minecraft second, mod third, so
+        the overlay is very often available BEFORE the bridge is, gets
+        picked, and then keeps being picked forever because it never stopped
+        working. The result is an assistant with the mod installed and
+        running that quietly cannot see the terrain, sweeping the crosshair
+        and reporting no trees.
+
+        So the bridge is asked first on every call. Cheap — one small file
+        read — and it is only called once per task, not once per step.
 
     Everything above this function is written against `StateSource` and never
     learns which one it got; that seam is why the bridge could be added
     without touching the planner, the task runner or verification."""
     global _state_source
-    if _state_source is not None and getattr(_state_source, "available",
-                                             lambda: True)():
+    if _state_source_pinned:
         return _state_source
 
     bridge = ModBridgeStateSource()
     if bridge.available():
-        _state_source = bridge
+        # Reuse the existing instance when it is already the bridge, so
+        # nothing it has cached internally is thrown away each call.
+        if not isinstance(_state_source, ModBridgeStateSource):
+            _state_source = bridge
+        return _state_source
+
+    if isinstance(_state_source, DebugOverlayStateSource) \
+            and _state_source.available():
         return _state_source
 
     overlay = DebugOverlayStateSource(observer=_get_observer(),
@@ -123,10 +139,13 @@ def _get_state_source():
 def _reset_for_tests(controller=None, observer=None, state_source=None) -> None:
     """Swap in fakes. Only the tests call this; it exists so they can exercise
     the real adapter rather than a copy of its logic."""
-    global _controller, _observer, _state_source
+    global _controller, _observer, _state_source, _state_source_pinned
     _controller = controller
     _observer = observer
     _state_source = state_source
+    # A fake handed in here is used exactly as given; the real resolution
+    # order would otherwise replace it with whatever this machine has.
+    _state_source_pinned = state_source is not None
 
 
 # ── Capability resolution ────────────────────────────────────────────────────
@@ -298,7 +317,10 @@ def minecraft_control(parameters: dict = None, player=None,
 
         if action == "status":
             status = controller.status()
-            return (f"{_status_line(status)}\n{status}")
+            status["state_source"] = _source_label(_get_state_source())
+            return (f"{_status_line(status)}\n"
+                    f"Reading the world from: {status['state_source']}\n"
+                    f"{status}")
 
         if action == "observe":
             observation = _get_observer().capture()
@@ -491,12 +513,29 @@ def _run_task(controller, params: dict, player=None) -> str:
         # you nothing about WHY, and the per-step trail is the difference
         # between "it mined four times and nothing broke" and "it never mined
         # at all" -- which are opposite problems that both read as failure.
+        source = _get_state_source()
+        player.write_log(f"[minecraft] reading the world from: "
+                         f"{_source_label(source)}")
         for entry in result.records:
             action = entry.step.get("action", "?")
             held = entry.action_result.get("actual_duration_ms", 0)
             verdict = entry.verification.get("status", "?")
-            player.write_log(f"[minecraft]   {entry.index + 1}. {action} "
-                             f"{held}ms -> {verdict}")
+            # The note is the only part that says WHAT it was doing --
+            # "aim at oak_log (5, 64, 3)" and "looking for a log" are the
+            # same `look` action and completely different situations.
+            # Dropping it made these logs unreadable after the fact.
+            note = entry.step.get("note", "")
+            cut = entry.action_result.get("stopped_reason") or ""
+            line = (f"[minecraft]   {entry.index + 1}. {action} "
+                    f"{held}ms -> {verdict}")
+            if note:
+                line += f"  | {note}"
+            if cut:
+                line += f"  | CUT SHORT: {cut}"
+            player.write_log(line)
+            why = entry.verification.get("reason") or ""
+            if why and verdict != "success":
+                player.write_log(f"[minecraft]        {why}")
         player.write_log(f"[minecraft] task {name}: {result.status} "
                          f"({result.steps_taken} steps)")
         if result.reason:
@@ -505,6 +544,21 @@ def _run_task(controller, params: dict, player=None) -> str:
     # The summary line is built to be un-overstatable: it says what was
     # verified, separately from what was attempted.
     return f"{result.describe()}\n{result.as_dict()}"
+
+
+def _source_label(source) -> str:
+    """Which reader answered, in the terms that matter to a person.
+
+    Worth one line per task: almost every "why did it do that" question turns
+    on whether it could see the world or only the crosshair, and the two look
+    identical in a list of actions."""
+    name = type(source).__name__
+    if name.startswith("ModBridge"):
+        return "the bridge mod — exact, including the terrain around you"
+    if name.startswith("DebugOverlay"):
+        return ("the F3 overlay via OCR — position and the block under the "
+                "crosshair only, NO terrain, so it cannot navigate")
+    return "nothing that can read the game"
 
 
 def _destination_from(params: dict):

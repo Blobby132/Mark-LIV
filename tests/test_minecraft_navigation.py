@@ -756,6 +756,69 @@ class FindBlockWithAMapTests(unittest.TestCase):
         self.assertNotIn("crosshair", skill.done_reason)
 
 
+class SweepingAndCalibrationTests(unittest.TestCase):
+    """Turning the right amount on a machine that is not mine."""
+
+    def setUp(self):
+        nav.reset_calibration()
+        self.addCleanup(nav.reset_calibration)
+
+    def test_a_sweep_is_measured_in_degrees_not_pixels(self):
+        """100 pixels is 12 degrees on one machine and 50 on another. A sweep
+        sized in pixels either crawls or jumps straight past the tree."""
+        default = skills._sweep_pixels()
+        self.assertAlmostEqual(default,
+                               round(skills.SWEEP_DEGREES
+                                     * nav.PIXELS_PER_DEGREE))
+        nav.calibrate(400, 20.0)          # this machine: 20 px/degree
+        self.assertAlmostEqual(skills._sweep_pixels(),
+                               round(skills.SWEEP_DEGREES * 20.0))
+
+    def test_the_runner_learns_the_mouse_from_any_turn(self):
+        """Not just from navigating. A survey turns too, and the measurement
+        is a fact about the hardware, not about one skill's plan."""
+        class Heavy(SimWorld):
+            SCALE = 3.0
+
+            def look(self, params):
+                params = {"dx": self._clamp(params.get("dx", 0)) / self.SCALE,
+                          "dy": self._clamp(params.get("dy", 0)) / self.SCALE}
+                return SimWorld.look(self, params)
+
+        world = Heavy(flat())
+        run(world, skills.create("survey", steps=3))
+        self.assertAlmostEqual(nav.pixels_per_degree(),
+                               nav.PIXELS_PER_DEGREE * Heavy.SCALE,
+                               delta=4.0)
+
+    def test_a_turn_that_did_not_happen_teaches_nothing(self):
+        """A look that moved nothing would measure an infinite sensitivity
+        and poison every later turn."""
+        nav.calibrate(400, 0.0)
+        nav.calibrate(400, 0.5)
+        self.assertEqual(nav.pixels_per_degree(), nav.PIXELS_PER_DEGREE)
+
+    def test_an_absurd_reading_is_discarded(self):
+        self.assertIsNone(nav.calibrate(40, 1000.0))
+        self.assertEqual(nav.pixels_per_degree(), nav.PIXELS_PER_DEGREE)
+
+    def test_the_sweep_says_it_is_working_blind(self):
+        """A person reading the log must be able to tell a crosshair sweep
+        from navigating — they are the same action and a different world."""
+        class NoScan(SimWorld):
+            def read(self):
+                return WorldState(position=(self.x, self.y, self.z),
+                                  rotation=(self.yaw, self.pitch),
+                                  target_block=BlockRef(name="stone"),
+                                  source="test", confidence=EXACT)
+
+        world = NoScan(flat())
+        result = run(world, skills.create("collect_logs", count=1),
+                     max_steps=3)
+        notes = " ".join(r.step["note"] for r in result.records)
+        self.assertIn("no terrain scan", notes)
+
+
 class TheModelsViewOfTheWorldTests(unittest.TestCase):
     """What the LLM actually receives.
 
@@ -774,6 +837,52 @@ class TheModelsViewOfTheWorldTests(unittest.TestCase):
             def read(self_inner):
                 return state
         self.adapter._reset_for_tests(state_source=Source())
+
+    def test_it_upgrades_to_the_bridge_when_the_mod_comes_up(self):
+        """The ordinary sequence: JARVIS, then Minecraft, then the mod.
+
+        The overlay is very often available BEFORE the bridge is. An earlier
+        version kept whatever it had picked for as long as that source still
+        worked, so it would pick the overlay and never notice the mod — an
+        assistant with the mod running that quietly could not see the
+        terrain, sweeping the crosshair and reporting no trees."""
+        from minecraft.mod_bridge import ModBridgeStateSource
+        from minecraft.debug_overlay import DebugOverlayStateSource
+
+        mod_is_up = {"yes": False}
+        real_bridge_available = ModBridgeStateSource.available
+        real_overlay_available = DebugOverlayStateSource.available
+
+        ModBridgeStateSource.available = lambda self: mod_is_up["yes"]
+        DebugOverlayStateSource.available = lambda self: True
+        self.addCleanup(setattr, ModBridgeStateSource, "available",
+                        real_bridge_available)
+        self.addCleanup(setattr, DebugOverlayStateSource, "available",
+                        real_overlay_available)
+        self.adapter._reset_for_tests()
+
+        first = self.adapter._get_state_source()
+        self.assertIsInstance(first, DebugOverlayStateSource,
+                              "should start on the overlay")
+
+        mod_is_up["yes"] = True            # the player starts the modded game
+        second = self.adapter._get_state_source()
+        self.assertIsInstance(second, ModBridgeStateSource,
+                              "it never noticed the mod came up")
+
+    def test_the_log_says_which_reader_answered(self):
+        """Twelve `look` steps in a row is a crosshair sweep and a
+        navigation failure looks identical in a list of actions. One line
+        naming the reader is the difference between a readable log and a
+        guess."""
+        from minecraft.mod_bridge import ModBridgeStateSource
+        from minecraft.debug_overlay import DebugOverlayStateSource
+        self.assertIn("terrain",
+                      self.adapter._source_label(ModBridgeStateSource()))
+        overlay = self.adapter._source_label(
+            DebugOverlayStateSource(observer=None, reader=None))
+        self.assertIn("NO terrain", overlay)
+        self.assertIn("cannot navigate", overlay)
 
     def test_look_around_names_what_is_near(self):
         self._source(state_from(

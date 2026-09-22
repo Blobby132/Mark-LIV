@@ -70,6 +70,24 @@ depend on reading the target check for it once and say what is missing."""
 # working at all.
 MIN_USEFUL_MINE_S = 3.0
 
+SWEEP_DEGREES = 18.0
+"""How far a blind sweep turns between looks.
+
+IN DEGREES, NOT PIXELS, AND THAT IS THE POINT
+    These skills used to turn a fixed number of PIXELS, which is not a
+    quantity anyone can reason about: 100 pixels is 12 degrees on one
+    machine and 50 degrees on another, and on the second one a sweep jumps
+    straight past the tree it is looking for and reports there isn't one.
+
+    Eighteen degrees is a little under the crosshair's useful width, so a
+    full turn takes twenty looks and nothing gets skipped over."""
+
+
+def _sweep_pixels() -> int:
+    """SWEEP_DEGREES in pixels, using whatever the mouse has measured."""
+    return max(1, int(round(SWEEP_DEGREES * nav.pixels_per_degree())))
+
+
 # Blocks that count as "a tree" for FindBlock's default search.
 LOG_BLOCKS = frozenset({
     "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
@@ -132,7 +150,7 @@ class Survey:
     sequence of aimed readings rather than a scene description."""
 
     steps: int = 8
-    delta_px: int = 150
+    delta_px: int | None = None
 
     name = "survey"
     goal = "look around and report what is there"
@@ -143,7 +161,7 @@ class Survey:
             return None
         return Step(
             action="look",
-            params={"dx": self.delta_px, "dy": 0},
+            params={"dx": self.delta_px or _sweep_pixels(), "dy": 0},
             expectation=verify_mod.turned(min_degrees=2.0),
             note=f"turn {step_index + 1} of {self.steps}",
         )
@@ -172,7 +190,7 @@ class FindBlock:
 
     wanted: frozenset = LOG_BLOCKS
     steps: int = 12
-    delta_px: int = 120
+    delta_px: int | None = None
     aim_tolerance_deg: float = 6.0
 
     name = "find_block"
@@ -275,9 +293,10 @@ class FindBlock:
             return None
         return Step(
             action="look",
-            params={"dx": self.delta_px, "dy": 0},
+            params={"dx": self.delta_px or _sweep_pixels(), "dy": 0},
             expectation=verify_mod.turned(min_degrees=2.0),
-            note=f"sweep {step_index + 1} of {self.steps} looking for a target",
+            note=(f"sweep {step_index + 1} of {self.steps} looking for a "
+                  f"target (no terrain scan — crosshair only)"),
         )
 
 
@@ -866,7 +885,7 @@ class CollectLogs:
 
     count: int = 4
     sweep_steps: int = 10
-    delta_px: int = 100
+    delta_px: int | None = None
     aim_tolerance_deg: float = 6.0
     reach: float = 4.0
 
@@ -1071,9 +1090,11 @@ class CollectLogs:
                         note=f"mine {name} ({done}/{self.count})")
 
         # Nothing wooden under the crosshair: sweep the view looking for some.
-        return Step(action="look", params={"dx": self.delta_px, "dy": 0},
+        return Step(action="look",
+                    params={"dx": self.delta_px or _sweep_pixels(), "dy": 0},
                     expectation=verify_mod.turned(min_degrees=2.0),
-                    note=f"looking for a log ({done}/{self.count})")
+                    note=(f"sweeping for a log ({done}/{self.count}) — no "
+                          f"terrain scan, so I can only check the crosshair"))
 
     @staticmethod
     def _mine_seconds() -> float:
