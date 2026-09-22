@@ -116,6 +116,7 @@ MOVE_KEYS = {
 
 DIRECTIONS = tuple(sorted(MOVE_KEYS))
 
+SPACE_KEY = "space"
 SNEAK_KEY = "shift"
 SPRINT_KEY = "ctrl"
 
@@ -139,6 +140,43 @@ class MoveSpec:
     def as_dict(self) -> dict:
         return {"direction": self.direction, "duration": self.duration,
                 "requested_duration": self.requested_duration}
+
+
+@dataclass(frozen=True)
+class HopSpec:
+    """Walking forward and jumping at the same time.
+
+    WHY THIS IS ONE ACTION AND NOT TWO
+        Getting onto a one-block ledge in Minecraft means holding forward
+        THROUGH the jump. Walk, stop, jump, walk lands you back where you
+        started: you rise, and with no horizontal momentum you come straight
+        back down on the same block. That is why an agent that did it in
+        three separate steps needed a person to say "jump" and then still did
+        not get up.
+
+        It is a fixed pair — one movement key and the jump key — not an
+        arbitrary key combination. There is no field here that names a key,
+        so this cannot become a way to press something else.
+    """
+
+    direction: str
+    duration: float
+    requested_duration: float
+    key: str
+    jump_key: str = SPACE_KEY
+
+    @property
+    def keys(self) -> tuple:
+        return (self.key, self.jump_key)
+
+    @property
+    def clamped(self) -> bool:
+        return abs(self.duration - self.requested_duration) > 1e-9
+
+    def as_dict(self) -> dict:
+        return {"direction": self.direction, "duration": self.duration,
+                "requested_duration": self.requested_duration,
+                "jumping": True}
 
 
 @dataclass(frozen=True)
@@ -281,6 +319,33 @@ def parse_look(params: dict) -> LookSpec:
 
     return LookSpec(dx=_clamp(requested_dx), dy=_clamp(requested_dy),
                     requested_dx=requested_dx, requested_dy=requested_dy)
+
+
+MAX_HOP_DURATION_S = 1.0
+"""A hop is short on purpose.
+
+Long enough to carry you onto the block in front, short enough that being
+wrong about the obstacle costs a step rather than a journey — and short enough
+that the focus guard, which runs every tick, gets many chances during it."""
+
+
+def parse_move_and_jump(params: dict) -> HopSpec:
+    """Forward (or another direction) while jumping, briefly.
+
+    Reuses the movement direction table, so the set of things this can press
+    is exactly the set `move` can press, plus the jump key. Nothing here
+    accepts a key name."""
+    params = params or {}
+    direction = str(params.get("direction", "forward")).lower().strip()
+    if direction not in MOVE_KEYS:
+        raise InvalidAction(
+            f"'{direction}' is not a direction I can jump in. "
+            f"One of: {', '.join(DIRECTIONS)}."
+        )
+    duration, requested = _bounded_duration(params, JUMP_TAP_S + 0.3,
+                                            MAX_HOP_DURATION_S)
+    return HopSpec(direction=direction, duration=duration,
+                   requested_duration=requested, key=MOVE_KEYS[direction])
 
 
 def parse_jump(params: dict) -> JumpSpec:
@@ -518,7 +583,8 @@ def limits() -> dict:
 
 __all__ = [
     "MoveSpec", "LookSpec", "JumpSpec", "HoldSpec", "HotbarSpec",
-    "parse_move", "parse_look", "parse_jump", "parse_attack",
+    "parse_move", "parse_look", "parse_jump", "parse_move_and_jump",
+    "HopSpec", "MAX_HOP_DURATION_S", "parse_attack",
     "parse_use_item", "parse_sneak", "parse_sprint", "parse_hotbar",
     "parse_mine", "parse_place", "parse_interact", "parse_eat", "parse_drop",
     "parse_inventory", "limits",

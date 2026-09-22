@@ -326,21 +326,77 @@ class SimWorld:
         return max(-action_spec.MAX_LOOK_DELTA_PX,
                    min(value, action_spec.MAX_LOOK_DELTA_PX))
 
+    # Minecraft lets you walk up 0.6 of a block — a slab, a path edge — and
+    # not a full block. This simulation used to let the player walk straight
+    # up full blocks, which is precisely the thing that fails in the real
+    # game ("it walks into a block and I have to tell it to jump"), and so no
+    # test could ever see that bug.
+    STEP_HEIGHT = 0.6
+    STRIDE = 0.1
+    HALF_WIDTH = 0.3
+
     def move(self, params):
         seconds = float(params.get("duration", 0.5))
-        distance = seconds * self.WALK_SPEED
-        radians = math.radians(self.yaw)
-        dx, dz = -math.sin(radians) * distance, math.cos(radians) * distance
-        nx, nz = self.x + dx, self.z + dz
-        block = self.ground.get((math.floor(nx), math.floor(nz)))
-        if block is None or block.y > self.y + nav.MAX_STEP_UP:
-            self.blocked += 1                       # walked into something
-            return self._result("move", params, int(seconds * 1000))
-        self.x, self.z = nx, nz
-        self.y = float(block.y + 1)
+        self._walk(seconds * self.WALK_SPEED, jumping=False)
         return self._result("move", params, int(seconds * 1000))
 
+    def move_and_jump(self, params):
+        seconds = float(params.get("duration", 0.4))
+        self._walk(min(seconds * self.WALK_SPEED, 1.6), jumping=True)
+        return self._result("move_and_jump", params, int(seconds * 1000))
+
+    def _walk(self, distance, jumping):
+        """Walk in small strides and stop at the first column the body cannot
+        enter.
+
+        Stride by stride rather than teleporting to the end point: the old
+        version checked only the column it landed in, so a long move could
+        pass straight through a wall in the middle of it — and path
+        smoothing makes long moves."""
+        radians = math.radians(self.yaw)
+        ux, uz = -math.sin(radians), math.cos(radians)
+        rose = False
+        travelled = 0.0
+        while travelled < distance - 1e-9:
+            stride = min(self.STRIDE, distance - travelled)
+            nx, nz = self.x + ux * stride, self.z + uz * stride
+            # The body is 0.6 wide. A shoulder hits a wall a centre-line
+            # misses, so every corner of the footprint has to fit.
+            for ox in (-self.HALF_WIDTH, self.HALF_WIDTH):
+                for oz in (-self.HALF_WIDTH, self.HALF_WIDTH):
+                    corner = (math.floor(nx + ox), math.floor(nz + oz))
+                    other = self.ground.get(corner)
+                    if other is None:
+                        self.blocked += 1
+                        return
+                    if (other.y + 1) - self.y > self.STEP_HEIGHT \
+                            and not (jumping and not rose):
+                        self.blocked += 1
+                        return
+            column = (math.floor(nx), math.floor(nz))
+            if column != (math.floor(self.x), math.floor(self.z)):
+                block = self.ground.get(column)
+                if block is None:
+                    self.blocked += 1
+                    return
+                rise = (block.y + 1) - self.y
+                room = block.clearance
+                if room is not None and room < 2:
+                    self.blocked += 1          # a player's head is in the way
+                    return
+                if rise > self.STEP_HEIGHT:
+                    if not (jumping and not rose and rise <= 1.0 + 1e-9):
+                        self.blocked += 1      # a full block: needs a jump
+                        return
+                    rose = True
+                self.y = float(block.y + 1)
+            self.x, self.z = nx, nz
+            travelled += stride
+
     def jump(self, params):
+        # A jump on the spot goes up and comes straight back down: no
+        # horizontal movement, which is why a separate walk-then-jump never
+        # gets anyone onto a ledge.
         return self._result("jump", params, 100)
 
     def __getattr__(self, name):
@@ -675,9 +731,14 @@ class CollectLogsWithAMapTests(unittest.TestCase):
         result = run(world, skill, max_steps=40)
         self.assertTrue(skill.failed)
         self.assertEqual(world.broken, [])
-        self.assertLess(result.steps_taken, 20,
+        self.assertLess(result.steps_taken, 8,
                         "it kept walking at a tree it was never reaching")
-        self.assertIn("no closer", skill.done_reason)
+        # Not merely "no closer": open ground and no movement is a specific
+        # failure — the input is not landing — and saying so sends the user
+        # to the window focus rather than looking for a wall that is not
+        # there.
+        self.assertIn("did not move", skill.done_reason)
+        self.assertIn("window in front", skill.done_reason)
 
     def test_the_last_log_is_counted_even_at_the_step_limit(self):
         """Progress is tallied at the start of each plan(), so the final
@@ -1141,6 +1202,22 @@ class TheModelsViewOfTheWorldTests(unittest.TestCase):
 class NavigationHonestyTests(unittest.TestCase):
     """The claims the brief says must never be made."""
 
+    def test_the_aiming_module_cannot_press_a_key_either(self):
+        """navigation delegates its angle maths to `minecraft.aiming`, so the
+        boundary has to hold there too or it has simply moved."""
+        import ast
+        import inspect
+        from minecraft import aiming
+        tree = ast.parse(inspect.getsource(aiming))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertEqual(imported - {"__future__"}, {"math", "dataclasses"},
+                         "aiming.py grew an import it should not have")
+
     def test_the_module_imports_nothing_that_can_press_a_key(self):
         """Checked against the import graph, not the prose. The module's own
         docstring says it cannot reach the controller, and a substring search
@@ -1154,8 +1231,11 @@ class NavigationHonestyTests(unittest.TestCase):
                 imported.update(a.name.split(".")[0] for a in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
-        self.assertEqual(imported - {"__future__"}, {"heapq", "math",
-                                                     "dataclasses"},
+        # `minecraft.aiming` is allowed and is the point: the angle
+        # arithmetic lives in one module, not copied into this one. It is
+        # checked by its own test that it cannot reach input either.
+        self.assertEqual(imported - {"__future__"},
+                         {"heapq", "math", "dataclasses", "minecraft"},
                          "navigation.py grew an import it should not have")
 
     def test_the_skill_holds_no_controller(self):
@@ -1184,3 +1264,282 @@ class NavigationHonestyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ── Movement under honest physics ────────────────────────────────────────────
+
+def step_up(clearance=4, height=64, from_x=3):
+    """Flat ground, then everything from x=from_x onwards one block higher."""
+    return [b if b.x < from_x
+            else NearbyBlock(b.x, height, b.z, "dirt", True, clearance)
+            for b in flat()]
+
+
+def flat_with_room(clearance):
+    return [NearbyBlock(b.x, b.y, b.z, b.name, b.solid, clearance)
+            for b in flat()]
+
+
+class SimulationIsHonestTests(unittest.TestCase):
+    """The simulation must fail where the real game fails.
+
+    It used to let the player walk straight up full blocks, which is the one
+    thing the real game does not allow and the exact thing that went wrong in
+    it. A fake that is easier than the real thing hides precisely the bugs it
+    was built to find."""
+
+    def test_a_full_block_cannot_be_walked_up(self):
+        world = SimWorld(step_up(), yaw=-90.0)            # facing +X
+        world.move({"duration": 2.0})
+        self.assertLess(world.x, 3.0, "walked up a full block without jumping")
+
+    def test_a_hop_gets_onto_it(self):
+        world = SimWorld(step_up(), position=(2.5, 64.0, 0.5), yaw=-90.0)
+        world.move_and_jump({"duration": 0.4})
+        self.assertGreaterEqual(world.x, 3.0)
+        self.assertEqual(world.y, 65.0)
+
+    def test_a_jump_on_the_spot_goes_nowhere(self):
+        world = SimWorld(step_up(), position=(2.5, 64.0, 0.5), yaw=-90.0)
+        world.jump({})
+        self.assertEqual((world.x, world.y), (2.5, 64.0))
+
+    def test_a_long_move_cannot_pass_through_a_wall(self):
+        """The old version only checked the column it landed in."""
+        world = SimWorld(wall_at(flat(), x=3), yaw=-90.0)
+        world.move({"duration": 2.0})                     # ~8.6 blocks
+        self.assertLess(world.x, 3.0, "passed through the wall")
+
+
+class MovementTests(unittest.TestCase):
+
+    def test_it_hops_a_one_block_step_without_being_told(self):
+        """The reported bug: it walked into a block and had to be told to
+        jump. The map already says the step is there, so it hops straight
+        up — walking and jumping together, which is the only thing that
+        works."""
+        world = SimWorld(step_up())
+        skill = skills.create("navigate_to", destination=(6, 0))
+        result = run(world, skill)
+        actions = [r.step["action"] for r in result.records]
+        self.assertIn("move_and_jump", actions)
+        self.assertNotIn("jump", actions, "a jump on the spot goes nowhere")
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertLess(world.distance_to((6, 0)), 1.5)
+
+    def test_it_does_not_try_to_hop_a_two_block_wall(self):
+        world = SimWorld(wall_at(flat(), x=3, height=65, gap_z=4),
+                         position=(0.5, 64.0, 0.5))
+        skill = skills.create("navigate_to", destination=(6, 0))
+        result = run(world, skill)
+        hops = [r for r in result.records
+                if r.step["action"] == "move_and_jump"]
+        self.assertEqual(hops, [], "tried to hop a two-block wall")
+        self.assertLess(world.distance_to((6, 0)), 2.0, skill.done_reason)
+
+    def test_a_low_ceiling_is_refused_not_walked_into(self):
+        """Feet fit, body does not. A planner that only knew the ground used
+        to route straight under a branch."""
+        world = SimWorld(step_up(clearance=1))
+        skill = skills.create("navigate_to", destination=(6, 0))
+        result = run(world, skill)
+        self.assertTrue(skill.failed)
+        self.assertEqual(result.steps_taken, 0, "it walked somewhere anyway")
+
+    def test_it_routes_round_a_low_branch(self):
+        """Ground that is fine to stand on, one block of room above it."""
+        surface = [b if not (b.x == 3 and b.z != 4)
+                   else NearbyBlock(b.x, b.y, b.z, b.name, True, 1)
+                   for b in flat()]
+        world = SimWorld(surface)
+        skill = skills.create("navigate_to", destination=(6, 0))
+        result = run(world, skill)
+        self.assertFalse(skill.failed, skill.done_reason)
+        path_columns = [(x, z) for x, _y, z in (skill._path.waypoints
+                                                 if skill._path else ())]
+        for x, z in path_columns:
+            if x == 3:
+                self.assertEqual(z, 4, "routed under the branch")
+
+    def test_it_does_not_walk_off_a_cliff(self):
+        surface = [b if b.x < 3 else NearbyBlock(b.x, 50, b.z, "stone", True, 4)
+                   for b in flat()]
+        world = SimWorld(surface)
+        skill = skills.create("navigate_to", destination=(6, 0))
+        run(world, skill)
+        self.assertTrue(skill.failed)
+        self.assertEqual(world.y, 64.0, "it went over the edge")
+
+    def test_it_comes_through_a_gap_without_clipping_the_wall(self):
+        """The player is 0.6 wide and rarely at a column's centre. A line
+        traced between centres looked clear and clipped the corner of the
+        wall it had just come round."""
+        world = SimWorld(wall_at(flat(), x=3, gap_z=0),
+                         position=(0.5, 64.0, 4.5))
+        skill = skills.create("navigate_to", destination=(6, 4))
+        result = run(world, skill)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertLess(result.steps_taken, 15)
+        self.assertEqual(world.blocked, 0,
+                         f"walked into the wall {world.blocked} times")
+
+    def test_a_shoulder_hits_a_wall_a_centre_line_misses(self):
+        """The player is 0.6 wide. A line along z=0.8 never enters column
+        (3, 1) — but a shoulder 0.3 to the side reaches z=1.1, which does.
+        A planner treating the player as a point would call it clear."""
+        surface = [b if (b.x, b.z) != (3, 1)
+                   else NearbyBlock(3, 66, 1, "stone", True, 4)
+                   for b in flat()]
+        local = nav.LocalMap.from_state(state_from(surface))
+        self.assertFalse(local.line_is_walkable((2.5, 0.8), (4.5, 0.8)),
+                         "the shoulder clips the wall and the line said clear")
+        self.assertTrue(local.line_is_walkable((2.5, 0.5), (4.5, 0.5)),
+                        "down the middle of the column should be fine")
+
+    def test_it_walks_past_a_pillar_without_clipping_it(self):
+        surface = [b if (b.x, b.z) != (3, 1)
+                   else NearbyBlock(3, 66, 1, "stone", True, 4)
+                   for b in flat()]
+        world = SimWorld(surface, position=(0.5, 64.0, 0.9))
+        skill = skills.create("navigate_to", destination=(6, 1))
+        run(world, skill)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertEqual(world.blocked, 0,
+                         f"walked into the pillar {world.blocked} times")
+
+    def test_moves_are_short_near_an_obstacle_and_long_in_the_open(self):
+        world = SimWorld(flat())
+        result = run(world, skills.create("navigate_to", destination=(7, 0)))
+        longest = max(r.step["params"]["duration"] for r in result.records
+                      if r.step["action"] == "move")
+        self.assertGreater(longest, 1.0, "open ground should get a long stride")
+
+        world = SimWorld(step_up(), position=(1.5, 64.0, 0.5))
+        result = run(world, skills.create("navigate_to", destination=(6, 0)))
+        before_step = [r.step["params"]["duration"] for r in result.records
+                       if r.step["action"] == "move"
+                       and r.state_before["position"][0] < 3.0]
+        for seconds in before_step:
+            self.assertLessEqual(seconds, 0.35,
+                                 "a long stride straight into the step")
+
+
+class StuckDiagnosisTests(unittest.TestCase):
+    """Eight kinds of stuck, each with its own recovery."""
+
+    def world(self, surface=None, entities=()):
+        return state_from(surface or flat(), entities=entities)
+
+    def test_a_one_block_step_is_a_hop(self):
+        from minecraft import stuck
+        state = state_from(step_up(from_x=1))
+        diagnosis = stuck.diagnose_movement(state, (3, 0), moved_by=0.0)
+        self.assertEqual(diagnosis.kind, stuck.VERTICAL_BLOCK)
+        self.assertEqual(diagnosis.recovery, stuck.HOP)
+
+    def test_a_wall_is_a_reroute(self):
+        from minecraft import stuck
+        state = state_from(wall_at(flat(), x=1))
+        diagnosis = stuck.diagnose_movement(state, (3, 0), moved_by=0.0)
+        self.assertEqual(diagnosis.kind, stuck.COLLISION_STUCK)
+        self.assertEqual(diagnosis.recovery, stuck.REROUTE)
+
+    def test_a_mob_in_the_way_is_not_blamed_on_the_terrain(self):
+        from minecraft import stuck
+        cow = EntityRef(name="cow", distance=1.0, position=(1.5, 64.0, 0.5),
+                        category="passive")
+        state = state_from(flat(), entities=(cow,))
+        diagnosis = stuck.diagnose_movement(state, (3, 0), moved_by=0.0)
+        self.assertEqual(diagnosis.kind, stuck.ENTITY_INTERFERENCE)
+
+    def test_a_dropped_item_is_not_in_the_way(self):
+        from minecraft import stuck
+        item = EntityRef(name="oak_log", distance=1.0,
+                         position=(1.5, 64.0, 0.5), category="item")
+        state = state_from(flat(), entities=(item,))
+        diagnosis = stuck.diagnose_movement(state, (3, 0), moved_by=0.0)
+        self.assertNotEqual(diagnosis.kind, stuck.ENTITY_INTERFERENCE)
+
+    def test_a_mob_behind_is_not_in_the_way(self):
+        from minecraft import stuck
+        cow = EntityRef(name="cow", distance=1.0, position=(-0.5, 64.0, 0.5),
+                        category="passive")
+        state = state_from(flat(), entities=(cow,))
+        diagnosis = stuck.diagnose_movement(state, (3, 0), moved_by=0.0)
+        self.assertNotEqual(diagnosis.kind, stuck.ENTITY_INTERFERENCE)
+
+    def test_unscanned_ground_means_look_again(self):
+        from minecraft import stuck
+        surface = [b for b in flat() if b.x != 1]
+        diagnosis = stuck.diagnose_movement(state_from(surface), (3, 0),
+                                            moved_by=0.0)
+        self.assertEqual(diagnosis.kind, stuck.UNKNOWN_TERRAIN)
+        self.assertEqual(diagnosis.recovery, stuck.OBSERVE)
+
+    def test_open_ground_and_no_movement_is_the_input(self):
+        """Not a navigation problem, and no amount of re-routing fixes it."""
+        from minecraft import stuck
+        diagnosis = stuck.diagnose_movement(state_from(flat()), (3, 0),
+                                            moved_by=0.0)
+        self.assertEqual(diagnosis.kind, stuck.INPUT_STUCK)
+        self.assertEqual(diagnosis.recovery, stuck.STOP)
+        self.assertIn("window in front", diagnosis.describe())
+
+    def test_a_stale_route_is_replanned(self):
+        from minecraft import stuck
+        surface = [b if (b.x, b.z) != (5, 0)
+                   else NearbyBlock(5, 63, 0, "lava", True, 4) for b in flat()]
+        diagnosis = stuck.diagnose_movement(state_from(surface), (5, 0),
+                                            moved_by=1.0, route_column=(5, 0))
+        self.assertEqual(diagnosis.kind, stuck.PATH_STALE)
+
+    def test_aim_that_is_not_converging_is_named(self):
+        from minecraft import stuck
+        self.assertEqual(stuck.diagnose_aim([40, 38, 41, 39, 42]).kind,
+                         stuck.AIM_STUCK)
+        self.assertIsNone(stuck.diagnose_aim([40, 20, 9, 4, 2]))
+
+    def test_every_kind_has_a_recovery(self):
+        from minecraft import stuck
+        for kind in (stuck.VERTICAL_BLOCK, stuck.COLLISION_STUCK,
+                     stuck.ENTITY_INTERFERENCE, stuck.UNKNOWN_TERRAIN,
+                     stuck.PATH_STALE, stuck.NO_ROUTE, stuck.INPUT_STUCK,
+                     stuck.AIM_STUCK):
+            self.assertIn(kind, stuck.RECOVERY)
+
+    def test_the_stuck_module_cannot_press_anything(self):
+        import ast
+        import inspect
+        from minecraft import stuck
+        tree = ast.parse(inspect.getsource(stuck))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertEqual(imported - {"__future__"},
+                         {"math", "dataclasses", "minecraft"})
+
+
+class ClearanceParsingTests(unittest.TestCase):
+
+    def test_clearance_is_parsed_from_schema_3(self):
+        from minecraft.mod_bridge import _terrain_block
+        block = _terrain_block([1, 63, 2, "minecraft:grass_block", True, 1])
+        self.assertEqual(block.clearance, 1)
+
+    def test_an_old_mod_without_clearance_is_not_impassable(self):
+        """None means the bridge did not say. Treating it as zero would make
+        the whole world impassable on an older jar."""
+        from minecraft.mod_bridge import _terrain_block
+        block = _terrain_block([1, 63, 2, "minecraft:grass_block", True])
+        self.assertIsNone(block.clearance)
+        local = nav.LocalMap.from_state(state_from([block]))
+        self.assertTrue(local.fits(1, 2))
+
+    def test_the_schema_versions_are_all_still_read(self):
+        from minecraft import mod_bridge
+        for version in (1, 2, 3):
+            self.assertIn(f"markliv.minecraft.state/{version}",
+                          mod_bridge.SUPPORTED_SCHEMAS)

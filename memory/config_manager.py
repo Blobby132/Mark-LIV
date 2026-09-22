@@ -222,13 +222,30 @@ def get_proactive_audio_enabled() -> bool:
     """Whether the model gets to decide an utterance was not aimed at it and
     stay quiet.
 
-    On by default — it is what stops the assistant answering the room. But it
-    is also the first thing to switch off if replies ever seem to arrive a turn
-    late: what looks like lag is usually the model having judged your previous
-    sentence as not addressed to it, and only changing its mind once the next
-    one arrives.
+    OFF BY DEFAULT, AND THAT DEFAULT CHANGED
+        It was on, because it is what stops the assistant answering the room.
+        The cost turned out to be worse than the benefit: the same judgement
+        that ignores background chatter also, sometimes, ignores "Jarvis, mine
+        some wood" — said directly, to the microphone, by name.
+
+        From outside, that is indistinguishable from a broken microphone. The
+        level meter moves, the words are spoken, and nothing happens. The
+        earlier docstring here already named this as "the first thing to
+        switch off if replies ever seem to arrive a turn late"; the honest
+        conclusion is that a feature which can silently discard a direct
+        command should not be the default.
+
+        It is a judgement call by a model, so it cannot be made reliable from
+        this side — only turned off, or made visible. Both are available:
+        set "proactive_audio": true in config/api_keys.json to restore it, and
+        `core/voice_diagnostics.py` reports a transcript that produced no
+        answer, which is what this looks like when it happens.
+
+        The real defence against answering the room is the wake word, which is
+        local, deterministic, and does not send anything at all until you say
+        its name.
     """
-    return bool(load_api_keys().get("proactive_audio", True))
+    return bool(load_api_keys().get("proactive_audio", False))
 
 
 def save_proactive_audio_enabled(enabled: bool) -> None:

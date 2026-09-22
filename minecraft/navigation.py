@@ -46,6 +46,20 @@ import heapq
 import math
 from dataclasses import dataclass, field
 
+from minecraft import aiming
+
+PLAYER_HEIGHT = 2
+"""How many blocks of empty space a standing player needs."""
+
+PLAYER_HALF_WIDTH = 0.3
+"""Half of a player's 0.6-block width. A shoulder, not a point."""
+
+MAX_REPORTED_CLEARANCE = 4
+"""The bridge stops counting headroom here, so 4 means "at least 4"."""
+
+JUMP_CLEARANCE = 3
+"""And how many to jump: you rise a block, so your head needs one more."""
+
 MAX_STEP_UP = 1
 """How far up a player walks without jumping."""
 
@@ -124,7 +138,8 @@ class LocalMap:
         for block in (getattr(state, "surface", None) or ()):
             # Last one wins; the bridge reports one surface per column, so a
             # duplicate means a malformed payload rather than a real choice.
-            ground[(block.x, block.z)] = (block.y, block.name, block.solid)
+            ground[(block.x, block.z)] = (block.y, block.name, block.solid,
+                                          block.clearance)
 
         position = getattr(state, "position", None)
         origin = None
@@ -158,6 +173,29 @@ class LocalMap:
         entry = self.ground.get((x, z))
         return None if entry is None else entry[0]
 
+    def clearance_at(self, x: int, z: int):
+        """Blocks of empty space above the ground here, or None if the bridge
+        did not say. None is a third answer and is treated as such below: an
+        older mod reports no clearance at all, and the world must not become
+        impassable because of it."""
+        entry = self.ground.get((x, z))
+        return None if entry is None else entry[3]
+
+    def fits(self, x: int, z: int) -> bool:
+        """Can a player's whole BODY be here, not just their feet?
+
+        Two blocks tall. This is the difference between a route that follows
+        the ground correctly and one that walks you into a branch, a ledge or
+        a doorway lintel — the ground was never the thing that stopped you.
+
+        Unreported clearance is permitted, because refusing it would make
+        every column impassable on an older mod. That is the one place here
+        where unknown is not treated as impassable, and it is a deliberate
+        trade: the alternative is a bridge upgrade silently required for the
+        planner to work at all."""
+        room = self.clearance_at(x, z)
+        return room is None or room >= PLAYER_HEIGHT
+
     def block_at(self, x: int, z: int):
         """The name of the surface block, or None if unknown."""
         entry = self.ground.get((x, z))
@@ -171,13 +209,18 @@ class LocalMap:
         entry = self.ground.get((x, z))
         if entry is None:
             return False
-        _y, name, solid = entry
+        _y, name, solid = entry[0], entry[1], entry[2]
         if name in HAZARDS or name in LIQUIDS:
             return False
         # `solid` is None when the game did not say. Treated as standable
         # because the bridge only reports a column's surface when it found a
         # non-air block there — but a known hazard above overrides it.
         return solid is not False
+
+    def can_rise(self, column: tuple) -> bool:
+        """Is there room above this column to gain a block of height?"""
+        room = self.clearance_at(*column)
+        return room is None or room >= JUMP_CLEARANCE
 
     def step_cost(self, here: tuple, there: tuple):
         """Cost of moving between two adjacent columns, or None if you can't.
@@ -191,10 +234,18 @@ class LocalMap:
         if not self.standable(*there):
             return None
 
+        if not self.fits(*there):
+            return None            # ground is fine, the player is not
+
         climb = y_there - y_here
         if climb > MAX_STEP_UP:
             return None
         if -climb > MAX_DROP:
+            return None
+        if climb > 0 and not self.can_rise(here):
+            # Stepping up needs room above where you are STANDING as well as
+            # where you are going. A one-block step under a two-block ceiling
+            # is a headbutt.
             return None
 
         dx = abs(there[0] - here[0])
@@ -204,37 +255,110 @@ class LocalMap:
         # would take the level one.
         return base + (0.5 if climb > 0 else 0.0)
 
-    def line_is_walkable(self, start: tuple, end: tuple) -> bool:
-        """Can you walk the straight line between two columns?
+    def body_columns(self, start, end, half_width: float = None,
+                     stride: float = 0.1):
+        """Every column the player's FOOTPRINT touches walking a straight
+        line, in the order it first touches them.
+
+        The player is not a point. They are 0.6 of a block wide, so a line
+        that grazes the corner of a wall takes a shoulder into it — and they
+        are rarely standing at the exact centre of a column, so a line traced
+        between column centres is not the line they will walk. Both mistakes
+        were here, and together they produced a route that looked clear and
+        clipped the wall it had just come round."""
+        hw = PLAYER_HALF_WIDTH if half_width is None else half_width
+        try:
+            x0, z0 = float(start[0]), float(start[-1])
+            x1, z1 = float(end[0]), float(end[-1])
+        except (TypeError, IndexError, ValueError):
+            return []
+        length = math.hypot(x1 - x0, z1 - z0)
+        samples = max(1, int(math.ceil(length / stride)))
+        ordered, seen = [], set()
+        for i in range(samples + 1):
+            t = i / samples
+            cx, cz = x0 + (x1 - x0) * t, z0 + (z1 - z0) * t
+            for ox in (-hw, hw):
+                for oz in (-hw, hw):
+                    column = (math.floor(cx + ox), math.floor(cz + oz))
+                    if column not in seen:
+                        seen.add(column)
+                        ordered.append((column, (cx, cz)))
+        return ordered
+
+    def first_blocked(self, start, end, allow_climb: bool = False):
+        """The first column along a straight walk the body cannot enter.
+
+        Returns (column, reason) or None when the whole walk is clear.
+        `start` and `end` are real (x, z) positions, not column indices.
+
+        reason is one of: "unknown" (never scanned), "impassable" (hazard,
+        liquid, no footing), "climb" (a full block up, which needs a jump),
+        "wall" (more than one block up), "head" (no room for a body),
+        "drop" (a fall too far to take).
+
+        `allow_climb` permits ONE one-block rise, for a hop. A plain walk
+        cannot climb a full block at all — Minecraft steps up 0.6 of a block,
+        which is a slab, not a block — and treating a climb as walkable is
+        what sent the player into ledges it then had to be told to jump."""
+        try:
+            here = (math.floor(float(start[0])), math.floor(float(start[-1])))
+        except (TypeError, IndexError, ValueError):
+            return (None, "unknown")
+        feet = self.ground_at(*here)
+        if feet is None:
+            return (here, "unknown")
+
+        climbed = False
+        centre = here
+        for column, (cx, cz) in self.body_columns(start, end):
+            # The centre of the body decides the height it walks at; the
+            # corners only have to fit around it.
+            now_centre = (math.floor(cx), math.floor(cz))
+            if now_centre != centre and self.is_known(*now_centre):
+                ground = self.ground_at(*now_centre)
+                if ground is not None and ground < feet:
+                    if feet - ground > MAX_DROP:
+                        return (now_centre, "drop")
+                    feet = ground
+                centre = now_centre
+
+            if column == here:
+                continue
+            if not self.is_known(*column):
+                return (column, "unknown")
+            if not self.standable(*column):
+                return (column, "impassable")
+
+            ground = self.ground_at(*column)
+            rise = ground - feet
+            if rise > MAX_STEP_UP:
+                return (column, "wall")
+            if rise > 0:
+                if not allow_climb or climbed:
+                    return (column, "climb")
+                if not self.can_rise((here[0], here[1])) or not self.fits(*column):
+                    return (column, "head")
+                climbed = True
+                feet = ground
+                continue
+
+            # Room for a body at the height it is walking, not merely above
+            # this column's own ground — a column that dips lower still has
+            # to be clear up to the player's head.
+            room = self.clearance_at(*column)
+            if room is not None and room < MAX_REPORTED_CLEARANCE:
+                if room < (feet - ground) + PLAYER_HEIGHT:
+                    return (column, "head")
+        return None
+
+    def line_is_walkable(self, start, end) -> bool:
+        """Can the player walk this straight line without jumping?
 
         Used to collapse a route into the few long moves a person would
-        actually make. A* returns a chain of one-block hops because that is
-        what the grid is made of; walking them one at a time spends a step
-        per block and makes a fifteen-block stroll hit the task limit.
-
-        Sampled at half-block intervals rather than by Bresenham, because
-        what matters is the columns a moving player's body passes through,
-        and a line clipping the corner of a column still has to survive it."""
-        x0, z0 = start
-        x1, z1 = end
-        dx, dz = x1 - x0, z1 - z0
-        steps = int(max(abs(dx), abs(dz)) * 2)
-        if steps <= 0:
-            return True
-
-        previous = (x0, z0)
-        for i in range(1, steps + 1):
-            column = (int(round(x0 + dx * i / steps)),
-                      int(round(z0 + dz * i / steps)))
-            if column == previous:
-                continue
-            # Consecutive samples can be diagonal; step_cost applies the same
-            # climb and drop rules the search itself used, so a smoothed line
-            # can never be one the pathfinder would have refused.
-            if self.step_cost(previous, column) is None:
-                return False
-            previous = column
-        return True
+        actually make. `start` should be the player's REAL position; a
+        column index is accepted and treated as that column's centre."""
+        return self.first_blocked(_centre_of(start), _centre_of(end)) is None
 
     def neighbours(self, column: tuple):
         """Passable neighbours, with costs. Diagonals need both orthogonals
@@ -308,7 +432,7 @@ def _heuristic(a: tuple, b: tuple) -> float:
     return (dx + dz) + (1.414 - 2) * min(dx, dz)
 
 
-def find_path(state, goal, max_nodes: int = MAX_NODES) -> Path:
+def find_path(state, goal, max_nodes: int = MAX_NODES, avoid=None) -> Path:
     """A* from the player to a goal column.
 
     `goal` may be an (x, z) column or an (x, y, z) block — the y is ignored,
@@ -318,6 +442,10 @@ def find_path(state, goal, max_nodes: int = MAX_NODES) -> Path:
         return Path(reason="I cannot see the ground around me — the bridge "
                            "reported no terrain, so there is nothing to plan "
                            "over.")
+    # Columns a caller has learned the hard way are impassable. The scan says
+    # they look fine; walking into them said otherwise, and experience beats
+    # the map.
+    blocked = frozenset(avoid or ())
 
     try:
         target = (int(goal[0]), int(goal[-1])) if len(goal) == 2 else \
@@ -354,6 +482,8 @@ def find_path(state, goal, max_nodes: int = MAX_NODES) -> Path:
         expanded += 1
 
         for neighbour, step in local.neighbours(current):
+            if neighbour in blocked:
+                continue
             new_cost = cost_so_far[current] + step
             if new_cost < cost_so_far.get(neighbour, float("inf")):
                 cost_so_far[neighbour] = new_cost
@@ -387,6 +517,22 @@ def _build(local: LocalMap, came_from: dict, end: tuple,
                 truncated=truncated)
 
 
+def _centre_of(point):
+    """A real (x, z) position, from either a position or a column index.
+
+    Integers are column indices and mean the middle of that column; floats
+    are already positions. The distinction matters: the player is almost
+    never at a column's centre, and pretending they are is how a line that
+    looks clear clips a corner."""
+    try:
+        x, z = point[0], point[-1]
+    except (TypeError, IndexError):
+        return point
+    if isinstance(x, int) and isinstance(z, int):
+        return (x + 0.5, z + 0.5)
+    return (float(x), float(z))
+
+
 def furthest_clear(local: "LocalMap", here: tuple, waypoints, start: int = 0,
                    look_ahead: int = MAX_SMOOTHING):
     """The furthest waypoint reachable from `here` in a straight line.
@@ -409,6 +555,176 @@ def furthest_clear(local: "LocalMap", here: tuple, waypoints, start: int = 0,
             break
         best, best_index = candidate, index
     return best, best_index
+
+
+
+# ── What is in the way ───────────────────────────────────────────────────────
+#
+# "It stopped moving" is not a diagnosis, and every cause below wants a
+# different response. Telling them apart is the difference between an agent
+# that hops a fence and one that presses W into it until the step limit.
+
+CLEAR = "clear"                  # nothing in the way; the stall is elsewhere
+STEP_UP = "step_up"              # one block: walk up, or hop
+JUMPABLE = "jumpable"            # one block with room to land: JUMP
+WALL = "wall"                    # two or more: go round
+HEAD_BLOCKED = "head_blocked"    # feet fit, body does not
+DROP = "drop"                    # a fall, possibly a dangerous one
+CLIFF = "cliff"                  # a fall too far to take on purpose
+HAZARD = "hazard"                # lava, fire, cactus: never walk in
+LIQUID = "liquid"                # water: passable but not planned over
+UNSEEN = "unseen"                # outside the scan; observe again
+
+
+@dataclass(frozen=True)
+class Obstacle:
+    """What is immediately ahead, and what to do about it."""
+
+    kind: str
+    column: tuple | None = None
+    height: int = 0
+    detail: str = ""
+
+    @property
+    def can_jump(self) -> bool:
+        return self.kind == JUMPABLE
+
+    @property
+    def needs_reroute(self) -> bool:
+        return self.kind in (WALL, HEAD_BLOCKED, CLIFF, HAZARD)
+
+    @property
+    def needs_observation(self) -> bool:
+        return self.kind == UNSEEN
+
+    def describe(self) -> str:
+        where = f" at {self.column}" if self.column else ""
+        return {
+            CLEAR: "nothing in the way",
+            STEP_UP: f"a one-block step{where}",
+            JUMPABLE: f"a one-block obstacle{where} I can jump",
+            WALL: f"a wall {self.height} blocks high{where}",
+            HEAD_BLOCKED: f"headroom too low{where} — my feet fit, I do not",
+            DROP: f"a {self.height}-block drop{where}",
+            CLIFF: f"a drop of {self.height} blocks{where}, too far to take",
+            HAZARD: f"{self.detail or 'something dangerous'}{where}",
+            LIQUID: f"{self.detail or 'water'}{where}",
+            UNSEEN: f"nothing scanned{where} — I need to look again",
+        }.get(self.kind, self.kind) + (f" ({self.detail})"
+                                       if self.detail and self.kind in
+                                       (WALL, HEAD_BLOCKED) else "")
+
+
+PROBE_DISTANCE = 1.2
+"""How far ahead to sweep the body when asking what stopped it.
+
+A little over a block: far enough to reach the column in front from anywhere
+in the current one, short enough that it is about THIS step and not a wall
+further down the route, which is the pathfinder's business."""
+
+
+def obstacle_ahead(state, heading_to=None) -> Obstacle:
+    """Classify whatever is between the player and where they are going.
+
+    Sweeps the player's actual footprint from their actual position, a
+    little over a block towards `heading_to` (or along their facing). An
+    earlier version looked at the single column straight ahead of the
+    column centre — and so, having clipped the corner of a wall on a
+    diagonal, it looked at open ground and concluded nothing was in the way.
+    """
+    local = LocalMap.from_state(state)
+    if not local.usable:
+        return Obstacle(UNSEEN, detail="no terrain scan")
+
+    position = getattr(state, "position", None)
+    try:
+        px, pz = float(position[0]), float(position[2])
+    except (TypeError, IndexError, ValueError):
+        return Obstacle(UNSEEN, detail="I cannot read my own position")
+
+    direction = _heading_vector(state, (px, pz), heading_to)
+    if direction is None:
+        return Obstacle(UNSEEN, detail="I cannot tell which way I am facing")
+    if direction == (0.0, 0.0):
+        return Obstacle(CLEAR)
+
+    probe = (px + direction[0] * PROBE_DISTANCE,
+             pz + direction[1] * PROBE_DISTANCE)
+
+    # First as a plain walk. If that is blocked by a single step up, check
+    # whether a hop would clear it — that is the one-block case that used to
+    # need a person to say "jump".
+    blocked = local.first_blocked((px, pz), probe, allow_climb=False)
+    if blocked is None:
+        return Obstacle(CLEAR)
+    column, reason = blocked
+    if column is None:
+        return Obstacle(UNSEEN, detail="I cannot place myself on the map")
+
+    name = local.block_at(*column)
+    here = (math.floor(px), math.floor(pz))
+    feet = local.ground_at(*here)
+    ground = local.ground_at(*column)
+    height = (ground - feet) if (ground is not None and feet is not None) else 0
+
+    if reason == "unknown":
+        return Obstacle(UNSEEN, column=column)
+    if reason == "impassable":
+        if name in HAZARDS:
+            return Obstacle(HAZARD, column=column, detail=_readable(name))
+        if name in LIQUIDS:
+            return Obstacle(LIQUID, column=column, detail=_readable(name))
+        return Obstacle(WALL, column=column, height=max(height, 1),
+                        detail=_readable(name))
+    if reason == "drop":
+        return Obstacle(CLIFF, column=column, height=-height)
+    if reason == "wall":
+        return Obstacle(WALL, column=column, height=height)
+    if reason == "head":
+        room = local.clearance_at(*column)
+        return Obstacle(HEAD_BLOCKED, column=column,
+                        detail=f"{room} blocks of room" if room is not None
+                        else "")
+    if reason == "climb":
+        hop = local.first_blocked((px, pz), probe, allow_climb=True)
+        if hop is None:
+            return Obstacle(JUMPABLE, column=column, height=height)
+        hop_column, hop_reason = hop
+        if hop_reason == "head":
+            return Obstacle(HEAD_BLOCKED, column=hop_column,
+                            detail="no room to jump up")
+        return Obstacle(WALL, column=hop_column, height=height)
+    return Obstacle(UNSEEN, column=column)
+
+
+def _heading_vector(state, here, heading_to):
+    """Unit (dx, dz) from the player towards a column, or along the facing."""
+    if heading_to is not None:
+        try:
+            tx = float(heading_to[0]) + 0.5
+            tz = float(heading_to[-1]) + 0.5
+        except (TypeError, IndexError, ValueError):
+            return None
+        dx, dz = tx - here[0], tz - here[1]
+        length = math.hypot(dx, dz)
+        if length < 1e-6:
+            return (0.0, 0.0)
+        return (dx / length, dz / length)
+    rotation = getattr(state, "rotation", None)
+    try:
+        radians = math.radians(float(rotation[0]))
+    except (TypeError, IndexError, ValueError):
+        return None
+    return (-math.sin(radians), math.cos(radians))
+
+
+def _readable(name) -> str:
+    """"oak_log" as "oak log".
+
+    Written with split/join rather than str.replace because the boundary test
+    parses for `.replace()` — it cannot tell a string method from
+    `Path.replace`, which renames a file, and it is right to refuse to guess."""
+    return " ".join(str(name or "").split("_"))
 
 
 # ── Heading ──────────────────────────────────────────────────────────────────
@@ -446,235 +762,69 @@ def pixels_per_degree_at(sensitivity) -> float | None:
     return 1.0 / degrees_per_count
 
 
-PIXELS_PER_DEGREE = 8.0
-"""How much mouse movement turns the view one degree.
+# ── Heading ──────────────────────────────────────────────────────────────────
+#
+# All of it lives in `minecraft/aiming.py` now. These names stay as thin
+# aliases because navigation is where callers expect to find "which way is
+# that", and because one module owning the arithmetic is the entire point --
+# two copies of a sign convention is how an agent ends up turning the wrong
+# way in one code path and the right way in another.
 
-A CALIBRATION, NOT A CONSTANT
-    The real figure depends on the player's mouse sensitivity setting, and
-    nothing in the bridge reports it. Eight is a reasonable figure at default
-    sensitivity and WILL be wrong for some people.
+PIXELS_PER_DEGREE = aiming.DEFAULT_PIXELS_PER_DEGREE
+EYE_HEIGHT = aiming.EYE_HEIGHT
+AIM_DAMPING = aiming.DAMPING
 
-    That is survivable because it is used in a loop that re-reads the actual
-    rotation after every turn: an overshoot becomes a smaller correction
-    rather than a permanent error. It is written down here, once, so that when
-    somebody calibrates it properly there is exactly one number to change."""
-
-
-# What this machine's mouse actually does, learned from watching real turns.
-# SIGNED: a negative scale means this machine turns the opposite way from the
-# convention, and dividing by it produces the right direction automatically.
-# None until something has measured one.
-_yaw_scale = None            # pixels per degree of yaw, signed
-_pitch_scale = None          # pixels per degree of pitch, signed
-
-MIN_PX_PER_DEGREE = 0.5
-MAX_PX_PER_DEGREE = 60.0
-
-AIM_DAMPING = 0.85
-"""How much of the computed correction to actually send.
-
-Slightly under one, on purpose. Aiming is a feedback loop running at one
-observation per step, and a loop that always asks for the whole remaining
-error rings when its gain estimate is even slightly high -- overshoot,
-correct, overshoot the other way, forever. That is not a hypothetical: it is
-forty consecutive `look` steps at the same log, which is what this was doing
-before the scale was measured rather than assumed.
-
-Undershooting converges. Overshooting does not."""
-
-
-_from_settings = None
-"""Derived from the sensitivity the mod reports. Beats any measurement."""
-
-
-def use_sensitivity(sensitivity) -> float | None:
-    """Adopt the game's own setting as the scale. Returns what it resolved."""
-    global _from_settings
-    _from_settings = pixels_per_degree_at(sensitivity)
-    return _from_settings
+yaw_to = aiming.yaw_to
+yaw_difference = aiming.yaw_difference
+pitch_to = aiming.pitch_to
+pixels_per_degree_at = aiming.pixels_per_degree_at
+target_point = aiming.target_point
 
 
 def pixels_per_degree() -> float:
-    """Magnitude only, for things that sweep a fixed amount.
-
-    Order of preference: the game's reported setting, then what has been
-    measured from real turns, then the default guess."""
-    if _from_settings is not None:
-        return _from_settings
-    if _yaw_scale is None:
-        return PIXELS_PER_DEGREE
-    return abs(_yaw_scale)
+    return aiming.SHARED.pixels_per_degree()
 
 
-def _axis_scale(measured):
-    """A signed scale for one axis.
-
-    The setting gives the magnitude exactly; only the DIRECTION still has to
-    be observed, and a measurement that disagrees about direction is
-    believed, because that is the part the setting cannot tell us."""
-    if _from_settings is None:
-        return measured if measured is not None else PIXELS_PER_DEGREE
-    if measured is not None and measured < 0:
-        return -_from_settings
-    return _from_settings
+def use_sensitivity(sensitivity):
+    return aiming.SHARED.use_sensitivity(sensitivity)
 
 
 def observe_turn(sent_dx, sent_dy, before_rotation, after_rotation) -> None:
-    """Learn from one look: how far each axis moved, and which way.
-
-    THE SIGN IS THE POINT
-        Whether positive mouse dy looks up or down, and whether positive dx
-        increases or decreases yaw, are conventions two layers apart --
-        Minecraft's angles and the operating system's mouse deltas -- that
-        nothing in the bridge reports. Guess either one wrong and every
-        correction doubles the error.
-
-        Measuring a SIGNED scale settles both questions at once: if this
-        machine turns the other way, the measurement comes out negative, and
-        the next correction divides by it and points the right way. There is
-        no separate "is it inverted" flag to get out of step with this.
-
-    Readings too small to mean anything are discarded rather than averaged
-    in -- the rotation is reported to a few decimals and the mouse moves in
-    whole pixels, so a two degree turn measures terribly."""
-    global _yaw_scale, _pitch_scale
-    try:
-        yaw_before, pitch_before = float(before_rotation[0]), float(before_rotation[1])
-        yaw_after, pitch_after = float(after_rotation[0]), float(after_rotation[1])
-    except (TypeError, IndexError, ValueError):
-        return
-
-    _yaw_scale = _blend(_yaw_scale, sent_dx,
-                        yaw_difference(yaw_before, yaw_after))
-    _pitch_scale = _blend(_pitch_scale, sent_dy, pitch_after - pitch_before)
+    aiming.SHARED.observe(sent_dx, sent_dy, before_rotation, after_rotation)
 
 
-def _blend(current, pixels, degrees):
-    """One axis' new estimate, or the old one when the reading is useless."""
-    try:
-        pixels, degrees = float(pixels), float(degrees)
-    except (TypeError, ValueError):
-        return current
-    if abs(degrees) < 3.0 or abs(pixels) < 40.0:
-        return current
-    measured = pixels / degrees                      # signed, deliberately
-    if not MIN_PX_PER_DEGREE <= abs(measured) <= MAX_PX_PER_DEGREE:
-        return current
-    if current is None or (current > 0) != (measured > 0):
-        # First reading, or the direction disagrees with what we thought.
-        # Believe the measurement outright rather than averaging towards a
-        # sign that is wrong -- half way between +8 and -8 is zero.
-        return measured
-    return current * 0.5 + measured * 0.5
-
-
-def calibrate(pixels_sent: float, degrees_turned: float):
-    """Learn the yaw scale alone. Kept for callers that only turn sideways."""
-    global _yaw_scale
-    updated = _blend(_yaw_scale, pixels_sent, degrees_turned)
-    if updated is None or updated == _yaw_scale:
+def calibrate(pixels_sent, degrees_turned):
+    """Learn the yaw scale alone, for callers that only turn sideways."""
+    before = aiming.SHARED.yaw_scale
+    aiming.SHARED.yaw_scale = aiming._blend(before, pixels_sent, degrees_turned)
+    if aiming.SHARED.yaw_scale is None or aiming.SHARED.yaw_scale == before:
         return None
-    _yaw_scale = updated
-    return abs(_yaw_scale)
+    return abs(aiming.SHARED.yaw_scale)
 
 
 def reset_calibration() -> None:
-    """Forget what was measured. For tests, and for a fresh process."""
-    global _yaw_scale, _pitch_scale, _from_settings
-    _yaw_scale = None
-    _pitch_scale = None
-    _from_settings = None
+    aiming.SHARED.reset()
 
 
 def calibration() -> dict:
-    """What has been measured so far, for logs and diagnostics."""
-    return {"yaw_px_per_degree": _yaw_scale,
-            "pitch_px_per_degree": _pitch_scale,
-            "from_game_settings": _from_settings,
-            "in_use": pixels_per_degree(),
-            "default": PIXELS_PER_DEGREE}
-
-
-def yaw_to(origin, target) -> float:
-    """The yaw that faces from `origin` towards `target`."""
-    dx = target[0] - origin[0]
-    dz = target[-1] - origin[-1]
-    return math.degrees(math.atan2(-dx, dz))
-
-
-def yaw_difference(current: float, desired: float) -> float:
-    """Shortest signed turn from one yaw to another, in degrees.
-
-    Wrapped to (-180, 180] so turning from 179 to -179 is two degrees rather
-    than three hundred and fifty-eight."""
-    return (desired - current + 180.0) % 360.0 - 180.0
-
-
-
-EYE_HEIGHT = 1.62
-"""Where a standing player's eyes are above their feet.
-
-`WorldState.position` is the feet. Aiming from the feet at a block two above
-you points the crosshair over its top, which is how an agent stands in front
-of a tree and mines the air behind it."""
-
-
-def pitch_to(origin, target, eye_height: float = EYE_HEIGHT) -> float:
-    """The pitch that looks from `origin` (feet) at `target` (a block).
-
-    Minecraft's pitch is negative looking up and positive looking down, which
-    is the opposite of the sign most people expect and worth stating once
-    here rather than rediscovering per caller. Aimed at the middle of the
-    block, not its corner."""
-    try:
-        dx = (target[0] + 0.5) - origin[0]
-        dy = (target[1] + 0.5) - (origin[1] + eye_height)
-        dz = (target[2] + 0.5) - origin[2]
-    except (TypeError, IndexError):
-        return 0.0
-    flat = math.hypot(dx, dz)
-    if flat < 1e-6:
-        return -90.0 if dy > 0 else 90.0
-    return math.degrees(math.atan2(-dy, flat))
-
-
-def aim_at(position, rotation, target,
-           px_per_degree: float | None = None) -> tuple:
-    """Mouse (dx, dy) that points the crosshair at a block, and the error
-    in degrees that remains to be corrected.
-
-    Returns (dx, dy, error_degrees). The error is what a caller checks
-    against a tolerance -- there is no point spending a step on a two degree
-    correction the game does not care about."""
-    try:
-        yaw_now, pitch_now = float(rotation[0]), float(rotation[1])
-    except (TypeError, IndexError, ValueError):
-        return 0, 0, 180.0
-
-    yaw_wanted = yaw_to(position, target)
-    pitch_wanted = pitch_to(position, target)
-    dyaw = yaw_difference(yaw_now, yaw_wanted)
-    dpitch = pitch_wanted - pitch_now
-
-    if px_per_degree is not None:
-        yaw_scale = pitch_scale = px_per_degree
-    else:
-        yaw_scale = _axis_scale(_yaw_scale)
-        pitch_scale = _axis_scale(_pitch_scale)
-
-    return (int(round(dyaw * yaw_scale * AIM_DAMPING)),
-            int(round(dpitch * pitch_scale * AIM_DAMPING)),
-            math.hypot(dyaw, dpitch))
+    return aiming.SHARED.as_dict()
 
 
 def look_delta_for(current_yaw: float, desired_yaw: float,
                    px_per_degree: float | None = None) -> int:
-    """Mouse dx that turns from one yaw to another.
+    if px_per_degree is not None:
+        return int(round(yaw_difference(current_yaw, desired_yaw)
+                         * px_per_degree))
+    return aiming.SHARED.delta_for_yaw(current_yaw, desired_yaw)
 
-    Positive dx turns right, which is increasing yaw in Minecraft's
-    convention."""
-    scale = px_per_degree if px_per_degree is not None else _axis_scale(_yaw_scale)
-    return int(round(yaw_difference(current_yaw, desired_yaw) * scale))
+
+def aim_at(position, rotation, target, px_per_degree=None, face=None) -> tuple:
+    """(dx, dy, error) that points the crosshair at a block."""
+    if px_per_degree is not None:
+        scratch = aiming.MouseAim(yaw_scale=px_per_degree,
+                                  pitch_scale=px_per_degree, damping=1.0)
+        return scratch.aim_at(position, rotation, target, face)
+    return aiming.SHARED.aim_at(position, rotation, target, face)
 
 
 __all__ = [
@@ -687,6 +837,9 @@ __all__ = [
     "line_is_walkable" if False else "furthest_clear", "MAX_SMOOTHING",
     "MAX_STEP_UP", "MAX_DROP", "MAX_NODES", "MAX_PATH_LENGTH",
     "HAZARDS", "LIQUIDS", "LOG_BLOCKS", "CATEGORIES",
+    "Obstacle", "obstacle_ahead", "PLAYER_HEIGHT", "JUMP_CLEARANCE",
+    "CLEAR", "STEP_UP", "JUMPABLE", "WALL", "HEAD_BLOCKED", "DROP",
+    "CLIFF", "HAZARD", "LIQUID", "UNSEEN",
 ]
 
 

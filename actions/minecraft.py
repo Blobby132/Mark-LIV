@@ -169,6 +169,9 @@ _CAPABILITY_BY_ACTION = {
     # Gameplay. All covered by the one session grant.
     "move":          capabilities.MINECRAFT_MOVEMENT,
     "jump":          capabilities.MINECRAFT_MOVEMENT,
+    # Walking and jumping at once. The same capability as each half: it
+    # presses a movement key and the jump key, both already covered.
+    "move_and_jump": capabilities.MINECRAFT_MOVEMENT,
     "sneak":         capabilities.MINECRAFT_MOVEMENT,
     "sprint":        capabilities.MINECRAFT_MOVEMENT,
     "look":          capabilities.MINECRAFT_LOOK,
@@ -646,7 +649,9 @@ TOOL = {
         "ores and mobs with coordinates, from the bridge mod's terrain scan. "
         "If it says it cannot see the world, say that — do not describe a "
         "world from the crosshair or from memory.\n"
-        "GAMEPLAY: move (direction, duration<=2s), look (dx/dy in PIXELS, "
+        "GAMEPLAY: move (direction, duration<=2s), move_and_jump (walks and "
+        "jumps together — the only way onto a one-block ledge), "
+        "look (dx/dy in PIXELS, "
         "<=400 each — degrees are NOT supported), jump, sneak, sprint, "
         "attack, mine, place, interact, use_item, eat, drop, hotbar_select "
         "(slot 1-9), inventory (state=open|close), stop.\n"
@@ -687,7 +692,8 @@ TOOL = {
                 "description": (
                     "status | observe | read_state | look_around | "
                     "toggle_debug | "
-                    "start_session | end_session | move | look | jump | "
+                    "start_session | end_session | move | move_and_jump | "
+                    "look | jump | "
                     "sneak | sprint | attack | mine | place | interact | "
                     "use_item | eat | drop | hotbar_select | inventory | "
                     "run_task | stop"),

@@ -61,9 +61,10 @@ from minecraft.state import (
     empty_state,
 )
 
-SCHEMA = "markliv.minecraft.state/2"
+SCHEMA = "markliv.minecraft.state/3"
 
-SUPPORTED_SCHEMAS = frozenset({SCHEMA, "markliv.minecraft.state/1"})
+SUPPORTED_SCHEMAS = frozenset({SCHEMA, "markliv.minecraft.state/2",
+                               "markliv.minecraft.state/1"})
 """Schemas this reader understands.
 
 Version 1 is still accepted: it is the same document without the terrain
@@ -405,7 +406,18 @@ def _terrain_block(value):
     if name is None:
         return None
     solid = value[4] if len(value) > 4 and isinstance(value[4], bool) else None
-    return NearbyBlock(x=x, y=y, z=z, name=name, solid=solid)
+    # Schema /3 adds head clearance. An older mod simply does not send it and
+    # the field stays None, which every reader below treats as "unknown"
+    # rather than as "no room" -- an old jar must not make the world look
+    # impassable.
+    clearance = None
+    if len(value) > 5:
+        try:
+            clearance = max(0, int(value[5]))
+        except (TypeError, ValueError):
+            clearance = None
+    return NearbyBlock(x=x, y=y, z=z, name=name, solid=solid,
+                       clearance=clearance)
 
 
 def _blocks(value):

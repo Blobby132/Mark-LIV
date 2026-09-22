@@ -108,6 +108,13 @@ class NearbyBlock:
     z: int
     name: str
     solid: bool | None = None
+    clearance: int | None = None
+    """Blocks of empty space directly above this one, or None if unreported.
+
+    The difference between "there is ground here" and "a player fits here".
+    A column can have perfect footing and a branch one block above it, and a
+    planner that knows only the ground walks you into the branch. None means
+    the bridge did not say, which is not the same as zero."""
 
     @property
     def position(self) -> tuple:
@@ -130,7 +137,7 @@ class NearbyBlock:
 
     def as_dict(self) -> dict:
         return {"x": self.x, "y": self.y, "z": self.z, "name": self.name,
-                "solid": self.solid}
+                "solid": self.solid, "clearance": self.clearance}
 
 
 @dataclass(frozen=True)

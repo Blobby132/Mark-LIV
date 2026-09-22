@@ -138,6 +138,7 @@ DISPATCH = {
     "move":           "move",
     "look":           "look",
     "jump":           "jump",
+    "move_and_jump":  "move_and_jump",
     "sneak":          "sneak",
     "sprint":         "sprint",
     "attack":         "attack",

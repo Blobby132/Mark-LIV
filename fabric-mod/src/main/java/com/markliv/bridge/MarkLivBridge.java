@@ -106,6 +106,9 @@ public class MarkLivBridge implements ClientModInitializer {
      */
     private static final int MAX_NOTABLE = 64;
 
+    /** How far above a surface block to bother measuring empty space. */
+    private static final int MAX_CLEARANCE = 4;
+
     /**
      * Refuse to write beyond this. A payload that grows without bound is a
      * bug somewhere above, and truncating is better than handing the reader a
@@ -113,7 +116,7 @@ public class MarkLivBridge implements ClientModInitializer {
      */
     private static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
-    private static final String SCHEMA = "markliv.minecraft.state/2";
+    private static final String SCHEMA = "markliv.minecraft.state/3";
 
     private Path target;
     private Path temp;
@@ -296,6 +299,36 @@ public class MarkLivBridge implements ClientModInitializer {
     private record Terrain(String surface, String notable) { }
 
     /**
+     * Blocks of empty space directly above a surface block, capped.
+     *
+     * <p>Capped at {@link #MAX_CLEARANCE} because nothing downstream cares
+     * whether the sky is four blocks up or four hundred -- a player needs
+     * two, and a jump needs three. Counting further would cost scan time to
+     * report a number no one reads.
+     *
+     * <p>Judged on the COLLISION shape, not on air: tall grass, flowers,
+     * torches and signs all occupy a block and none of them stop you walking
+     * through. Treating those as a ceiling would make a flowery meadow
+     * impassable.
+     */
+    private int headroom(net.minecraft.world.level.Level level,
+                         BlockPos.MutableBlockPos cursor,
+                         int x, int y, int z) {
+        int clear = 0;
+        for (int up = 1; up <= MAX_CLEARANCE; up++) {
+            cursor.set(x, y + up, z);
+            BlockState above = level.getBlockState(cursor);
+            if (!above.isAir()
+                    && !above.getCollisionShape(level, cursor).isEmpty()) {
+                break;
+            }
+            clear++;
+        }
+        cursor.set(x, y, z);
+        return clear;
+    }
+
+    /**
      * One pass over the volume around the player, producing two things.
      *
      * <p><b>surface</b> is the topmost standable block in each column: what a
@@ -341,10 +374,21 @@ public class MarkLivBridge implements ClientModInitializer {
                         haveSurface = true;
                         boolean solid = !state.getCollisionShape(level, cursor)
                                 .isEmpty();
+                        // How much room is there to STAND here? A column can
+                        // have perfectly good ground and a branch, a ledge or
+                        // a ceiling one block above it, and a planner that
+                        // only knows the ground walks the player into it.
+                        //
+                        // One integer per column answers it, which is why it
+                        // is measured here rather than shipping the whole
+                        // volume: a player needs two, so 0 or 1 means "you
+                        // cannot be here" and the route goes round.
+                        int clearance = headroom(level, cursor, x, y, z);
                         surface.add(Json.array(
                                 Integer.toString(x), Integer.toString(y),
                                 Integer.toString(z), Json.quote(name),
-                                Boolean.toString(solid)));
+                                Boolean.toString(solid),
+                                Integer.toString(clearance)));
                     }
 
                     if (notable.size() < MAX_NOTABLE && isNotable(name)) {

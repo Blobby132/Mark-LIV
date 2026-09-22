@@ -64,6 +64,7 @@ from memory.memory_manager import (
 from actions.screen_processor  import _capture_camera, _capture_screen
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
+from core.voice_diagnostics    import VoiceDiagnostics
 from actions.background_monitor import (
     add_monitor, remove_monitor, list_monitors, check_all as monitor_check_all,
 )
@@ -138,6 +139,11 @@ def _pcm_level(samples) -> float:
 # Extra time beyond the device's reported output latency before the microphone
 # is trusted again: covers room decay and the speaker's own settling.
 _TAIL_MARGIN = 0.25
+
+# How long "JARVIS is speaking" may persist with nothing playing before it is
+# treated as stuck. Generously longer than any gap between audio chunks in a
+# real reply, and far shorter than the forever it used to be.
+_SPEAKING_STUCK_S = 3.0
 
 _VIS_WIN = 1024        # ~43 ms analysis window at 24 kHz: enough for formants
 _VIS_HOP = 480         # 20 ms between frames, i.e. 50 shapes a second
@@ -597,6 +603,7 @@ class JarvisLive:
         self._briefing_sent    = False          # morning briefing fires once per process
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
+        self._voice            = VoiceDiagnostics()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._session_log: list[str] = []          # conversation turns for end-of-session summary
 
@@ -1322,6 +1329,38 @@ class JarvisLive:
             **_extra
         )
 
+    def _enqueue_audio(self, msg) -> None:
+        """Put one frame on the send queue, making room if it is full.
+
+        Runs on the event loop (scheduled from the audio thread), so it may
+        not block. A full queue means the sender is behind — a slow socket, a
+        reconnect — and the right thing is to discard the OLDEST frame: the
+        backlog is audio the server cannot use in time anyway, while the frame
+        in hand is the word being spoken right now.
+
+        Every discard is counted. It was the silent one."""
+        queue = self.out_queue
+        if queue is None:
+            self._voice.frame_dropped()
+            return
+        try:
+            queue.put_nowait(msg)
+            self._voice.frame_queued()
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()          # make room at the front
+                queue.task_done()
+            except Exception:
+                pass
+            self._voice.frame_dropped()
+            try:
+                queue.put_nowait(msg)
+                self._voice.frame_queued()
+            except Exception:
+                pass
+        except Exception:
+            self._voice.frame_dropped()
+
     async def _send_realtime(self):
         while True:
             msg = await self.out_queue.get()
@@ -1330,18 +1369,39 @@ class JarvisLive:
             # mic / phone PCM through the new `audio` field instead. Queue items
             # are {"data": <bytes>, "mime_type": <str>} from _listen_audio and
             # the phone relay.
-            await self.session.send_realtime_input(
-                audio=types.Blob(
-                    data=msg["data"],
-                    mime_type=msg.get("mime_type", "audio/pcm"),
+            try:
+                await self.session.send_realtime_input(
+                    audio=types.Blob(
+                        data=msg["data"],
+                        mime_type=msg.get("mime_type", "audio/pcm"),
+                    )
                 )
-            )
+                self._voice.frame_sent(self.out_queue.qsize())
+            except (asyncio.CancelledError, GeneratorExit):
+                raise
+            except Exception:
+                # One frame failing to send must not take the task down and
+                # with it the whole session: 64ms of audio is not worth a
+                # reconnect. A socket that is genuinely gone will fail the
+                # receive loop too, and THAT is what reconnects.
+                self._voice.send_error()
+                if self._voice.snapshot()["send_errors"] % 50 == 1:
+                    print("[JARVIS] mic send failing — "
+                          f"{self._voice.describe()}")
 
     async def _listen_audio(self):
         print("[JARVIS] 🎤 Mic started")
         loop = asyncio.get_running_loop()
 
         def callback(indata, frames, time_info, status):
+            # Counted BEFORE every gate, so "captured" always means what the
+            # device actually handed us -- the number the level meter is drawn
+            # from. Every `return` below is a gate, and each one says which.
+            try:
+                self._voice.frame_captured(_pcm_level(indata))
+            except Exception:
+                pass
+
             # ── Wake-word gate ───────────────────────────────────────────────
             # While asleep, the mic audio NEVER goes to Gemini (nothing is
             # streamed, so JARVIS can't respond to speech not addressed to it and
@@ -1353,6 +1413,7 @@ class JarvisLive:
                 det = self._wake_detector
                 if det is not None:
                     det.feed(indata)
+                self._voice.frame_gated("asleep")
                 return
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
@@ -1375,6 +1436,7 @@ class JarvisLive:
                 # block here and call interrupt() after `required_blocks` of
                 # agreement — but it depends on the listener's room, so it stays
                 # out until it can be tried on real hardware.
+                self._voice.frame_gated("speaking")
                 return
 
             # ── Echo tail ────────────────────────────────────────────────────
@@ -1387,9 +1449,12 @@ class JarvisLive:
                 try:
                     if not self._echo.is_user_speech(
                             indata, SEND_SAMPLE_RATE, _pcm_level(indata)):
+                        self._voice.frame_gated("echo")
                         return
                     self._tail_until = 0.0      # a real voice ends the tail early
                 except Exception:
+                    self._voice.callback_error()
+                    self._voice.frame_gated("echo")
                     return
             elif self._echo._hist:
                 self._echo.reset()
@@ -1399,14 +1464,33 @@ class JarvisLive:
             # opens it, which is the whole point: nothing leaves the machine
             # unless you are holding the key.
             if self._ptt_enabled and not self._ptt_held:
+                self._voice.frame_gated("ptt")
                 return
 
+            if self.ui.muted or self._phone_active:
+                self._voice.frame_gated("muted")
             if not self.ui.muted and not self._phone_active:
                 data = indata.tobytes()
-                loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
-                    {"data": data, "mime_type": "audio/pcm"}
-                )
+                # `call_soon_threadsafe(put_nowait, ...)` looked fine and was
+                # the silent loss: on a full queue `put_nowait` raises INSIDE a
+                # loop callback, where nobody sees it, the frame is gone, and
+                # the level meter below still bounces. That is precisely "the
+                # bars moved and JARVIS did nothing".
+                #
+                # Now the enqueue is its own function so it can (a) count the
+                # drop and (b) drop the OLDEST frame instead of the newest.
+                # Which end you discard matters: keeping the newest keeps the
+                # words just spoken, and losing the front of a backlog costs
+                # audio the server was never going to get in time anyway.
+                try:
+                    loop.call_soon_threadsafe(
+                        self._enqueue_audio,
+                        {"data": data, "mime_type": "audio/pcm"},
+                    )
+                except RuntimeError:
+                    # The loop is closing. Nothing to do but not crash the
+                    # audio thread, which would take the microphone down.
+                    self._voice.callback_error()
                 # Feed the live mic level to the HUD so the waveform reacts to
                 # the user's actual voice while listening. Purely cosmetic — any
                 # failure here must never disturb the mic.
@@ -1522,6 +1606,7 @@ class JarvisLive:
                             self._resume_handle = _sru.new_handle
 
                     if response.data:
+                        self._voice.response()
                         if self._interrupted:
                             pass  # discard: interrupted
                         else:
@@ -1559,8 +1644,10 @@ class JarvisLive:
                             if txt:
                                 in_buf.append(txt)
                                 self._last_user_speech = time.monotonic()
+                                self._voice.input_transcript(txt)
 
                         if sc.turn_complete:
+                            self._voice.turn_complete(" ".join(in_buf).strip())
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
@@ -1615,6 +1702,7 @@ class JarvisLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
+                        self._voice.tool_call()
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[JARVIS] 📞 {fc.name}")
@@ -1673,6 +1761,7 @@ class JarvisLive:
         except Exception:
             pass
 
+        _last_written = time.monotonic()
         try:
             while True:
                 try:
@@ -1688,8 +1777,33 @@ class JarvisLive:
                     ):
                         self.set_speaking(False)
                         self._turn_done_event.clear()
+                    elif (self._is_speaking
+                          and self.audio_in_queue.empty()
+                          and time.monotonic() - _last_written
+                          > _SPEAKING_STUCK_S):
+                        # Nothing left to play and no turn_complete came.
+                        #
+                        # That happens when a reply is cut off mid-flight — a
+                        # dropped socket, a server hiccup — and the
+                        # consequence is severe out of all proportion: the
+                        # microphone is gated while JARVIS "is speaking", so
+                        # the flag sticking on means every later word the
+                        # user says is discarded, silently, until restart.
+                        # It looks exactly like a dead microphone.
+                        #
+                        # Clearing it can only ever OPEN the mic, so the
+                        # cautious thing here is to act, not to wait.
+                        print("[JARVIS] ⚠️  speech never finished cleanly — "
+                              "reopening the microphone")
+                        self.ui.write_log(
+                            "SYS: the reply ended without a turn marker; "
+                            "microphone reopened.")
+                        self.set_speaking(False)
+                        if self._turn_done_event:
+                            self._turn_done_event.clear()
                     continue
 
+                _last_written = time.monotonic()
                 self.set_speaking(True)
 
                 # Batch all immediately-available chunks into one write to reduce
@@ -1987,6 +2101,32 @@ class JarvisLive:
 
     # ── Proactive mode ──────────────────────────────────────────────────────────
 
+    async def _run_voice_watchdog(self) -> None:
+        """Notice when a clear utterance produced nothing at all.
+
+        NOT A RETRY. Re-sending audio the server may in fact have processed is
+        how one "move forward" becomes two, and in Minecraft that is a real
+        action taken twice. So this reports and does not act.
+
+        What it gives you is the thing that was missing: a named stage. The
+        counters distinguish "the queue ate it", "the socket ate it" and "the
+        server heard it and chose not to answer", which look identical from
+        the outside and have completely different fixes."""
+        while True:
+            await asyncio.sleep(1.0)
+            for check in (self._voice.check_for_loss,
+                          self._voice.check_unanswered):
+                try:
+                    problem = check()
+                except Exception:
+                    continue
+                if not problem:
+                    continue
+                print(f"[JARVIS] {problem}")
+                self.ui.write_log(f"SYS: {problem}")
+                self.ui.write_log(
+                    f"SYS: voice pipeline — {self._voice.describe()}")
+
     async def _run_proactive_mode(self) -> None:
         """
         Background task: periodically checks if the user has been silent long enough,
@@ -2161,6 +2301,7 @@ class JarvisLive:
 
                     print("[JARVIS] Connected.")
                     if _resumed_with:
+                        self._voice.reconnected()
                         # Say it plainly: the difference between "it reconnected"
                         # and "it reconnected and still knows what we were doing"
                         # is the whole point, and it is invisible otherwise.
@@ -2190,6 +2331,7 @@ class JarvisLive:
                     tg.create_task(self._run_system_monitor())
                     tg.create_task(self._run_background_monitor())
                     tg.create_task(self._run_proactive_mode())
+                    tg.create_task(self._run_voice_watchdog())
                     tg.create_task(self._run_sleep_watch())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())

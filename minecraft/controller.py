@@ -630,6 +630,21 @@ class MinecraftController:
         return self._hold_for(spec.key, spec.duration, "move",
                               spec.as_dict(), spec.clamped)
 
+    def move_and_jump(self, params: dict | None = None) -> ActionResult:
+        """Walk and jump together, to get onto a one-block ledge.
+
+        Needs the movement capability and nothing else: it presses a movement
+        key and the jump key, both of which `move` and `jump` already press
+        under that same grant. It is not a new permission and cannot reach a
+        key those two cannot."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_MOVEMENT,
+                                           "move_and_jump")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_move_and_jump(params or {})
+        return self._hold_inputs(spec.keys, (), spec.duration,
+                                 "move_and_jump", spec.as_dict(), spec.clamped)
+
     def jump(self, params: dict | None = None) -> ActionResult:
         refusal = self._require_authorized(core_caps.MINECRAFT_MOVEMENT,
                                            "jump")

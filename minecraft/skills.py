@@ -40,10 +40,11 @@ EVERY SKILL DECLARES WHAT IT CANNOT VERIFY
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from minecraft import action_spec, navigation as nav, verification as verify_mod
+from minecraft import stuck as stuck_mod
 from minecraft.state import UNKNOWN
 from minecraft.task_runner import Step
 
@@ -436,7 +437,34 @@ REVALIDATE_EVERY = 3
 
 # Consecutive movement steps that close no distance before trying a hop
 # (a one-block step up, a fence, a slab edge), and before giving up.
-STALLS_BEFORE_JUMP = 2
+STALLS_BEFORE_OBSTACLE_CHECK = 1
+"""How many fruitless moves before asking what is in the way.
+
+One. Looking is free — it reads the scan already in hand — and the previous
+value of two meant walking into the same wall twice before wondering about
+it."""
+
+MAX_REROUTES = 3
+"""How many times one task may throw its route away and try another.
+
+Bounded because a re-route that keeps finding the same blocked way is a loop,
+and because the honest answer after three is "I cannot get there", which is
+more use than twenty more steps of trying."""
+
+CAUTIOUS_STEP_S = 0.3
+"""The longest single move when the swept path shows something ahead.
+
+About a block and a quarter of walking. Near an obstacle the next observation
+is worth more than the distance, and a two-second stride into a ledge was
+exactly what made it walk into things and stay there."""
+
+INPUT_STUCK_AFTER = 2
+"""Stalls on open ground before concluding the input is not getting through.
+
+Two. One can be a hiccup — a snapshot that lagged, a mob that nudged you.
+Two, with the scan still showing clear ground, is a pattern, and pressing
+forward a third time has never once fixed it."""
+
 MAX_STALLS = 4
 
 
@@ -478,6 +506,11 @@ class NavigateTo:
     _walked: int = 0
     _stalls: int = 0
     _hopped: bool = False
+    _reroutes: int = 0
+    _obstacle: object = None
+    _diagnosis: object = None
+    _history: tuple = ()
+    _avoid: set = field(default_factory=set)
     _aiming_at: float | None = None
     _skip_to: int = 0
     _seen_at: tuple | None = None
@@ -504,6 +537,9 @@ class NavigateTo:
             return CANNOT_SEE_WORLD
         if self._stopped:
             return self._stopped
+        if self._diagnosis is not None and not self._arrived:
+            return (f"I stopped: {self._diagnosis.describe()}. "
+                    f"{self._where_text(self._seen_at)} is as far as I got.")
         if self._arrived:
             where = self._destination
             return (f"arrived at ({where[0]}, {where[1]})" if where
@@ -540,6 +576,7 @@ class NavigateTo:
             self._arrived = True
             return None
 
+        self._history = history
         self._note_progress(history)
         if self._stalls >= self.max_stalls:
             self._stopped = (
@@ -692,7 +729,8 @@ class NavigateTo:
 
     def _follow_path(self, state, local):
         if self._needs_new_path(state, local):
-            self._path = nav.find_path(state, self._destination)
+            self._path = nav.find_path(state, self._destination,
+                                       avoid=self._avoid)
             self._walked = 0
             if not self._path.found:
                 self._stopped = self._path.reason
@@ -703,7 +741,13 @@ class NavigateTo:
             return None
 
         here = state.position
-        desired = nav.yaw_to(here, waypoint)
+        # The CENTRE of the waypoint's column. Waypoints are block
+        # coordinates, which name a column's corner; aiming at the corner is
+        # harmless from across a clearing and, standing inside the column,
+        # points in whatever direction the corner happens to lie — which in a
+        # gap in a wall was straight back into the wall.
+        target = (waypoint[0] + 0.5, waypoint[1], waypoint[2] + 0.5)
+        desired = nav.yaw_to(here, target)
         current = (state.rotation or (None, None))[0]
         if current is None:
             # Rotation unreadable: walking on a heading you cannot measure is
@@ -724,36 +768,160 @@ class NavigateTo:
                       f"({waypoint[0]:.0f}, {waypoint[2]:.0f})"),
             )
 
-        if self._stalls >= STALLS_BEFORE_JUMP and not self._hopped:
-            # Steps with no ground gained, pointed the right way: the usual
-            # cause is a one-block lip. One hop is cheap to try and tells us
-            # something either way -- but only one, because a skill that hops
-            # every time it is stuck never reaches the giving-up branch.
-            self._hopped = True
-            return Step(
-                action="jump", params={},
-                expectation=verify_mod.moved(min_distance=0.2),
-                note="hop — the last moves got nowhere",
-            )
+        if self._stalls >= STALLS_BEFORE_OBSTACLE_CHECK:
+            blocked = self._handle_obstacle(state, waypoint, self._history)
+            if blocked is not None:
+                return blocked
+            if self._stopped:
+                return None
+            if self._path is None:
+                # The diagnosis threw the route away. Plan again now, from
+                # this observation, rather than walking the old one.
+                return self._follow_path(state, local)
 
         self._aiming_at = None
+        gap = self._gap_to(here, target)
+        ahead = self._look_ahead(local, here, target)
+
+        if ahead == "climb":
+            # The route steps up a full block. Walking into it first and
+            # THEN deciding to jump costs a step and a failed move every
+            # time; the map already says it is there. Hop straight up.
+            self._walked = max(self._walked + 1, self._skip_to + 1)
+            return Step(
+                action="move_and_jump",
+                params={"direction": "forward",
+                        "duration": min(action_spec.MAX_HOP_DURATION_S,
+                                        max(0.35, gap / WALK_BLOCKS_PER_S))},
+                expectation=verify_mod.moved(min_distance=0.3),
+                note=(f"hop up onto ({waypoint[0]:.0f}, {waypoint[2]:.0f})"),
+            )
+
         self._walked = max(self._walked + 1, self._skip_to + 1)
-        gap = self._gap_to(here, waypoint)
         return Step(
             action="move",
             params={"direction": "forward",
-                    "duration": self._step_seconds(gap)},
+                    "duration": self._step_seconds(gap, cautious=ahead is not None)},
             # Judged against the WAYPOINT, not the destination. Walking round
             # a wall means walking away from where you are going, and a check
             # that only ever asks "are you nearer the goal" calls every
             # correct detour a failure -- then the stall counter gives up
             # four steps into a route that was working.
             expectation=verify_mod.closer_to(
-                (waypoint[0], waypoint[2]),
+                (target[0], target[2]),
                 min_gain=max(0.15, min(0.4, gap * 0.5))),
             note=(f"walk to ({waypoint[0]:.0f}, {waypoint[2]:.0f}) — "
                   f"{self._remaining(state):.0f} blocks to go"),
         )
+
+    @staticmethod
+    def _look_ahead(local, here, target):
+        """What the body would meet walking straight at the target.
+
+        None for a clear walk, "climb" for a one-block step a hop clears, or
+        another reason when something else is in the way — in which case the
+        step is kept short so the next observation comes before the wall."""
+        try:
+            start = (float(here[0]), float(here[2]))
+            end = (float(target[0]), float(target[2]))
+        except (TypeError, IndexError, ValueError):
+            return None
+        blocked = local.first_blocked(start, end, allow_climb=False)
+        if blocked is None:
+            return None
+        _column, reason = blocked
+        if reason == "climb" and local.first_blocked(start, end,
+                                                     allow_climb=True) is None:
+            return "climb"
+        return reason
+
+    def _handle_obstacle(self, state, waypoint, history=()):
+        """Stopped making ground: find out WHY, and answer that.
+
+        "It stalled" is not a diagnosis. A one-block step, a three-block wall,
+        a low branch, a cow in the doorway and a window that lost focus all
+        stop you dead and want completely different responses — see
+        minecraft/stuck.py for the eight kinds and why each gets its own.
+
+        Returns a Step to try, or None to fall through to ordinary walking
+        (with the route cleared, when the right answer is a new one)."""
+        try:
+            heading = (int(waypoint[0]), int(waypoint[2]))
+        except (TypeError, IndexError, ValueError):
+            heading = None
+        route_column = heading
+        diagnosis = stuck_mod.diagnose_movement(
+            state, heading, moved_by=_last_move_distance(history),
+            route_column=route_column)
+        self._diagnosis = diagnosis
+        self._obstacle = diagnosis.obstacle
+
+        if diagnosis.recovery == stuck_mod.HOP:
+            if not self._hopped:
+                # One block, with room to land on it. Walking and jumping
+                # TOGETHER is the only thing that works: jump on the spot and
+                # you come straight back down where you started, which is why
+                # this used to need a person to say "jump" and still not get
+                # up.
+                self._hopped = True
+                return Step(
+                    action="move_and_jump",
+                    params={"direction": "forward"},
+                    expectation=verify_mod.moved(min_distance=0.3),
+                    note=f"hop up — {diagnosis.obstacle.describe()}",
+                )
+            # Hopped already and still stuck: it is not the step it looked
+            # like. Treat it as a wall and go round.
+            return self._reroute(diagnosis, avoid=diagnosis.obstacle.column)
+
+        if diagnosis.recovery in (stuck_mod.REROUTE, stuck_mod.WAIT):
+            avoid = getattr(diagnosis.obstacle, "column", None)
+            if diagnosis.recovery == stuck_mod.WAIT:
+                # Mobs move. Routing round the column it is standing in is
+                # both a sensible detour and, often, simply a pause while it
+                # wanders off.
+                avoid = heading
+            return self._reroute(diagnosis, avoid=avoid)
+
+        if diagnosis.recovery in (stuck_mod.OBSERVE, stuck_mod.REPLAN):
+            # Unknown ground is not empty ground, and a route over changed
+            # ground is not a route. Plan again from a fresh picture — the
+            # runner has already taken one.
+            return self._reroute(diagnosis, avoid=None)
+
+        if diagnosis.recovery == stuck_mod.STOP:
+            if diagnosis.kind == stuck_mod.INPUT_STUCK \
+                    and self._stalls < INPUT_STUCK_AFTER:
+                return None     # once can be a hiccup; twice is a pattern
+            # Stop means stop. Returning a placeholder step here instead —
+            # which the first version did — kept the task alive and repeated
+            # "stopping" until the step limit.
+            self._stopped = diagnosis.describe()
+            return None
+        return None
+
+    def _reroute(self, diagnosis, avoid=None):
+        """Throw the route away and plan another, within a bound.
+
+        The stall counter resets, because a new route is a genuinely new
+        attempt rather than the same failing action offered again — which is
+        the distinction the old replan got wrong and spun on."""
+        if self._reroutes >= MAX_REROUTES:
+            self._stopped = (
+                f"{diagnosis.describe()} — and {MAX_REROUTES} attempts to go "
+                f"another way did not get past it.")
+            return None
+        self._reroutes += 1
+        if avoid is not None:
+            try:
+                self._avoid.add((int(avoid[0]), int(avoid[-1])))
+            except (TypeError, IndexError, ValueError):
+                pass
+        self._path = None
+        self._walked = 0
+        self._stalls = 0
+        self._hopped = False
+        return None
 
     def _needs_new_path(self, state, local) -> bool:
         """Re-plan when the plan is old, gone, or no longer true."""
@@ -793,9 +961,24 @@ class NavigateTo:
         if local is None or state is None:
             return self._path.waypoints[index]
 
+        # Already standing in this waypoint's column: it is behind us, not
+        # ahead. Walking "to" the column you are in turns you towards its
+        # centre, which from its edge can be any direction at all.
         try:
-            here = (int(math.floor(state.position[0])),
-                    int(math.floor(state.position[2])))
+            mine = (math.floor(state.position[0]), math.floor(state.position[2]))
+        except (TypeError, IndexError, ValueError):
+            mine = None
+        while (mine is not None and index < len(self._path.waypoints) - 1
+               and (self._path.waypoints[index][0],
+                    self._path.waypoints[index][2]) == mine):
+            index += 1
+            self._walked = index
+
+        try:
+            # The REAL position, not the column it is in. The player is almost
+            # never at a column's centre, and a line traced from the centre is
+            # not the line they will walk.
+            here = (float(state.position[0]), float(state.position[2]))
         except (TypeError, IndexError, ValueError):
             return self._path.waypoints[index]
 
@@ -816,15 +999,22 @@ class NavigateTo:
         except (TypeError, IndexError):
             return 1.0
 
-    def _step_seconds(self, gap: float) -> float:
+    def _step_seconds(self, gap: float, cautious: bool = False) -> float:
         """Long enough to reach the waypoint, short enough not to sail past.
 
         Overshooting is the characteristic navigation bug: a two second hold
         crosses eight blocks, and a route made of one-block steps becomes a
-        zigzag across the whole clearing."""
+        zigzag across the whole clearing.
+
+        `cautious` when something is in the way ahead: the step is capped
+        at about a block, so the next observation comes before the obstacle
+        rather than after walking into it. Open ground gets the long stride;
+        tight ground gets short ones."""
         wanted = gap / WALK_BLOCKS_PER_S
-        return max(action_spec.MIN_MOVE_DURATION_S,
-                   min(wanted, action_spec.MAX_MOVE_DURATION_S))
+        ceiling = action_spec.MAX_MOVE_DURATION_S
+        if cautious:
+            ceiling = min(ceiling, CAUTIOUS_STEP_S)
+        return max(action_spec.MIN_MOVE_DURATION_S, min(wanted, ceiling))
 
     def _remaining(self, state) -> float:
         try:
@@ -844,6 +1034,23 @@ class NavigateTo:
             return f"({x:.0f}, {y:.0f}, {z:.0f})"
         except (TypeError, ValueError):
             return "somewhere I cannot read"
+
+
+def _last_move_distance(history):
+    """How far the last movement step actually carried the player, or None.
+
+    Horizontal only: falling is not progress, and the diagnosis cares about
+    whether the player went where they were pointed."""
+    for record in reversed(history or ()):
+        if record.step.get("action") not in ("move", "move_and_jump"):
+            continue
+        try:
+            before = record.state_before["position"]
+            after = record.state_after["position"]
+            return math.hypot(after[0] - before[0], after[2] - before[2])
+        except (KeyError, TypeError, IndexError):
+            return None
+    return None
 
 
 def block_label(block) -> str:
