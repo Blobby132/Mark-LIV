@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "markliv-bridge",
+  "version": "${version}",
+  "name": "MARK LIV Bridge",
+  "description": "Publishes read-only Minecraft client state to a local file so MARK LIV can see the game. It reads the game and writes one JSON file; it accepts no commands and changes nothing in the world.",
+  "authors": ["MARK LIV"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.markliv.bridge.MarkLivBridge"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.0",
+    "minecraft": "~26.3",
+    "java": ">=21"
+  }
+}

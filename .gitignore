@@ -48,3 +48,9 @@ desktop.ini
 logs/
 downloads/
 screenshots/
+
+# Fabric mod build output — the built jar is committed to mods/ instead, so
+# nobody needs a JDK to use it.
+fabric-mod/build/
+fabric-mod/.gradle/
+fabric-mod/run/

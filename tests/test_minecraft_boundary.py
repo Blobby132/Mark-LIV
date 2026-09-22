@@ -242,10 +242,22 @@ class TestNoExecutionPrimitives(unittest.TestCase):
                         f"{path}:{node.lineno} {receiver.id}.{node.func.attr}()")
         self.assertEqual(offenders, [], f"process primitives: {offenders}")
 
+    READ_MODES = frozenset({"r", "rb", "rt", "br", "tr"})
+
     def test_no_file_writes(self):
-        """Reading a config would be fine; writing is not something this
-        package has any reason to do, and a write is how a subsystem starts
-        being able to change the app around it."""
+        """Reading is fine; writing is not something this package has any
+        reason to do, and a write is how a subsystem starts being able to
+        change the app around it.
+
+        This used to forbid `open()` outright, which was the easy rule rather
+        than the right one: it also banned reads, and the mod bridge's whole
+        job is reading a file the game writes. So the mode is checked instead.
+        A literal read mode passes; a write mode, a computed mode, or anything
+        this cannot prove is a read, fails.
+
+        Refusing what it cannot verify is the point. A mode built at runtime
+        might be "w", and a check that assumed otherwise would be worse than
+        no check at all."""
         offenders = []
         for path in _module_files():
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -255,11 +267,30 @@ class TestNoExecutionPrimitives(unittest.TestCase):
                 func = node.func
                 if isinstance(func, ast.Attribute) and func.attr in (
                         "write_text", "write_bytes", "unlink", "rmdir",
-                        "mkdir", "rename", "replace", "chmod"):
+                        "mkdir", "rename", "replace", "chmod", "makedirs",
+                        "remove", "rmtree"):
                     offenders.append(f"{path}:{node.lineno} .{func.attr}()")
                 if isinstance(func, ast.Name) and func.id == "open":
-                    offenders.append(f"{path}:{node.lineno} open()")
+                    offenders.append(self._judge_open(path, node))
+        offenders = [o for o in offenders if o]
         self.assertEqual(offenders, [], f"filesystem writes: {offenders}")
+
+    def _judge_open(self, path, node):
+        """'' when this open() is provably a read, else why it is not."""
+        mode = None
+        if len(node.args) >= 2:
+            mode = node.args[1]
+        for keyword in node.keywords:
+            if keyword.arg == "mode":
+                mode = keyword.value
+
+        if mode is None:
+            return ""                       # defaults to "r"
+        if isinstance(mode, ast.Constant) and mode.value in self.READ_MODES:
+            return ""
+        shown = getattr(mode, "value", "<computed>")
+        return (f"{path}:{node.lineno} open(mode={shown!r}) — only a literal "
+                f"read mode is allowed here")
 
 
 class TestTheNamedIsolationRequirements(unittest.TestCase):

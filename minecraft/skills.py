@@ -304,15 +304,14 @@ class PlaceBlock:
 class CollectLogs:
     """Find a tree, mine it, repeat. The first genuinely useful goal.
 
-    WHAT IT CAN AND CANNOT COUNT
-        It cannot count logs. Inventory contents are not on the F3 overlay, so
-        "collect 4 logs" cannot be verified as four — only as four blocks
-        observed to disappear. That is a weaker claim and it is the one the
-        result makes: `logs_broken`, not `logs_collected`. An item that
-        dropped out of reach still counts as broken and was never picked up.
+    WHAT IT COUNTS DEPENDS ON WHAT CAN BE SEEN
+        With the bridge mod running, the inventory is readable and "collect 4
+        logs" means four logs actually in the inventory — the real claim.
 
-        Confirming collection needs the mod bridge. Until then this reports
-        what it saw rather than what it hopes."""
+        Without it, only the block disappearing is observable, and that is a
+        weaker thing: an item that fell in lava or landed out of reach was
+        broken and never picked up. So the result says which claim it is
+        making rather than quietly presenting one as the other."""
 
     count: int = 4
     sweep_steps: int = 10
@@ -322,14 +321,21 @@ class CollectLogs:
     verifiable_with = ("target_block",)
 
     _broken: int = 0
+    _collected: int = 0
+    _starting_logs: int | None = None
+    _can_count: bool = False
     _last_target: str = ""
     _blind: bool = False
+
+    @property
+    def _done(self) -> int:
+        return self._collected if self._can_count else self._broken
 
     @property
     def failed(self) -> bool:
         """Blind, or short of the count. Either way this is not a success,
         and the runner reports it as incomplete rather than done."""
-        return self._blind or self._broken < self.count
+        return self._blind or self._done < self.count
 
     @property
     def goal(self) -> str:
@@ -339,6 +345,9 @@ class CollectLogs:
     def done_reason(self) -> str:
         if self._blind:
             return CANNOT_SEE_TARGET
+        if self._can_count:
+            return (f"collected {self._collected} of {self.count} log(s), "
+                    f"counted in the inventory")
         return (f"broke {self._broken} of {self.count} log(s) — I cannot see "
                 f"the inventory, so I am reporting blocks that disappeared, "
                 f"not items picked up")
@@ -352,13 +361,23 @@ class CollectLogs:
             self._blind = True
             return None
 
-        # Count from the record, not from a local tally: a swing whose
-        # verification says the block went is the only evidence that counts.
-        self._broken = sum(
-            1 for r in history
-            if r.step.get("action") == "mine"
-            and r.verification.get("status") == verify_mod.SUCCESS)
-        if self._broken >= self.count:
+        self._can_count = state.confidence_of("inventory") != UNKNOWN
+        if self._can_count:
+            # The real measure, when it is available: what is in the bag.
+            if self._starting_logs is None:
+                self._starting_logs = _log_total(state)
+            self._collected = _log_total(state) - self._starting_logs
+            done = self._collected
+        else:
+            # Count from the record: a swing whose verification says the block
+            # went is the only evidence there is without an inventory.
+            self._broken = sum(
+                1 for r in history
+                if r.step.get("action") == "mine"
+                and r.verification.get("status") == verify_mod.SUCCESS)
+            done = self._broken
+
+        if done >= self.count:
             return None
 
         block = state.target_block
@@ -366,14 +385,16 @@ class CollectLogs:
 
         if name in LOG_BLOCKS:
             self._last_target = name
+            check = (verify_mod.collected(name) if self._can_count
+                     else verify_mod.block_broken(name))
             return Step(action="mine", params={"duration": 1.0},
-                        expectation=verify_mod.block_broken(name),
-                        note=f"mine {name} ({self._broken}/{self.count})")
+                        expectation=check,
+                        note=f"mine {name} ({done}/{self.count})")
 
         # Nothing wooden under the crosshair: sweep the view looking for some.
         return Step(action="look", params={"dx": self.delta_px, "dy": 0},
                     expectation=verify_mod.turned(min_degrees=2.0),
-                    note=f"looking for a log ({self._broken}/{self.count})")
+                    note=f"looking for a log ({done}/{self.count})")
 
     def replan(self, state, reason, history):
         """Stuck: stop mining this log and look for another.
@@ -392,6 +413,15 @@ class CollectLogs:
         if last != "mine":
             return None
         return "sweep for a different log"
+
+
+def _log_total(state) -> int:
+    """Every kind of log in the inventory, added up."""
+    total = 0
+    for stack in (state.inventory or ()):
+        if getattr(stack, "name", None) in LOG_BLOCKS:
+            total += int(getattr(stack, "count", 0) or 0)
+    return total
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -428,18 +458,31 @@ def available() -> tuple:
 # Named here rather than in prose so the tool description, the status report
 # and the manual check all quote the same list.
 NOT_YET_POSSIBLE = {
-    "craft_item": "needs to read the inventory and the crafting grid, "
-                  "neither of which is on the F3 overlay.",
-    "count_inventory": "inventory contents are not on the F3 overlay. "
-                       "`collect_logs` reports blocks broken instead, which "
-                       "is a weaker and honest claim.",
-    "find_iron": "needs to see the world, not just the block under the crosshair.",
-    "mine_ore": "needs inventory counts to confirm what was collected.",
-    "eat_food": "needs hunger and the inventory.",
-    "build_structure": "needs inventory and reliable placement verification.",
+    "craft_item": "the bridge mod reports the inventory but not the crafting "
+                  "grid, and clicking recipe slots needs absolute mouse "
+                  "positioning that is not built.",
+    "find_iron": "needs to see the world, not just the block under the "
+                 "crosshair. The bridge reports what you are looking AT, not "
+                 "what is around you.",
+    "eat_food": "hunger and the inventory are readable now; what is missing "
+                "is choosing the right slot, which needs the hotbar mapped to "
+                "what is in it.",
+    "build_structure": "needs a plan and a placement order, not just the "
+                       "ability to place one block.",
     "navigate_to": "needs pathfinding over terrain this version cannot see.",
     "return_to_base": "needs stored waypoints and navigation.",
 }
+
+NOW_POSSIBLE_WITH_THE_BRIDGE = (
+    "inventory contents", "health", "hunger", "held item", "nearby entities",
+    "exact position", "world time", "weather",
+)
+"""What stopped being impossible when the mod arrived.
+
+Kept as a list rather than folded into prose because these were each cited, in
+this file and in the tool description, as the reason something could not be
+done. A claim that stops being true should be retracted in the same place it
+was made."""
 
 
 __all__ = [

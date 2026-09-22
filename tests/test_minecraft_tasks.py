@@ -651,9 +651,19 @@ class TestSkills(unittest.TestCase):
         self.assertIn("birch_log", result.reason)
         self.assertEqual(controller.calls, [])
 
+    def test_things_the_bridge_made_possible_are_no_longer_listed_as_blocked(self):
+        """A reason that stops being true should be retracted where it was
+        given. Counting the inventory was cited as impossible; the mod made it
+        possible, and leaving the old claim in place would be a lie that
+        happened to have been true once."""
+        for name in ("count_inventory", "mine_ore"):
+            with self.subTest(skill=name):
+                self.assertNotIn(name, skills.NOT_YET_POSSIBLE)
+        self.assertIn("inventory contents", skills.NOW_POSSIBLE_WITH_THE_BRIDGE)
+
     def test_the_things_it_cannot_do_are_named_rather_than_attempted(self):
         for name in ("craft_item", "build_structure", "return_to_base",
-                     "count_inventory"):
+                     "navigate_to"):
             with self.subTest(skill=name):
                 self.assertIn(name, skills.NOT_YET_POSSIBLE)
                 self.assertNotIn(name, skills.available())

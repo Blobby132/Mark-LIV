@@ -1,0 +1,45 @@
+plugins {
+    id 'fabric-loom' version '1.18.2'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base { archivesName = project.archives_base_name }
+
+repositories {
+    maven { url = 'https://api.modrinth.com/maven' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    // Minecraft 26.3 ships UNOBFUSCATED -- net/minecraft/client/Minecraft.class
+    // is in the jar under its real name, which is why Mojang publishes no
+    // client_mappings for it and Yarn has none either. Fabric signals that
+    // with intermediary 0.0.0, an identity mapping.
+    mappings "net.fabricmc:intermediary:0.0.0:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    // No Fabric API. Minecraft.execute() gives a client-thread hook on its
+    // own, so this mod needs only the loader -- one fewer thing to install,
+    // and one fewer version to keep in step with the game.
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+}
+
+java {
+    // No withSourcesJar(): asking for a sources jar makes Loom resolve and
+    // remap every dependency's sources at configure time, and the Fabric API
+    // sources jar does not survive that against an unobfuscated Minecraft.
+    // Nothing here needs sources to produce a working mod.
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}

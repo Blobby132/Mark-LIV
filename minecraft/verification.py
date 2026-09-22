@@ -296,6 +296,38 @@ def holding_slot(slot: int) -> Expectation:
                        fields=("selected_slot",), predicate=predicate)
 
 
+def collected(item: str, at_least: int = 1) -> Expectation:
+    """More of `item` in the inventory than before.
+
+    The check that was impossible until the bridge existed, and the one that
+    matters most: every other way of confirming a mined block watches it
+    disappear, which is not the same as picking it up. An item that fell in
+    lava, landed out of reach, or despawned was still broken and never
+    collected, and only a count can tell those apart."""
+    def predicate(before, after):
+        was = _count_of(before, item)
+        now = _count_of(after, item)
+        gained = now - was
+        if gained >= at_least:
+            return True, f"picked up {gained} {item} ({was} to {now})."
+        if gained > 0:
+            return False, (f"only picked up {gained} {item}, not "
+                           f"{at_least} ({was} to {now}).")
+        return False, f"no more {item} than before ({now})."
+
+    return Expectation(name="collected", goal=f"collect {at_least} {item}",
+                       fields=("inventory",), predicate=predicate)
+
+
+def _count_of(state: WorldState, item: str) -> int:
+    """How many of `item` the inventory holds, across every stack."""
+    total = 0
+    for stack in (state.inventory or ()):
+        if getattr(stack, "name", None) == item:
+            total += int(getattr(stack, "count", 0) or 0)
+    return total
+
+
 def unverifiable(goal: str, reason: str,
                  delivered: bool = False) -> Verification:
     """A verdict for an action with no expectation attached.
@@ -311,5 +343,5 @@ __all__ = [
     "Verification", "Expectation",
     "SUCCESS", "FAILED", "UNVERIFIABLE", "STATUSES",
     "moved", "stayed_within", "turned", "block_broken", "looking_at",
-    "target_changed", "holding_slot", "unverifiable",
+    "target_changed", "holding_slot", "collected", "unverifiable",
 ]

@@ -31,6 +31,7 @@ from minecraft import capabilities as mc_phase
 from minecraft import skills as mc_skills
 from minecraft.controller import MinecraftController
 from minecraft.debug_overlay import DebugOverlayStateSource, NEEDS_MOD_BRIDGE
+from minecraft.mod_bridge import ModBridgeStateSource
 from minecraft.errors import CapabilityDisabled, InvalidAction, MinecraftError
 from minecraft.observation import Observer
 from minecraft.state import VisionStateSource
@@ -62,24 +63,44 @@ def _get_observer() -> Observer:
 
 
 def _get_state_source():
-    """The best state source available.
+    """The best state source available RIGHT NOW.
 
-    This is the one place that decides which source the rest of the system
-    talks to, and everything above it — the task runner, verification, the
-    handler — is written against the `StateSource` interface and never learns
-    which it got. Adding the Fabric bridge later is a change to this function.
+    Three implementations, in order of how much they can actually tell us:
 
-    The OCR reader is built HERE, from core, and injected. `minecraft/` imports
-    no OCR engine: pytesseract shells out to a binary, and that package is
-    forbidden from starting processes — see core/ocr.py."""
+        mod bridge  — the game's own numbers. Everything, `exact`.
+        F3 overlay  — OCR of the debug screen. Position and the targeted
+                      block, `inferred`, and nothing about the inventory.
+        vision      — an honest empty state. Reads nothing.
+
+    Re-resolved on every call rather than cached, because availability
+    genuinely changes: someone starts JARVIS, then starts Minecraft, then
+    loads a world, and each step makes a better source possible. Caching the
+    first answer meant the common order of events — assistant first, game
+    second — permanently pinned the worst source.
+
+    Everything above this function is written against `StateSource` and never
+    learns which one it got; that seam is why the bridge could be added
+    without touching the planner, the task runner or verification."""
     global _state_source
-    if _state_source is None:
-        overlay = DebugOverlayStateSource(observer=_get_observer(),
-                                          reader=core_ocr.create_reader())
-        # A source that cannot read is worse than the honest empty one: it
-        # would report "overlay closed" when the real problem is a missing
-        # OCR install, and the user would go and press F3 for nothing.
-        _state_source = overlay if overlay.available() else VisionStateSource()
+    if _state_source is not None and getattr(_state_source, "available",
+                                             lambda: True)():
+        return _state_source
+
+    bridge = ModBridgeStateSource()
+    if bridge.available():
+        _state_source = bridge
+        return _state_source
+
+    overlay = DebugOverlayStateSource(observer=_get_observer(),
+                                      reader=core_ocr.create_reader())
+    if overlay.available():
+        _state_source = overlay
+        return _state_source
+
+    # Nothing can read the game. Keep the bridge as the reported source so the
+    # reason names the thing worth installing rather than the OCR the user may
+    # have already decided against.
+    _state_source = bridge
     return _state_source
 
 
