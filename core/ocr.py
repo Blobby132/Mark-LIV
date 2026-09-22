@@ -83,9 +83,36 @@ def _local_install_paths() -> tuple:
     return tuple(out)
 
 
+TESSERACT_ENV_VARS = ("TESSERACT_CMD", "TESSERACT_EXE", "TESSERACT_PATH")
+"""Point one of these at tesseract.exe to skip the search entirely.
+
+The last resort that always works. Install layouts vary more than any fixed
+list can anticipate -- winget, Chocolatey, a portable unzip and a custom
+install folder all land somewhere different -- and telling a user "it is not
+installed" when their package manager says it is means the list was wrong,
+not the user."""
+
+
+def _env_override() -> str:
+    for name in TESSERACT_ENV_VARS:
+        value = (os.environ.get(name) or "").strip().strip('"')
+        if value and os.path.isfile(value):
+            return value
+    return ""
+
+
+def _search_locations() -> tuple:
+    """Everywhere that is checked, in order. Exposed so the failure message
+    can LIST them rather than assert a conclusion it cannot support."""
+    return _WINDOWS_INSTALL_PATHS + _local_install_paths()
+
+
 def _find_tesseract_exe() -> str:
     """An installed tesseract.exe that PATH did not expose, or ''."""
-    for candidate in _WINDOWS_INSTALL_PATHS + _local_install_paths():
+    override = _env_override()
+    if override:
+        return override
+    for candidate in _search_locations():
         try:
             if candidate and os.path.isfile(candidate):
                 return candidate
@@ -228,14 +255,30 @@ def create_reader(scale: int = DEFAULT_SCALE):
 
 
 def _tesseract_missing_help() -> str:
+    """Say what was actually checked, not what is concluded.
+
+    The previous wording announced that Tesseract "is not installed" on the
+    strength of a fixed list of paths. When a user's package manager says it
+    IS installed, that sentence is simply wrong, and it sends them to
+    reinstall something they already have. All that is really known is where
+    this looked."""
+    looked = "\n".join(f"      {path}" for path in _search_locations())
     return (
-        "The 'pytesseract' package is installed, but the Tesseract PROGRAM "
-        "it drives is not installed.\n"
-        "  Easiest:  winget install --id UB-Mannheim.TesseractOCR\n"
-        f"  Or download the 64-bit installer from {_TESSERACT_DOWNLOAD}\n"
-        "  I look in the usual install folders as well as PATH, so you do "
-        "not need to set PATH yourself — but you do need to reopen this "
-        "terminal after installing.\n"
+        "The 'pytesseract' package is installed, but I could not find the "
+        "Tesseract PROGRAM it drives.\n"
+        "  Not on PATH, and not at any of these:\n"
+        f"{looked}\n"
+        "  If it IS installed somewhere else, point me straight at it — no "
+        "reinstall, no PATH changes:\n"
+        '    setx TESSERACT_CMD "C:\\path\\to\\tesseract.exe"\n'
+        "    (then close and reopen the terminal)\n"
+        "  To find it:\n"
+        "    Get-ChildItem C:\\ -Recurse -Filter tesseract.exe "
+        "-ErrorAction SilentlyContinue | "
+        "Select-Object -First 1 -ExpandProperty FullName\n"
+        "  If it is genuinely not installed:\n"
+        "    winget install --id UB-Mannheim.TesseractOCR\n"
+        f"    or the 64-bit installer from {_TESSERACT_DOWNLOAD}\n"
         f"{_NOT_WORKING_TAIL}"
     )
 
@@ -245,4 +288,5 @@ def is_available() -> bool:
 
 
 __all__ = ["create_reader", "is_available", "TesseractReader",
-           "UnavailableReader", "TEXT_THRESHOLD", "DEFAULT_SCALE"]
+           "UnavailableReader", "TEXT_THRESHOLD", "DEFAULT_SCALE",
+           "TESSERACT_ENV_VARS"]
