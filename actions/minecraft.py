@@ -28,6 +28,7 @@ from core import capabilities
 from core import ocr as core_ocr
 
 from minecraft import capabilities as mc_phase
+from minecraft import navigation as mc_nav
 from minecraft import skills as mc_skills
 from minecraft.controller import MinecraftController
 from minecraft.debug_overlay import DebugOverlayStateSource, NEEDS_MOD_BRIDGE
@@ -135,6 +136,10 @@ _CAPABILITY_BY_ACTION = {
     "status":        capabilities.MINECRAFT_OBSERVE,
     "observe":       capabilities.MINECRAFT_OBSERVE,
     "read_state":    capabilities.MINECRAFT_READ_STATE,
+    # Reading the terrain scan. Same capability as read_state because it is
+    # the same file read, summarised -- it presses nothing and needs no
+    # session.
+    "look_around":   capabilities.MINECRAFT_READ_STATE,
     "toggle_debug":  capabilities.MINECRAFT_READ_STATE,
 
     # THE confirmation, and the way out of it.
@@ -311,6 +316,11 @@ def minecraft_control(parameters: dict = None, player=None,
                 extra = f"\n{source.unavailable_reason()}"
             return f"{state.describe()}{extra}\n{state.as_dict()}"
 
+        if action == "look_around":
+            state = _get_state_source().read()
+            summary = mc_nav.summarise(state)
+            return f"{_around_line(state, summary)}\n{summary}"
+
         if action == "toggle_debug":
             return _result_line(controller.toggle_debug_overlay(), player)
 
@@ -450,9 +460,19 @@ def _run_task(controller, params: dict, player=None) -> str:
 
     options = {}
     for key in ("seconds", "direction", "expected", "swings", "steps",
-                "count", "slot"):
+                "count", "slot", "target"):
         if key in params:
             options[key] = params[key]
+    if name == "navigate_to":
+        column = _destination_from(params)
+        if isinstance(column, str):
+            return column
+        if column is not None:
+            options["destination"] = column
+        if not options.get("destination") and not options.get("target"):
+            return ("Where to? navigate_to needs either a destination "
+                    "(x and z) or a target such as 'log', 'stone' or "
+                    "'water'. Call look_around first to see what is there.")
 
     try:
         skill = mc_skills.create(name, **options)
@@ -487,6 +507,48 @@ def _run_task(controller, params: dict, player=None) -> str:
     return f"{result.describe()}\n{result.as_dict()}"
 
 
+def _destination_from(params: dict):
+    """(x, z) from the model's parameters, or a sentence saying what is wrong.
+
+    Coordinates are taken literally and never invented: "somewhere over
+    there" is not a destination, and guessing one would send a real player's
+    character walking off on a number this code made up."""
+    if "x" not in params and "z" not in params:
+        return None
+    try:
+        return (int(params["x"]), int(params["z"]))
+    except (KeyError, TypeError, ValueError):
+        return ("navigate_to needs both x and z as whole numbers. Call "
+                "look_around to see coordinates I can actually reach.")
+
+
+def _around_line(state, summary: dict) -> str:
+    """One sentence about the surroundings, before the data.
+
+    Says UNKNOWN when the scan is not there, rather than describing an empty
+    world — an empty scan and a bare plain look identical in the numbers and
+    are not the same thing at all."""
+    if not summary.get("columns_seen"):
+        return ("I cannot see the world around me. That needs the bridge mod "
+                "running in Minecraft — without it I only know what is under "
+                "the crosshair.")
+    bits = [f"I can see {summary['columns_seen']} columns of ground within "
+            f"{summary.get('scan_radius', '?')} blocks"]
+    for label in ("log", "stone", "water"):
+        found = summary.get(f"nearest_{label}")
+        if found:
+            bits.append(f"nearest {label}: {found['name']} at "
+                        f"{tuple(found['position'])}, {found['distance']} away")
+    for label in ("hostile", "passive"):
+        found = summary.get(f"nearest_{label}")
+        if found:
+            bits.append(f"nearest {label} mob: {found['name']}, "
+                        f"{found['distance']} away")
+    if summary.get("ores_seen"):
+        bits.append(f"ores in view: {', '.join(summary['ores_seen'])}")
+    return ". ".join(bits) + "."
+
+
 def _status_line(status: dict) -> str:
     if not status.get("minecraft_running"):
         return status.get("process_detail") or "Minecraft is not running."
@@ -517,25 +579,41 @@ TOOL = {
         "start_session again while one is open; if you are unsure, call "
         "status.\n"
         "READING (no session needed): status, observe, read_state, "
-        "toggle_debug (presses F3, which read_state needs).\n"
+        "look_around, toggle_debug (presses F3, which read_state needs).\n"
+        "look_around is the one to use for 'what is around me', 'is there a "
+        "tree nearby', 'any mobs'. It returns the nearest log, stone, water, "
+        "ores and mobs with coordinates, from the bridge mod's terrain scan. "
+        "If it says it cannot see the world, say that — do not describe a "
+        "world from the crosshair or from memory.\n"
         "GAMEPLAY: move (direction, duration<=2s), look (dx/dy in PIXELS, "
         "<=400 each — degrees are NOT supported), jump, sneak, sprint, "
         "attack, mine, place, interact, use_item, eat, drop, hotbar_select "
         "(slot 1-9), inventory (state=open|close), stop.\n"
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
-        "break_block, place_block, collect_logs. It stops itself at 20 "
-        "steps, after two minutes, or when it detects it is making no "
-        "progress.\n"
+        "break_block, place_block, collect_logs, navigate_to. It stops "
+        "itself at 20 steps, after two minutes, or when it detects it is "
+        "making no progress.\n"
+        "navigate_to walks somewhere, routing round obstacles: give it "
+        "either x and z, or target='log'|'stone'|'water'. It refuses a "
+        "destination outside the scanned area instead of setting off "
+        "hopefully — if it says it cannot see that far, relay that rather "
+        "than retrying with a bigger number. If it says it stopped N blocks "
+        "short because the task ran out of steps, call it again with the "
+        "same destination: it carries on from where it is.\n"
         "REPORTING RESULTS HONESTLY — this matters most:\n"
         "  * One mine does NOT break a block. Breaking an oak log takes "
         "several. Never say a block broke, a tree was chopped or wood was "
         "collected unless verification.status == 'success'.\n"
         "  * 'unverifiable' means I could not SEE whether it worked. Say "
         "that plainly; do not treat it as success or as failure.\n"
-        "  * I cannot read the inventory at all, so I can never confirm an "
-        "item was picked up — only that a block disappeared. Say 'broke' not "
-        "'collected'.\n"
+        "  * Whether I can confirm an item was PICKED UP depends on the "
+        "bridge mod. With it, the inventory is readable and 'collected' is a "
+        "real claim. Without it I only see a block disappear — then say "
+        "'broke', not 'collected'. The task result says which one it used; "
+        "do not upgrade 'broke' to 'collected'.\n"
+        "  * An unknown block is not air, and a place I have not scanned is "
+        "not empty ground. If something says UNKNOWN, report UNKNOWN.\n"
         "  * ok == true only means the input reached the game.\n"
         "Movement only works while Minecraft is the window in front. If the "
         "user alt-tabs or presses F12 everything stops and the session ends."
@@ -546,7 +624,8 @@ TOOL = {
             "action": {
                 "type": "STRING",
                 "description": (
-                    "status | observe | read_state | toggle_debug | "
+                    "status | observe | read_state | look_around | "
+                    "toggle_debug | "
                     "start_session | end_session | move | look | jump | "
                     "sneak | sprint | attack | mine | place | interact | "
                     "use_item | eat | drop | hotbar_select | inventory | "
@@ -594,7 +673,26 @@ TOOL = {
                 "type": "STRING",
                 "description": ("For run_task: walk_forward | survey | "
                                 "find_block | break_block | place_block | "
-                                "collect_logs."),
+                                "collect_logs | navigate_to."),
+            },
+            "x": {
+                "type": "INTEGER",
+                "description": ("For run_task navigate_to: the destination's "
+                                "x. Use a coordinate look_around actually "
+                                "reported; do not invent one."),
+            },
+            "z": {
+                "type": "INTEGER",
+                "description": ("For run_task navigate_to: the destination's "
+                                "z. Needs x as well."),
+            },
+            "target": {
+                "type": "STRING",
+                "description": ("For run_task navigate_to: walk to the "
+                                "nearest one of these instead of a "
+                                "coordinate — log, stone, dirt, grass, sand, "
+                                "water, crafting_table, furnace, chest, or "
+                                "an exact block name."),
             },
             "count": {
                 "type": "INTEGER",

@@ -82,7 +82,38 @@ public class MarkLivBridge implements ClientModInitializer {
     /** Cap on reported entities, so a mob farm cannot produce a huge file. */
     private static final int MAX_ENTITIES = 24;
 
-    private static final String SCHEMA = "markliv.minecraft.state/1";
+    /**
+     * Horizontal reach of the terrain scan, in blocks.
+     *
+     * <p>Ten gives a 21x21 footprint -- far enough to plan a path around an
+     * obstacle, short enough that the scan stays inside chunks the client has
+     * certainly loaded. Beyond about sixteen the client may not have the data
+     * and would report air where it simply has not looked, which is exactly
+     * the lie this whole design refuses to tell.
+     */
+    private static final int SCAN_RADIUS = 10;
+
+    /** How far above and below the player's feet each column is searched. */
+    private static final int SCAN_UP = 4;
+    private static final int SCAN_DOWN = 5;
+
+    /**
+     * Cap on individually reported blocks of interest.
+     *
+     * <p>A jungle fills the scan volume with logs; reporting every one would
+     * be a large file describing a decision nobody needs it to make. The
+     * nearest few dozen are enough to pick a target.
+     */
+    private static final int MAX_NOTABLE = 64;
+
+    /**
+     * Refuse to write beyond this. A payload that grows without bound is a
+     * bug somewhere above, and truncating is better than handing the reader a
+     * file it must parse five times a second.
+     */
+    private static final int MAX_PAYLOAD_BYTES = 256 * 1024;
+
+    private static final String SCHEMA = "markliv.minecraft.state/2";
 
     private Path target;
     private Path temp;
@@ -165,6 +196,18 @@ public class MarkLivBridge implements ClientModInitializer {
     }
 
     private void writeAtomically(String json) throws IOException {
+        if (json.length() > MAX_PAYLOAD_BYTES) {
+            // Something above has grown without bound. Refusing is better
+            // than handing the reader a file it must parse five times a
+            // second, and the reader treats a missing update as stale.
+            if (!warned) {
+                warned = true;
+                System.err.println("[markliv-bridge] refusing to write "
+                        + json.length() + " bytes; cap is "
+                        + MAX_PAYLOAD_BYTES);
+            }
+            return;
+        }
         Files.writeString(temp, json, StandardCharsets.UTF_8);
         try {
             Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
@@ -229,7 +272,98 @@ public class MarkLivBridge implements ClientModInitializer {
         out.raw("target_entity", targetEntityJson(client));
         out.raw("nearby_entities", nearbyJson(client, player));
 
+        out.raw("scan", Json.object(
+                "radius", Integer.toString(SCAN_RADIUS),
+                "up", Integer.toString(SCAN_UP),
+                "down", Integer.toString(SCAN_DOWN)));
+        Terrain terrain = scanTerrain(level, feet);
+        out.raw("surface", terrain.surface);
+        out.raw("notable_blocks", terrain.notable);
+
         return out.close();
+    }
+
+    /** The two products of one pass over the scan volume. */
+    private record Terrain(String surface, String notable) { }
+
+    /**
+     * One pass over the volume around the player, producing two things.
+     *
+     * <p><b>surface</b> is the topmost standable block in each column: what a
+     * path planner needs, and nothing more. A full voxel dump of this volume
+     * would be several thousand entries to say what 441 already say.
+     *
+     * <p><b>notable</b> is the blocks worth travelling to -- logs, ores,
+     * water, work stations -- with their real coordinates, so "find a tree"
+     * stops meaning "sweep the crosshair and hope".
+     *
+     * <p>A column with no solid block in range is OMITTED rather than
+     * reported as air. The reader then knows it does not know, instead of
+     * being told there is a floor where nobody looked.
+     */
+    private Terrain scanTerrain(net.minecraft.world.level.Level level,
+                                BlockPos feet) {
+        List<String> surface = new ArrayList<>();
+        List<String> notable = new ArrayList<>();
+
+        int originX = feet.getX();
+        int originY = feet.getY();
+        int originZ = feet.getZ();
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+
+        for (int dx = -SCAN_RADIUS; dx <= SCAN_RADIUS; dx++) {
+            for (int dz = -SCAN_RADIUS; dz <= SCAN_RADIUS; dz++) {
+                int x = originX + dx;
+                int z = originZ + dz;
+                boolean haveSurface = false;
+
+                // Top down: the first solid block is the one you stand on.
+                for (int dy = SCAN_UP; dy >= -SCAN_DOWN; dy--) {
+                    int y = originY + dy;
+                    cursor.set(x, y, z);
+                    BlockState state = level.getBlockState(cursor);
+                    if (state.isAir()) {
+                        continue;
+                    }
+                    String name = BuiltInRegistries.BLOCK
+                            .getKey(state.getBlock()).toString();
+
+                    if (!haveSurface) {
+                        haveSurface = true;
+                        boolean solid = !state.getCollisionShape(level, cursor)
+                                .isEmpty();
+                        surface.add(Json.array(
+                                Integer.toString(x), Integer.toString(y),
+                                Integer.toString(z), Json.quote(name),
+                                Boolean.toString(solid)));
+                    }
+
+                    if (notable.size() < MAX_NOTABLE && isNotable(name)) {
+                        notable.add(Json.array(
+                                Integer.toString(x), Integer.toString(y),
+                                Integer.toString(z), Json.quote(name)));
+                    }
+                }
+            }
+        }
+
+        return new Terrain(Json.array(surface.toArray(new String[0])),
+                           Json.array(notable.toArray(new String[0])));
+    }
+
+    /**
+     * Is this block worth reporting individually?
+     *
+     * <p>Matched on the name rather than on a tag or class, so a modded log
+     * called {@code biomesoplenty:fir_log} is picked up without this mod
+     * knowing anything about that mod. The cost is the occasional false
+     * positive, which costs a wasted walk rather than a wrong belief.
+     */
+    private static boolean isNotable(String name) {
+        return name.endsWith("_log") || name.endsWith("_wood")
+                || name.endsWith("_ore") || name.contains("water")
+                || name.contains("lava") || name.endsWith("crafting_table")
+                || name.endsWith("furnace") || name.endsWith("chest");
     }
 
     private String targetBlockJson(Minecraft client) {
@@ -280,9 +414,46 @@ public class MarkLivBridge implements ClientModInitializer {
             }
             items.add(Json.object(
                     "name", Json.quote(entityName(entity)),
-                    "distance", Json.number(self.distanceTo(entity))));
+                    "distance", Json.number(self.distanceTo(entity)),
+                    "position", Json.array(Json.number(entity.getX()),
+                                           Json.number(entity.getY()),
+                                           Json.number(entity.getZ())),
+                    "category", Json.quote(categoryOf(entity))));
         }
         return Json.array(items.toArray(new String[0]));
+    }
+
+    /**
+     * Rough classification, from the game's own mob category.
+     *
+     * <p>Reported rather than derived on the Python side because the game
+     * already knows, and "is a drowned hostile" is the sort of question that
+     * gets answered wrongly by a name list. Anything that does not fit
+     * cleanly is "other" -- deliberately not "passive", because treating an
+     * unrecognised entity as safe is the mistake that matters.
+     */
+    private static String categoryOf(Entity entity) {
+        if (entity instanceof net.minecraft.world.entity.player.Player) {
+            return "player";
+        }
+        if (entity instanceof net.minecraft.world.entity.item.ItemEntity) {
+            return "item";
+        }
+        try {
+            var category = entity.getType().getCategory();
+            String name = category.getName();
+            if ("monster".equals(name)) {
+                return "hostile";
+            }
+            if ("creature".equals(name) || "ambient".equals(name)
+                    || "axolotls".equals(name) || "water_creature".equals(name)
+                    || "water_ambient".equals(name)) {
+                return "passive";
+            }
+            return name;
+        } catch (Throwable ignored) {
+            return "other";
+        }
     }
 
     private String inventoryJson(Inventory inventory) {

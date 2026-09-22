@@ -78,10 +78,59 @@ class EntityRef:
     name: str | None = None
     distance: float | None = None
     hostile: bool | None = None
+    position: tuple | None = None      # (x, y, z)
+    category: str | None = None        # hostile / passive / player / item
 
     def as_dict(self) -> dict:
         return {"name": self.name, "distance": self.distance,
-                "hostile": self.hostile}
+                "hostile": self.hostile, "position": self.position,
+                "category": self.category}
+
+
+@dataclass(frozen=True)
+class NearbyBlock:
+    """One block the game reported, at real world coordinates.
+
+    WHY NOT A VOXEL GRID
+        A dense array of the scanned volume would be several thousand entries
+        to say what a few hundred already say, and every absent entry would
+        have to mean something. A list of blocks that were actually SEEN
+        avoids inventing the rest: a coordinate missing from the list is one
+        nobody looked at, which is not the same as air and must not be
+        flattened into it.
+
+    `solid` is None when the game did not say. That is a third answer, not a
+    default of False -- "I do not know whether you can stand here" is exactly
+    what a path planner needs to hear before routing over it."""
+
+    x: int
+    y: int
+    z: int
+    name: str
+    solid: bool | None = None
+
+    @property
+    def position(self) -> tuple:
+        return (self.x, self.y, self.z)
+
+    @property
+    def column(self) -> tuple:
+        """The (x, z) footprint, which is what a path is planned over."""
+        return (self.x, self.z)
+
+    def distance_to(self, point) -> float:
+        """Straight-line distance from a position. Used for "nearest"."""
+        try:
+            dx = self.x - point[0]
+            dy = self.y - point[1]
+            dz = self.z - point[2]
+        except (TypeError, IndexError):
+            return float("inf")
+        return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+    def as_dict(self) -> dict:
+        return {"x": self.x, "y": self.y, "z": self.z, "name": self.name,
+                "solid": self.solid}
 
 
 @dataclass(frozen=True)
@@ -127,6 +176,13 @@ class WorldState:
     light_level: int | None = None         # 0-15
     nearby_entities: tuple | None = None   # tuple[EntityRef, ...]
 
+    # The ground underfoot and the things worth walking to. Both are lists of
+    # blocks that were actually observed — see NearbyBlock on why this is not
+    # a dense grid.
+    surface: tuple | None = None           # tuple[NearbyBlock, ...]
+    notable_blocks: tuple | None = None    # tuple[NearbyBlock, ...]
+    scan_radius: int | None = None         # how far the scan reached
+
     # Provenance — never None, because "where did this come from" always has
     # an answer even when every value is missing.
     source: str = "none"
@@ -143,7 +199,8 @@ class WorldState:
     _FIELDS = ("position", "rotation", "facing", "health", "hunger",
                "inventory", "selected_slot", "held_item", "target_block",
                "target_entity", "dimension", "biome", "weather",
-               "time_of_day", "light_level", "nearby_entities")
+               "time_of_day", "light_level", "nearby_entities",
+               "surface", "notable_blocks", "scan_radius")
 
     def __post_init__(self):
         """Normalise provenance, then freeze it.
@@ -235,7 +292,17 @@ class WorldState:
             return (f"I cannot read any game state yet ({why}). I can see the "
                     f"screen, but I do not know your position, health or "
                     f"inventory.")
-        parts = [f"{name}={getattr(self, name)} [{self.confidence_of(name)}]"
+        def _short(name):
+            value = getattr(self, name)
+            # The terrain lists are hundreds of entries. A planner reads them
+            # through the query helpers; a person reading this line wants to
+            # know only whether they arrived.
+            if name in ("surface", "notable_blocks", "nearby_entities",
+                        "inventory"):
+                return f"{len(value)} entries"
+            return value
+
+        parts = [f"{name}={_short(name)} [{self.confidence_of(name)}]"
                  for name in known]
         missing = self.unknown_fields()
         line = f"From {self.source}: " + ", ".join(parts)
@@ -303,6 +370,6 @@ def empty_state(note: str = "") -> WorldState:
 
 __all__ = [
     "WorldState", "StateSource", "VisionStateSource", "empty_state",
-    "BlockRef", "EntityRef", "ItemStack",
+    "BlockRef", "EntityRef", "ItemStack", "NearbyBlock",
     "UNKNOWN", "INFERRED", "EXACT", "CONFIDENCE_LEVELS",
 ]

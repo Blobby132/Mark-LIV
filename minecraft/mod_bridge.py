@@ -57,10 +57,20 @@ import os
 import time
 
 from minecraft.state import (
-    BlockRef, EXACT, EntityRef, ItemStack, WorldState, empty_state,
+    BlockRef, EXACT, EntityRef, ItemStack, NearbyBlock, WorldState,
+    empty_state,
 )
 
-SCHEMA = "markliv.minecraft.state/1"
+SCHEMA = "markliv.minecraft.state/2"
+
+SUPPORTED_SCHEMAS = frozenset({SCHEMA, "markliv.minecraft.state/1"})
+"""Schemas this reader understands.
+
+Version 1 is still accepted: it is the same document without the terrain
+fields, so an older mod jar left in a mods folder degrades to "no terrain"
+rather than to "no bridge at all". Reading it is safe precisely because the
+missing fields become None, which the provenance rule marks unknown -- the
+reader never has to guess what an older mod meant."""
 
 MAX_AGE_SECONDS = 3.0
 """How old a reading may be before it is treated as no reading at all.
@@ -188,8 +198,8 @@ class ModBridgeStateSource:
             return None
         if not isinstance(payload, dict):
             return None
-        if payload.get("schema") != SCHEMA:
-            # A different schema is a different contract. Guessing at it would
+        if payload.get("schema") not in SUPPORTED_SCHEMAS:
+            # An unknown schema is an unknown contract. Guessing at it would
             # be exactly the fabrication this subsystem refuses elsewhere.
             return None
         return payload
@@ -227,6 +237,11 @@ class ModBridgeStateSource:
             time_of_day=_integer(payload.get("time_of_day")),
             light_level=_integer(payload.get("light_level")),
             nearby_entities=_entities(payload.get("nearby_entities")),
+            surface=_blocks(payload.get("surface")),
+            notable_blocks=_blocks(payload.get("notable_blocks")),
+            scan_radius=_integer((payload.get("scan") or {}).get("radius")
+                                 if isinstance(payload.get("scan"), dict)
+                                 else None),
             source=self.name,
             confidence=EXACT,
             captured_at=self._clock() - age,
@@ -342,7 +357,47 @@ def _entity(value):
     name = _short_name(value.get("name"))
     if name is None:
         return None
-    return EntityRef(name=name, distance=_number(value.get("distance")))
+    category = _text(value.get("category"))
+    # hostile stays None for anything not clearly one or the other. Treating
+    # an unrecognised entity as safe is the mistake that matters, so the
+    # absence of a category is reported rather than resolved.
+    hostile = None
+    if category == "hostile":
+        hostile = True
+    elif category in ("passive", "player", "item"):
+        hostile = False
+    return EntityRef(name=name, distance=_number(value.get("distance")),
+                     position=_triple(value.get("position")),
+                     category=category, hostile=hostile)
+
+
+def _terrain_block(value):
+    """One entry of the terrain arrays: [x, y, z, name] or [.., solid].
+
+    An array rather than an object because there are several hundred of these
+    per payload and the keys would be most of the file. Anything that is not
+    that shape is dropped -- a half-read coordinate is worse than a missing
+    block, because a path would be planned over it."""
+    if not isinstance(value, (list, tuple)) or len(value) < 4:
+        return None
+    x, y, z = (_integer(v) for v in value[:3])
+    if None in (x, y, z):
+        return None
+    name = _short_name(value[3])
+    if name is None:
+        return None
+    solid = value[4] if len(value) > 4 and isinstance(value[4], bool) else None
+    return NearbyBlock(x=x, y=y, z=z, name=name, solid=solid)
+
+
+def _blocks(value):
+    """A terrain array. An empty list is a real reading -- a scan that found
+    nothing standable -- and must not collapse to None, which would mean the
+    scan did not happen."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    return tuple(b for b in (_terrain_block(v) for v in value)
+                 if b is not None)
 
 
 def _entities(value):

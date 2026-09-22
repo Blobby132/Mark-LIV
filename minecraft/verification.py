@@ -328,6 +328,111 @@ def _count_of(state: WorldState, item: str) -> int:
     return total
 
 
+def closer_to(goal, min_gain: float = 0.4) -> Expectation:
+    """The horizontal distance to a destination went down.
+
+    The check a navigation step actually needs, and not the same thing as
+    `moved`: walking two blocks into a wall at an angle moves you, and gets
+    you no nearer. Judged on X and Z only -- falling down a hole shortens the
+    3D distance to a target and is not progress towards it.
+
+    A failure here is informative rather than fatal. Rounding a corner means
+    stepping away from the goal on purpose, so the skill counts consecutive
+    failures instead of stopping on the first."""
+    try:
+        gx, gz = float(goal[0]), float(goal[-1])
+    except (TypeError, IndexError, ValueError):
+        gx = gz = 0.0
+
+    def flat(position) -> float:
+        try:
+            return math.dist((float(position[0]), float(position[2])), (gx, gz))
+        except Exception:
+            return 0.0
+
+    def predicate(before, after):
+        was, now = flat(before.position), flat(after.position)
+        gain = was - now
+        if gain >= min_gain:
+            return True, (f"closed {gain:.2f} blocks on ({gx:.0f}, {gz:.0f}); "
+                          f"{now:.1f} to go.")
+        if gain > 0:
+            return False, (f"closed only {gain:.2f} blocks, less than the "
+                           f"{min_gain} that counts as progress; {now:.1f} "
+                           f"to go.")
+        return False, (f"got {abs(gain):.2f} blocks further from "
+                       f"({gx:.0f}, {gz:.0f}); {now:.1f} away now.")
+
+    return Expectation(name="closer_to", goal=f"get closer to ({gx:.0f}, {gz:.0f})",
+                       fields=("position",), predicate=predicate)
+
+
+def arrived_at(goal, within: float = 1.5) -> Expectation:
+    """Standing at a destination, horizontally, within a tolerance.
+
+    `within` defaults above one block because a player's position is the
+    centre of their body, and stopping on the exact centre of a target column
+    is not something keyboard-length movement can promise."""
+    try:
+        gx, gz = float(goal[0]), float(goal[-1])
+    except (TypeError, IndexError, ValueError):
+        gx = gz = 0.0
+
+    def predicate(before, after):
+        try:
+            now = math.dist((float(after.position[0]),
+                             float(after.position[2])), (gx, gz))
+        except Exception:
+            return False, "the position was not a usable (x, y, z)."
+        if now <= within:
+            return True, f"standing {now:.2f} blocks from ({gx:.0f}, {gz:.0f})."
+        return False, f"still {now:.2f} blocks from ({gx:.0f}, {gz:.0f})."
+
+    return Expectation(name="arrived_at", goal=f"reach ({gx:.0f}, {gz:.0f})",
+                       fields=("position",), predicate=predicate)
+
+
+def block_gone(position, name: str | None = None) -> Expectation:
+    """A block that the scan reported at a coordinate is no longer there.
+
+    THE STRONGEST EVIDENCE THIS SYSTEM HAS THAT SOMETHING BROKE
+        `block_broken` asks what is under the crosshair, which changes when
+        you move the mouse as readily as when a block breaks. This asks
+        whether a specific coordinate still holds a specific block, which
+        only stops being true when the block actually goes.
+
+        It is still not proof the item was picked up — that is what
+        `collected` is for. A log broken over lava is gone from the scan and
+        never reaches the inventory."""
+    try:
+        where = (int(position[0]), int(position[1]), int(position[2]))
+    except (TypeError, IndexError, ValueError):
+        where = None
+
+    def at(state):
+        for block in (getattr(state, "notable_blocks", None) or ()):
+            if (block.x, block.y, block.z) == where:
+                return block
+        return None
+
+    def predicate(before, after):
+        if where is None:
+            return False, f"{position!r} is not a block coordinate."
+        was, now = at(before), at(after)
+        if was is None:
+            return False, (f"there was no block recorded at "
+                           f"{where} to begin with, so nothing can have "
+                           f"broken there.")
+        if now is None:
+            return True, f"the {was.name} at {where} is gone."
+        if name and now.name != name:
+            return True, (f"{where} changed from {was.name} to {now.name}.")
+        return False, f"the {now.name} at {where} is still there."
+
+    return Expectation(name="block_gone", goal="break the block",
+                       fields=("notable_blocks",), predicate=predicate)
+
+
 def unverifiable(goal: str, reason: str,
                  delivered: bool = False) -> Verification:
     """A verdict for an action with no expectation attached.
@@ -344,4 +449,5 @@ __all__ = [
     "SUCCESS", "FAILED", "UNVERIFIABLE", "STATUSES",
     "moved", "stayed_within", "turned", "block_broken", "looking_at",
     "target_changed", "holding_slot", "collected", "unverifiable",
+    "closer_to", "arrived_at", "block_gone",
 ]

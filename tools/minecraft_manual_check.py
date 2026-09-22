@@ -34,9 +34,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import ocr as core_ocr                      # noqa: E402
 from minecraft import process as mc_process          # noqa: E402
+from minecraft import navigation as mc_nav          # noqa: E402
 from minecraft import skills as mc_skills            # noqa: E402
 from minecraft.controller import MinecraftController  # noqa: E402
 from minecraft.debug_overlay import DebugOverlayStateSource  # noqa: E402
+from minecraft.mod_bridge import ModBridgeStateSource  # noqa: E402
 from minecraft.observation import Observer            # noqa: E402
 from minecraft.state import VisionStateSource         # noqa: E402
 from minecraft.task_runner import TaskRunner          # noqa: E402
@@ -470,6 +472,131 @@ def main() -> int:
             record("interact", worked and result.ok)
         else:
             record("interact", False, "skipped")
+
+        # ── Navigation, which only means anything with the mod running ──────
+        heading("Can I see the world around you?")
+        print("  This needs the bridge mod. Without it every step below is")
+        print("  skipped, because navigating on a map you cannot read is")
+        print("  guessing, and the code refuses to do it.")
+        world_source = ModBridgeStateSource()
+        world = world_source.read()
+        local = mc_nav.LocalMap.from_state(world)
+        if local.usable:
+            summary = mc_nav.summarise(world)
+            print(f"  Scan: {summary['columns_seen']} columns within "
+                  f"{summary.get('scan_radius')} blocks.")
+            for key, value in sorted(summary.items()):
+                if key.startswith("nearest_"):
+                    print(f"    {key}: {value}")
+            right = ask("Does that match what is actually around you?")
+            record("terrain scan", right,
+                   "" if right else "the scan disagrees with the game — "
+                                    "check the mod version against the "
+                                    "Minecraft version")
+        else:
+            print(f"  {world_source.unavailable_reason()}")
+            record("terrain scan", False, "the bridge mod is not reporting "
+                                          "terrain; navigation steps skipped")
+
+        if local.usable:
+            heading("Walk to a coordinate")
+            print("  I will pick a walkable spot about 6 blocks away and")
+            print("  route to it, going round anything in the way.")
+            here = (local.origin[0], local.origin[2])
+            options = [c for c in local.ground
+                       if 5 <= abs(c[0] - here[0]) + abs(c[1] - here[1]) <= 8
+                       and local.standable(*c)
+                       and mc_nav.find_path(world, c).found]
+            if not options:
+                record("navigate to a coordinate", False,
+                       "nothing 5-8 blocks away is both walkable and "
+                       "reachable — try somewhere more open")
+            elif ask(f"Walk to {options[0]}?") and ensure_session(controller):
+                skill = mc_skills.create("navigate_to",
+                                         destination=options[0])
+                runner = TaskRunner(controller, world_source,
+                                    observer=observer)
+                countdown(3, "Walking in:")
+                result = runner.run(skill)
+                for entry in result.records:
+                    print(f"    {entry.index + 1}. {entry.step['action']:<5} "
+                          f"{entry.verification['status']:<12} "
+                          f"{entry.step['note']}")
+                print(f"  {result.describe()}")
+                print(f"  Skill says: {skill.done_reason}")
+                arrived = ask("Did your character actually walk there?")
+                record("navigate to a coordinate", arrived and not skill.failed,
+                       "" if arrived else "it did not arrive — compare the "
+                                          "per-step notes above against what "
+                                          "you saw")
+            else:
+                record("navigate to a coordinate", False, "skipped")
+
+            heading("Does it turn the right way?")
+            print("  The pixels-per-degree figure and the sign of the turn")
+            print("  are DERIVED, not measured — they depend on your mouse")
+            print("  sensitivity. The skill corrects itself after one bad")
+            print("  turn, but a big correction here means the default is")
+            print("  wrong for your setup and every turn costs an extra step.")
+            print(f"  Current default: {mc_nav.PIXELS_PER_DEGREE} px/degree.")
+            if ask("Measure it? I will turn, then read how far you turned.") \
+                    and ensure_session(controller):
+                before = world_source.read()
+                countdown(2, "Turning in:")
+                controller.look({"dx": 400, "dy": 0})
+                time.sleep(0.4)
+                after = world_source.read()
+                try:
+                    turned = abs(mc_nav.yaw_difference(before.rotation[0],
+                                                       after.rotation[0]))
+                except Exception:
+                    turned = 0.0
+                if turned > 0.5:
+                    measured = 400.0 / turned
+                    print(f"  400 pixels turned you {turned:.1f}° "
+                          f"= {measured:.2f} px/degree.")
+                    close = abs(measured - mc_nav.PIXELS_PER_DEGREE) < 2.0
+                    record("turn calibration", close,
+                           "" if close else
+                           f"set PIXELS_PER_DEGREE in minecraft/navigation.py "
+                           f"to about {measured:.1f} for this machine")
+                else:
+                    record("turn calibration", False,
+                           "the view did not turn measurably")
+            else:
+                record("turn calibration", False, "skipped")
+
+            heading("Collect a log, with the map")
+            print("  With the scan running this should WALK to a tree rather")
+            print("  than turn on the spot. If it spins, that is the bug.")
+            tree = mc_nav.nearest_block(world, "log", reachable_only=True)
+            if tree is None:
+                seen = mc_nav.nearest_block(world, "log")
+                record("collect one log", False,
+                       "no reachable tree in the scan"
+                       + (f" (nearest seen: {seen.name} at {seen.position}, "
+                          f"no route)" if seen else ""))
+            elif ask(f"Collect one {tree.name} at {tree.position}?") \
+                    and ensure_session(controller):
+                skill = mc_skills.create("collect_logs", count=1)
+                runner = TaskRunner(controller, world_source,
+                                    observer=observer)
+                countdown(3, "Starting in:")
+                result = runner.run(skill)
+                for entry in result.records:
+                    print(f"    {entry.index + 1}. {entry.step['action']:<5} "
+                          f"{entry.verification['status']:<12} "
+                          f"{entry.step['note']}")
+                print(f"  {result.describe()}")
+                print(f"  Skill says: {skill.done_reason}")
+                walked = ask("Did it WALK to the tree (not just turn)?")
+                broke = ask("Did a log actually break?")
+                record("collect one log", walked and broke and not skill.failed,
+                       "" if (walked and broke) else
+                       "walked=%s broke=%s — the per-step notes say which "
+                       "half failed" % (walked, broke))
+            else:
+                record("collect one log", False, "skipped")
 
         heading("Emergency stop")
         print(f"  {controller.emergency.describe()}")

@@ -36,6 +36,8 @@ ADAPTER = Path("actions/minecraft.py")
 ALLOWED_STDLIB = frozenset({
     "__future__", "atexit", "ctypes", "dataclasses", "io", "os", "platform",
     "threading", "time", "typing", "uuid", "json", "math", "enum", "re",
+    # A priority queue, for the pathfinder. Pure computation, no reach.
+    "heapq",
     # MappingProxyType, to freeze a WorldState's per-field provenance so a
     # snapshot cannot be edited after the fact.
     "types",
