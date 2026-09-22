@@ -71,16 +71,28 @@ from minecraft.errors import InvalidAction
 from minecraft.progress import ProgressMonitor
 from minecraft.state import empty_state
 
-MAX_TASK_STEPS = 20
+MAX_TASK_STEPS = 45
 """Hard ceiling on steps in one task. Not a parameter, not configurable from a
-tool call: a caller may ask for FEWER, never more."""
+tool call: a caller may ask for FEWER, never more.
+
+WHY IT MOVED FROM TWENTY
+    Twenty was set when a task meant a few swings on the spot. A task that
+    WALKS somewhere spends steps differently: turn, move, observe, repeat,
+    and collecting four logs from four different trees is a dozen short
+    journeys. Twenty made "collect some wood" end mid-job, reporting three of
+    four, which reads as a failure and was really a budget.
+
+    Raising it does not widen what a task may do. Every step is still one
+    bounded action validated by `action_spec`, the guard still runs before
+    each one, and MAX_TASK_SECONDS still ends the whole thing after two
+    minutes -- which is the binding limit for anything that walks, and the
+    one that actually protects the person."""
 
 MAX_TASK_SECONDS = 120.0
 """Wall-clock ceiling on one task, independent of the step limit.
 
-Both are needed and neither implies the other. Twenty steps of bounded moves
-is under a minute; twenty steps that each wait on a slow screen capture is
-several. A task that has been running for two minutes has outlived the
+Both are needed and neither implies the other. Forty bounded moves is around
+a minute; forty steps that each wait on a slow screen capture is several. A task that has been running for two minutes has outlived the
 attention of whoever asked for it, whatever its step count says."""
 
 MAX_REPLANS = 2
@@ -345,7 +357,33 @@ class TaskRunner:
 
             self._sleep(self._interval)
 
-        return self._result(INCOMPLETE, goal, STEP_LIMIT, records, state)
+        # Out of steps. Give the skill one last look at the record before it
+        # is asked what happened: it counts its progress at the START of each
+        # plan(), so without this the final step's verdict is never counted
+        # and a task that broke its fourth log reports three.
+        self._account(skill, state, records)
+        reason = STEP_LIMIT
+        summary = getattr(skill, "done_reason", "")
+        if summary:
+            reason = f"{STEP_LIMIT}: {summary}"
+        return self._result(INCOMPLETE, goal, reason, records, state)
+
+    @staticmethod
+    def _account(skill, state, records) -> None:
+        """Let a skill count the last step before it reports.
+
+        Optional: a skill without `account_for` is unaffected. It exists
+        because "how many did I get" is answered from the record, and the
+        record gains one more entry after the last plan() call."""
+        hook = getattr(skill, "account_for", None)
+        if not callable(hook):
+            return
+        try:
+            hook(state, tuple(records))
+        except Exception:
+            # A skill that cannot tally is still a skill that ran. Its own
+            # report will be stale, which is better than losing the records.
+            pass
 
     # ── one step ─────────────────────────────────────────────────────────────
 

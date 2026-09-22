@@ -39,6 +39,7 @@ EVERY SKILL DECLARES WHAT IT CANNOT VERIFY
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -460,6 +461,7 @@ class NavigateTo:
     _hopped: bool = False
     _look_sign: int = 1
     _aiming_at: float | None = None
+    _skip_to: int = 0
     _seen_at: tuple | None = None
     _left_to_go: float | None = None
     _blind: bool = False
@@ -626,31 +628,49 @@ class NavigateTo:
             self._stalls += 1
 
     def _check_turn_direction(self, record) -> None:
-        """If a turn made the aim worse, turn the other way from now on.
+        """Watch one real turn and learn from it: which way, and how far.
 
         WHY THIS EXISTS
             How many pixels of mouse movement make a degree depends on the
-            player's sensitivity setting, and which SIGN turns which way is a
+            player's sensitivity slider, and which SIGN turns which way is a
             convention two layers apart — Minecraft's yaw and the operating
-            system's mouse deltas — that nothing in the bridge confirms.
+            system's mouse deltas — that nothing in the bridge reports.
 
-            Get the sign wrong and every correction doubles the error: the
-            agent spins, forever, looking exactly like a pathfinding bug. So
-            rather than trust the convention, the skill measures one turn and
-            believes the measurement."""
+            Guess the sign wrong and every correction doubles the error: the
+            agent spins forever, looking exactly like a pathfinding bug.
+            Guess the scale wrong and it overshoots every heading and spends
+            its whole step budget correcting.
+
+            So neither is guessed for longer than one turn. The first turn of
+            a walk is a measurement, and everything after it uses what was
+            measured on THIS machine."""
         if self._aiming_at is None:
             return
         try:
             was = record.state_before["rotation"][0]
             now = record.state_after["rotation"][0]
-        except (KeyError, TypeError, IndexError):
+            asked = float(record.step["params"].get("dx", 0))
+        except (KeyError, TypeError, IndexError, ValueError):
             return
         if was is None or now is None:
             return
-        before = abs(nav.yaw_difference(was, self._aiming_at))
-        after = abs(nav.yaw_difference(now, self._aiming_at))
-        if after > before + 2.0:
+
+        # What actually reached the game: the action spec clamps a big turn,
+        # and measuring against the unclamped request would read as a
+        # sensitivity several times too high.
+        sent = max(-action_spec.MAX_LOOK_DELTA_PX,
+                   min(asked, action_spec.MAX_LOOK_DELTA_PX))
+        turned = nav.yaw_difference(was, now)
+        wanted = nav.yaw_difference(was, self._aiming_at)
+
+        if abs(wanted) < 3.0 or abs(turned) < 1.0:
+            return
+        if (turned > 0) != (wanted > 0):
+            # It went the wrong way. Flip, and do not measure a scale from a
+            # turn whose direction was wrong.
             self._look_sign = -self._look_sign
+            return
+        nav.calibrate(sent, turned)
 
     def _follow_path(self, state, local):
         if self._needs_new_path(state, local):
@@ -660,7 +680,7 @@ class NavigateTo:
                 self._stopped = self._path.reason
                 return None
 
-        waypoint = self._next_waypoint()
+        waypoint = self._next_waypoint(local, state)
         if waypoint is None:
             return None
 
@@ -699,7 +719,7 @@ class NavigateTo:
             )
 
         self._aiming_at = None
-        self._walked += 1
+        self._walked = max(self._walked + 1, self._skip_to + 1)
         gap = self._gap_to(here, waypoint)
         return Step(
             action="move",
@@ -737,12 +757,38 @@ class NavigateTo:
             return True
         return False
 
-    def _next_waypoint(self):
-        """The first waypoint that is not the one we are standing on."""
+    def _next_waypoint(self, local=None, state=None):
+        """Where to actually walk next.
+
+        Not simply "the next waypoint": A* hands back a chain of one-block
+        hops, and walking them one at a time costs a step per block — which
+        is what made a fifteen-block stroll hit the task limit having barely
+        moved. When several waypoints lie on a clear straight line, this
+        returns the furthest of them, and one two-second move replaces eight
+        short ones.
+
+        Falls back to the plain next waypoint when there is no map to check
+        the line against."""
         if self._path is None or not self._path.waypoints:
             return None
         index = min(self._walked, len(self._path.waypoints) - 1)
-        return self._path.waypoints[index]
+        if local is None or state is None:
+            return self._path.waypoints[index]
+
+        try:
+            here = (int(math.floor(state.position[0])),
+                    int(math.floor(state.position[2])))
+        except (TypeError, IndexError, ValueError):
+            return self._path.waypoints[index]
+
+        far, far_index = nav.furthest_clear(local, here,
+                                            self._path.waypoints, index)
+        if far is None:
+            return self._path.waypoints[index]
+        # Remember how many waypoints this move consumes, so the next call
+        # does not re-walk ground already covered.
+        self._skip_to = far_index
+        return far
 
     @staticmethod
     def _gap_to(here, waypoint) -> float:
@@ -900,6 +946,15 @@ class CollectLogs:
         if not crosshair_readable:
             return None
         return self._work_from_the_crosshair(state)
+
+    def account_for(self, state, history) -> None:
+        """Count the final step before reporting.
+
+        The runner calls this when it runs out of steps. Progress is tallied
+        at the start of each plan(), so the last step's verdict would
+        otherwise never be counted — and a run that broke its fourth log
+        would say it broke three."""
+        self._count_progress(state, history)
 
     def _count_progress(self, state, history) -> None:
         self._can_count = state.confidence_of("inventory") != UNKNOWN

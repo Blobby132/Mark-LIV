@@ -277,7 +277,9 @@ JARVIS can observe and play Minecraft Java Edition, inside a bounded, revocable 
 
 **What it can do now.** Walk, turn, jump, sneak, sprint, select a hotbar slot, mine, place, interact, eat, drop, open the inventory. Run bounded multi-step tasks that observe and **verify** between every step: `walk_forward`, `survey`, `find_block`, `break_block`, `place_block`, `collect_logs`, `navigate_to`.
 
-**Navigation.** With the mod running, `navigate_to` reads the terrain scan, runs A\* over it, and walks the route — stepping up one block, dropping at most three, refusing diagonals that clip a corner. `look_around` answers "what is near me" in a sentence with coordinates, so the model never sees raw voxel data.
+**Navigation.** With the mod running, `navigate_to` reads the terrain scan, runs A\* over it, and walks the route — stepping up one block, dropping at most three, refusing diagonals that clip a corner. Straight stretches collapse into single long moves rather than one step per block, so crossing the scan costs three steps instead of nine. `look_around` answers "what is near me" in a sentence with coordinates, so the model never sees raw voxel data.
+
+**It measures your mouse.** How many pixels of movement make a degree depends on your sensitivity slider, which nothing in the bridge reports. Rather than trust a constant, the first turn of a walk is a measurement: if it went the wrong way the sign flips, and the scale it observed is what every later turn uses.
 
 An unknown column is **not** treated as air. A spot the scan did not reach is impassable, a destination outside the scan is refused rather than walked towards hopefully, and a tree behind a ravine comes back as "I can see it, there is no route" — not as a plan.
 

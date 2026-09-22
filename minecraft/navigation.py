@@ -56,6 +56,14 @@ MAX_NODES = 4000
 """Ceiling on A* expansions. The scan is ~441 columns, so a genuine search
 never comes close; this exists so a bug cannot spin."""
 
+MAX_SMOOTHING = 12
+"""How many waypoints ahead to consider collapsing into one move.
+
+Bounded because the check costs a line trace per candidate, and because a
+move longer than a couple of seconds is refused by the action spec anyway --
+looking twenty blocks ahead would only ever produce a step that gets
+shortened."""
+
 MAX_PATH_LENGTH = 64
 """Longest route returned. A path longer than the scan radius would be
 mostly invention anyway."""
@@ -195,6 +203,38 @@ class LocalMap:
         # Climbing costs more than flat ground: given two routes a player
         # would take the level one.
         return base + (0.5 if climb > 0 else 0.0)
+
+    def line_is_walkable(self, start: tuple, end: tuple) -> bool:
+        """Can you walk the straight line between two columns?
+
+        Used to collapse a route into the few long moves a person would
+        actually make. A* returns a chain of one-block hops because that is
+        what the grid is made of; walking them one at a time spends a step
+        per block and makes a fifteen-block stroll hit the task limit.
+
+        Sampled at half-block intervals rather than by Bresenham, because
+        what matters is the columns a moving player's body passes through,
+        and a line clipping the corner of a column still has to survive it."""
+        x0, z0 = start
+        x1, z1 = end
+        dx, dz = x1 - x0, z1 - z0
+        steps = int(max(abs(dx), abs(dz)) * 2)
+        if steps <= 0:
+            return True
+
+        previous = (x0, z0)
+        for i in range(1, steps + 1):
+            column = (int(round(x0 + dx * i / steps)),
+                      int(round(z0 + dz * i / steps)))
+            if column == previous:
+                continue
+            # Consecutive samples can be diagonal; step_cost applies the same
+            # climb and drop rules the search itself used, so a smoothed line
+            # can never be one the pathfinder would have refused.
+            if self.step_cost(previous, column) is None:
+                return False
+            previous = column
+        return True
 
     def neighbours(self, column: tuple):
         """Passable neighbours, with costs. Diagonals need both orthogonals
@@ -347,6 +387,30 @@ def _build(local: LocalMap, came_from: dict, end: tuple,
                 truncated=truncated)
 
 
+def furthest_clear(local: "LocalMap", here: tuple, waypoints, start: int = 0,
+                   look_ahead: int = MAX_SMOOTHING):
+    """The furthest waypoint reachable from `here` in a straight line.
+
+    This is what turns "a route of 14 one-block hops" into "walk that way for
+    two seconds". It never invents a shortcut the pathfinder would have
+    refused: every column on the line is checked with the same rules the
+    search used, so smoothing can only ever collapse steps, never relax them.
+
+    Returns (waypoint, index) or (None, start) when nothing is walkable --
+    including the next one, which means the world changed and the caller
+    should path again."""
+    best = None
+    best_index = start
+    limit = min(len(waypoints), start + max(1, look_ahead))
+    for index in range(start, limit):
+        candidate = waypoints[index]
+        column = (int(candidate[0]), int(candidate[2]))
+        if not local.line_is_walkable(here, column):
+            break
+        best, best_index = candidate, index
+    return best, best_index
+
+
 # ── Heading ──────────────────────────────────────────────────────────────────
 #
 # All yaw arithmetic lives here. Minecraft's yaw is 0 at south (+Z) and
@@ -366,6 +430,59 @@ A CALIBRATION, NOT A CONSTANT
     rotation after every turn: an overshoot becomes a smaller correction
     rather than a permanent error. It is written down here, once, so that when
     somebody calibrates it properly there is exactly one number to change."""
+
+
+# The measured figure for THIS machine, learned from watching real turns.
+# None until something has measured one.
+_measured_px_per_degree = None
+
+MIN_PX_PER_DEGREE = 0.5
+MAX_PX_PER_DEGREE = 60.0
+
+
+def pixels_per_degree() -> float:
+    """What to actually use: the measured figure if there is one.
+
+    PIXELS_PER_DEGREE is the starting guess. This is what replaces it once a
+    real turn has been watched, which is the only way to know -- the figure
+    depends on a sensitivity slider nothing in the bridge reports."""
+    return _measured_px_per_degree or PIXELS_PER_DEGREE
+
+
+def calibrate(pixels_sent: float, degrees_turned: float):
+    """Learn the mouse scale from one observed turn, or ignore it.
+
+    Returns the new figure, or None when the turn was not worth measuring.
+
+    DELIBERATELY UNFUSSY
+        Both readings are rounded (the game reports yaw to a few decimals,
+        and the mouse moves in whole pixels), so a tiny turn measures
+        terribly. Anything under a few degrees or a few dozen pixels is
+        thrown away rather than averaged in.
+
+        The result is clamped to a sane range, because the failure this
+        guards against is not a slightly wrong number -- it is one absurd
+        reading (a turn that coincided with the player moving their own
+        mouse) permanently poisoning every later turn."""
+    global _measured_px_per_degree
+    if abs(degrees_turned) < 3.0 or abs(pixels_sent) < 40.0:
+        return None
+    measured = abs(pixels_sent) / abs(degrees_turned)
+    if not MIN_PX_PER_DEGREE <= measured <= MAX_PX_PER_DEGREE:
+        return None
+    if _measured_px_per_degree is None:
+        _measured_px_per_degree = measured
+    else:
+        # Blended, so one odd reading moves it rather than replacing it.
+        _measured_px_per_degree = (_measured_px_per_degree * 0.5
+                                   + measured * 0.5)
+    return _measured_px_per_degree
+
+
+def reset_calibration() -> None:
+    """Forget what was measured. For tests, and for a fresh session."""
+    global _measured_px_per_degree
+    _measured_px_per_degree = None
 
 
 def yaw_to(origin, target) -> float:
@@ -412,7 +529,7 @@ def pitch_to(origin, target, eye_height: float = EYE_HEIGHT) -> float:
 
 
 def aim_at(position, rotation, target,
-           pixels_per_degree: float = PIXELS_PER_DEGREE) -> tuple:
+           px_per_degree: float | None = None) -> tuple:
     """Mouse (dx, dy) that points the crosshair at a block, and the error
     in degrees that remains to be corrected.
 
@@ -429,25 +546,27 @@ def aim_at(position, rotation, target,
     dyaw = yaw_difference(yaw_now, yaw_wanted)
     dpitch = pitch_wanted - pitch_now
 
-    return (int(round(dyaw * pixels_per_degree)),
-            int(round(dpitch * pixels_per_degree)),
+    scale = pixels_per_degree() if px_per_degree is None else px_per_degree
+    return (int(round(dyaw * scale)), int(round(dpitch * scale)),
             math.hypot(dyaw, dpitch))
 
 
 def look_delta_for(current_yaw: float, desired_yaw: float,
-                   pixels_per_degree: float = PIXELS_PER_DEGREE) -> int:
+                   px_per_degree: float | None = None) -> int:
     """Mouse dx that turns from one yaw to another.
 
     Positive dx turns right, which is increasing yaw in Minecraft's
     convention."""
-    return int(round(yaw_difference(current_yaw, desired_yaw)
-                     * pixels_per_degree))
+    scale = pixels_per_degree() if px_per_degree is None else px_per_degree
+    return int(round(yaw_difference(current_yaw, desired_yaw) * scale))
 
 
 __all__ = [
     "LocalMap", "Path", "find_path",
     "yaw_to", "yaw_difference", "look_delta_for", "PIXELS_PER_DEGREE",
     "pitch_to", "aim_at", "EYE_HEIGHT",
+    "pixels_per_degree", "calibrate", "reset_calibration",
+    "line_is_walkable" if False else "furthest_clear", "MAX_SMOOTHING",
     "MAX_STEP_UP", "MAX_DROP", "MAX_NODES", "MAX_PATH_LENGTH",
     "HAZARDS", "LIQUIDS", "LOG_BLOCKS", "CATEGORIES",
 ]

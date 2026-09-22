@@ -37,6 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from minecraft import action_spec                                    # noqa: E402
 from minecraft import navigation as nav                               # noqa: E402
 from minecraft import skills, verification as verify_mod              # noqa: E402
 from minecraft.controller import ActionResult                          # noqa: E402
@@ -173,6 +174,10 @@ class PathfindingTests(unittest.TestCase):
 
 class HeadingTests(unittest.TestCase):
 
+    def setUp(self):
+        nav.reset_calibration()
+        self.addCleanup(nav.reset_calibration)
+
     def test_yaw_matches_minecraft_convention(self):
         """0 = south (+Z), 90 = west (-X), ±180 = north (-Z), -90 = east."""
         origin = (0.0, 64.0, 0.0)
@@ -302,13 +307,24 @@ class SimWorld:
                             actual_duration_ms=ms)
 
     def look(self, params):
-        self.yaw = ((self.yaw + params.get("dx", 0) / nav.PIXELS_PER_DEGREE
+        # The real controller runs every look through action_spec, which
+        # clamps the delta. Without clamping here the simulation accepts
+        # turns the game would never receive, and anything measuring its own
+        # turns reads a sensitivity that does not exist.
+        dx = self._clamp(params.get("dx", 0))
+        dy = self._clamp(params.get("dy", 0))
+        self.yaw = ((self.yaw + dx / nav.PIXELS_PER_DEGREE
                      + 180.0) % 360.0) - 180.0
         # Positive dy is mouse-down, which is looking down, which is
         # increasing pitch. Clamped as the game clamps it.
-        self.pitch = max(-90.0, min(90.0, self.pitch + params.get("dy", 0)
-                                    / nav.PIXELS_PER_DEGREE))
+        self.pitch = max(-90.0, min(90.0,
+                                    self.pitch + dy / nav.PIXELS_PER_DEGREE))
         return self._result("look", params)
+
+    @staticmethod
+    def _clamp(value):
+        return max(-action_spec.MAX_LOOK_DELTA_PX,
+                   min(value, action_spec.MAX_LOOK_DELTA_PX))
 
     def move(self, params):
         seconds = float(params.get("duration", 0.5))
@@ -337,6 +353,10 @@ class SimWorld:
 
 
 def run(world, skill, max_steps=40):
+    # The measured mouse scale is process-wide on purpose — one machine, one
+    # sensitivity slider — so a test that measures it would otherwise change
+    # the arithmetic every later test sees.
+    nav.reset_calibration()
     runner = TaskRunner(world, world, sleeper=lambda _s: None)
     return runner.run(skill, max_steps=max_steps)
 
@@ -457,7 +477,7 @@ class NavigateToTests(unittest.TestCase):
         surface = wall_at(flat(radius=8), x=3, gap_z=8)
         world = SimWorld(surface, position=(-6.5, 64.0, -6.5))
         first = skills.create("navigate_to", destination=(8, -8))
-        run(world, first, max_steps=40)
+        run(world, first, max_steps=3)          # deliberately too few
         self.assertTrue(first.failed)
         self.assertIn("blocks short of", first.done_reason)
         self.assertIn("carries on", first.done_reason)
@@ -466,11 +486,65 @@ class NavigateToTests(unittest.TestCase):
         # Running it again picks up from the new position and gets closer.
         for _ in range(3):
             again = skills.create("navigate_to", destination=(8, -8))
-            run(world, again, max_steps=40)
+            run(world, again, max_steps=3)
             if not again.failed:
                 break
         self.assertLess(math.dist((world.x, world.z), (8.5, -7.5)),
                         stopped_at, "a second run made no ground")
+
+    def test_a_straight_line_is_one_move_not_one_per_block(self):
+        """The bug that made the step limit bite.
+
+        A* returns one-block hops because that is what the grid is made of.
+        Walking them individually spent a step per block, so an eleven-block
+        stroll used nine steps of a twenty-step budget having done nothing
+        interesting. A clear straight line is one move."""
+        world = SimWorld(flat(radius=8))
+        result = run(world, skills.create("navigate_to", destination=(8, 8)))
+        moves = [r for r in result.records if r.step["action"] == "move"]
+        self.assertLessEqual(len(moves), 3,
+                             f"{len(moves)} moves to walk a straight line")
+        self.assertLess(world.distance_to((8, 8)), 2.0)
+
+    def test_smoothing_never_cuts_through_something_solid(self):
+        """Collapsing waypoints must not relax the rules the search used.
+
+        The whole value of the pathfinder is that it refuses routes a player
+        cannot walk; a shortcut that ignores the wall would hand that back."""
+        surface = wall_at(flat(radius=8), x=3, gap_z=8)
+        local = nav.LocalMap.from_state(state_from(surface))
+        # Straight across the wall line, away from the gap.
+        self.assertFalse(local.line_is_walkable((0, 0), (6, 0)))
+        # Along the open side.
+        self.assertTrue(local.line_is_walkable((-6, 0), (-1, 0)))
+        # Through the gap at z=8.
+        self.assertTrue(local.line_is_walkable((1, 8), (5, 8)))
+
+    def test_it_measures_the_mouse_instead_of_trusting_the_default(self):
+        """A machine whose sensitivity is nothing like the default.
+
+        SimWorld here turns a quarter as far per pixel as navigation.py
+        assumes. Without calibration every heading undershoots and the walk
+        spends its budget correcting; with it, the second turn is right."""
+        class Heavy(SimWorld):
+            SCALE = 4.0          # four times as many pixels per degree
+
+            def look(self, params):
+                # Clamp first, exactly as the real path does, THEN apply this
+                # machine's heavier sensitivity to what actually arrives.
+                params = {"dx": self._clamp(params.get("dx", 0)) / self.SCALE,
+                          "dy": self._clamp(params.get("dy", 0)) / self.SCALE}
+                return SimWorld.look(self, params)
+
+        world = Heavy(flat(radius=8))
+        skill = skills.create("navigate_to", destination=(6, 6))
+        result = run(world, skill)
+        self.addCleanup(nav.reset_calibration)
+        self.assertAlmostEqual(nav.pixels_per_degree(),
+                               nav.PIXELS_PER_DEGREE * Heavy.SCALE,
+                               delta=8.0)
+        self.assertFalse(skill.failed, result.reason)
+        self.assertLess(world.distance_to((6, 6)), 2.0)
 
     def test_standing_off_the_map_is_a_different_answer_from_no_route(self):
         """The scan is centred on the player, so this should not happen. If
@@ -603,6 +677,22 @@ class CollectLogsWithAMapTests(unittest.TestCase):
         self.assertLess(result.steps_taken, 20,
                         "it kept walking at a tree it was never reaching")
         self.assertIn("no closer", skill.done_reason)
+
+    def test_the_last_log_is_counted_even_at_the_step_limit(self):
+        """Progress is tallied at the start of each plan(), so the final
+        step's verdict lands after the last tally. Without a final
+        accounting, a run that broke its fourth log reports three — which
+        reads as a failure and is really an off-by-one."""
+        logs = [NearbyBlock(4, 64, 0, "oak_log", True),
+                NearbyBlock(-4, 64, 0, "oak_log", True)]
+        world = TreeWorld(flat(), logs)
+        skill = skills.create("collect_logs", count=2)
+        # Exactly enough steps to break both and not one more.
+        probe = run(TreeWorld(flat(), list(logs)),
+                    skills.create("collect_logs", count=2), max_steps=45)
+        result = run(world, skill, max_steps=probe.steps_taken)
+        self.assertEqual(len(world.broken), 2)
+        self.assertIn("2 of 2", skill.done_reason)
 
     def test_it_says_so_when_the_scan_shows_no_trees(self):
         world = TreeWorld(flat(), [])
