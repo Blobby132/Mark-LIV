@@ -107,6 +107,14 @@ That is not hypothetical -- it is what collect_logs did, sweeping twenty times
 for a log it could not see, because its replan handed back the sweep it was
 already doing."""
 
+FRESH_STATE_TIMEOUT_S = 0.6
+"""Longest to wait for the bridge to publish a snapshot newer than the action.
+
+Comfortably over the mod's 200ms publishing interval, and bounded so a mod
+that has stopped writing costs one step rather than the whole task."""
+
+FRESH_STATE_POLL_S = 0.02
+
 MIN_OBSERVATION_INTERVAL_S = 0.25
 """The floor between steps. Minecraft runs at 20 ticks per second, so anything
 under about 50ms observes the same tick twice and learns nothing from it."""
@@ -305,6 +313,14 @@ class TaskRunner:
         # step's "after" and is reused as the next step's "before".
         state = self._read_state()
 
+        # The game's own mouse sensitivity, when the bridge reports it.
+        # Minecraft's turn arithmetic is exact given the slider, so there is
+        # nothing to estimate -- and a hardcoded guess was overshooting
+        # fivefold for anyone who had turned their sensitivity up.
+        sensitivity = getattr(state, "mouse_sensitivity", None)
+        if sensitivity is not None:
+            nav.use_sensitivity(sensitivity)
+
         for index in range(limit):
             blocked = self._stop_reason()
             if blocked:
@@ -434,6 +450,7 @@ class TaskRunner:
         keeps as the next step's starting point — see the module docstring on
         why that observation is shared rather than repeated."""
         method = getattr(self._controller, DISPATCH[step.action])
+        stamp_before = self._stamp()
 
         try:
             result = method(dict(step.params or {}))
@@ -448,7 +465,7 @@ class TaskRunner:
             result_dict = {"ok": False, "action": step.action,
                            "error_class": type(e).__name__, "error": str(e)}
 
-        after = self._read_state()
+        after = self._observe_after(stamp_before)
 
         if step.expectation is None:
             checked = verify_mod.unverifiable(
@@ -504,6 +521,44 @@ class TaskRunner:
             return guard
         return ""
 
+    def _stamp(self):
+        """The state source's snapshot marker, when it has one."""
+        getter = getattr(self._state_source, "stamp", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _observe_after(self, stamp_before):
+        """Read the world, waiting for a picture taken AFTER the action.
+
+        WHY THE WAIT EXISTS
+            The bridge rewrites its file a few times a second; a look takes
+            ten milliseconds. Reading immediately after acting therefore
+            returns the snapshot from BEFORE the action about half the time,
+            and the verdict becomes "turned 0.0 degrees" for a turn that
+            plainly happened.
+
+            That is not merely a wrong verdict. Aiming is a feedback loop,
+            and a loop fed its own stale output oscillates -- which is
+            exactly what it did: forty looks at one log, the requested
+            correction swinging between +138 and -160 degrees.
+
+            Sources that cannot say when they last read (OCR takes a fresh
+            screenshot every time) return None here and are read once, as
+            before."""
+        if stamp_before is None:
+            return self._read_state()
+
+        deadline = self._clock() + FRESH_STATE_TIMEOUT_S
+        while self._clock() < deadline:
+            if self._stamp() != stamp_before:
+                break
+            self._sleep(FRESH_STATE_POLL_S)
+        return self._read_state()
+
     def _read_state(self):
         try:
             return self._state_source.read()
@@ -534,6 +589,7 @@ class TaskRunner:
 __all__ = [
     "TaskRunner", "TaskResult", "Step", "StepRecord",
     "MAX_TASK_STEPS", "MAX_TASK_SECONDS", "MIN_OBSERVATION_INTERVAL_S",
+    "FRESH_STATE_TIMEOUT_S",
     "DEFAULT_OBSERVATION_INTERVAL_S", "DISPATCH", "ALLOWED_ACTIONS",
     "COMPLETED", "INCOMPLETE", "STOPPED", "FAILED",
     "STEP_LIMIT", "TIME_LIMIT", "STUCK", "MAX_REPLANS",

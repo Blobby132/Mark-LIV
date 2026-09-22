@@ -166,6 +166,23 @@ class ModBridgeStateSource:
 
     # ── reading ──────────────────────────────────────────────────────────────
 
+    def stamp(self):
+        """When the mod last wrote, in its own milliseconds, or None.
+
+        Exists so a caller can tell one snapshot from the next. The file is
+        rewritten a few times a second and an action takes milliseconds, so
+        "read the state straight after acting" very often returns the SAME
+        snapshot as before -- and judging a turn against a picture taken
+        before the turn is worse than not judging it, because it looks like
+        an answer."""
+        payload = self._payload()
+        if payload is None:
+            return None
+        try:
+            return float(payload.get("written_at_ms"))
+        except (TypeError, ValueError):
+            return None
+
     def read(self) -> WorldState:
         """One reading. Never raises: every failure becomes an empty state
         with a note, because a planner that gets an exception here has nothing
@@ -239,6 +256,7 @@ class ModBridgeStateSource:
             nearby_entities=_entities(payload.get("nearby_entities")),
             surface=_blocks(payload.get("surface")),
             notable_blocks=_blocks(payload.get("notable_blocks")),
+            mouse_sensitivity=_number(payload.get("mouse_sensitivity")),
             scan_radius=_integer((payload.get("scan") or {}).get("radius")
                                  if isinstance(payload.get("scan"), dict)
                                  else None),

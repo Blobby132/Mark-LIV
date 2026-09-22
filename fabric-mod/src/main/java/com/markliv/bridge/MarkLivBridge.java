@@ -234,6 +234,15 @@ public class MarkLivBridge implements ClientModInitializer {
         }
         out.raw("in_game", "true");
 
+        // The mouse sensitivity slider, 0..1. Reported because the only other
+        // way to know how far a synthetic mouse delta turns the view is to
+        // guess and then correct -- and a wrong guess spends the whole step
+        // budget overshooting. Minecraft's own arithmetic is
+        //     degrees_per_count = 0.15 * (sensitivity * 0.6 + 0.2)^3 * 8
+        // so one number here replaces the guessing entirely.
+        out.raw("mouse_sensitivity",
+                Json.number(client.options.sensitivity().get()));
+
         out.raw("position", Json.array(
                 Json.number(player.getX()),
                 Json.number(player.getY()),

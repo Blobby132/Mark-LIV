@@ -418,6 +418,34 @@ def furthest_clear(local: "LocalMap", here: tuple, waypoints, start: int = 0,
 # (+X). Getting that convention wrong sends an agent consistently ninety
 # degrees off, which looks like a pathfinding bug and is not.
 
+def pixels_per_degree_at(sensitivity) -> float | None:
+    """Minecraft's own arithmetic, from the mouse sensitivity slider.
+
+    THE NUMBER, NOT A GUESS AT THE NUMBER
+        Minecraft turns the view by
+
+            degrees = counts * 0.15 * (sensitivity * 0.6 + 0.2) ** 3 * 8
+
+        so given the slider there is nothing to estimate. The mod reports it,
+        and this converts it. A default-ish 47% slider works out near 7.4
+        pixels per degree; 100% is 1.63, more than four times finer -- which
+        is why a single hardcoded constant overshot by a factor of five for
+        anyone who had turned their sensitivity up.
+
+    Returns None when the value is not a usable slider position, so the
+    caller falls back to measuring instead of trusting a bad reading."""
+    try:
+        slider = float(sensitivity)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= slider <= 1.0:
+        return None
+    degrees_per_count = 0.15 * (slider * 0.6 + 0.2) ** 3 * 8.0
+    if degrees_per_count <= 1e-6:
+        return None
+    return 1.0 / degrees_per_count
+
+
 PIXELS_PER_DEGREE = 8.0
 """How much mouse movement turns the view one degree.
 
@@ -455,11 +483,40 @@ before the scale was measured rather than assumed.
 Undershooting converges. Overshooting does not."""
 
 
+_from_settings = None
+"""Derived from the sensitivity the mod reports. Beats any measurement."""
+
+
+def use_sensitivity(sensitivity) -> float | None:
+    """Adopt the game's own setting as the scale. Returns what it resolved."""
+    global _from_settings
+    _from_settings = pixels_per_degree_at(sensitivity)
+    return _from_settings
+
+
 def pixels_per_degree() -> float:
-    """Magnitude only, for things that sweep a fixed amount."""
+    """Magnitude only, for things that sweep a fixed amount.
+
+    Order of preference: the game's reported setting, then what has been
+    measured from real turns, then the default guess."""
+    if _from_settings is not None:
+        return _from_settings
     if _yaw_scale is None:
         return PIXELS_PER_DEGREE
     return abs(_yaw_scale)
+
+
+def _axis_scale(measured):
+    """A signed scale for one axis.
+
+    The setting gives the magnitude exactly; only the DIRECTION still has to
+    be observed, and a measurement that disagrees about direction is
+    believed, because that is the part the setting cannot tell us."""
+    if _from_settings is None:
+        return measured if measured is not None else PIXELS_PER_DEGREE
+    if measured is not None and measured < 0:
+        return -_from_settings
+    return _from_settings
 
 
 def observe_turn(sent_dx, sent_dy, before_rotation, after_rotation) -> None:
@@ -523,15 +580,18 @@ def calibrate(pixels_sent: float, degrees_turned: float):
 
 def reset_calibration() -> None:
     """Forget what was measured. For tests, and for a fresh process."""
-    global _yaw_scale, _pitch_scale
+    global _yaw_scale, _pitch_scale, _from_settings
     _yaw_scale = None
     _pitch_scale = None
+    _from_settings = None
 
 
 def calibration() -> dict:
     """What has been measured so far, for logs and diagnostics."""
     return {"yaw_px_per_degree": _yaw_scale,
             "pitch_px_per_degree": _pitch_scale,
+            "from_game_settings": _from_settings,
+            "in_use": pixels_per_degree(),
             "default": PIXELS_PER_DEGREE}
 
 
@@ -599,9 +659,8 @@ def aim_at(position, rotation, target,
     if px_per_degree is not None:
         yaw_scale = pitch_scale = px_per_degree
     else:
-        yaw_scale = _yaw_scale if _yaw_scale is not None else PIXELS_PER_DEGREE
-        pitch_scale = (_pitch_scale if _pitch_scale is not None
-                       else PIXELS_PER_DEGREE)
+        yaw_scale = _axis_scale(_yaw_scale)
+        pitch_scale = _axis_scale(_pitch_scale)
 
     return (int(round(dyaw * yaw_scale * AIM_DAMPING)),
             int(round(dpitch * pitch_scale * AIM_DAMPING)),
@@ -614,10 +673,7 @@ def look_delta_for(current_yaw: float, desired_yaw: float,
 
     Positive dx turns right, which is increasing yaw in Minecraft's
     convention."""
-    if px_per_degree is not None:
-        scale = px_per_degree
-    else:
-        scale = _yaw_scale if _yaw_scale is not None else PIXELS_PER_DEGREE
+    scale = px_per_degree if px_per_degree is not None else _axis_scale(_yaw_scale)
     return int(round(yaw_difference(current_yaw, desired_yaw) * scale))
 
 
@@ -627,6 +683,7 @@ __all__ = [
     "pitch_to", "aim_at", "EYE_HEIGHT",
     "pixels_per_degree", "calibrate", "reset_calibration",
     "observe_turn", "calibration", "AIM_DAMPING",
+    "pixels_per_degree_at", "use_sensitivity",
     "line_is_walkable" if False else "furthest_clear", "MAX_SMOOTHING",
     "MAX_STEP_UP", "MAX_DROP", "MAX_NODES", "MAX_PATH_LENGTH",
     "HAZARDS", "LIQUIDS", "LOG_BLOCKS", "CATEGORIES",

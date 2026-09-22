@@ -909,6 +909,111 @@ class AimingConvergesTests(unittest.TestCase):
         self.assertIn("could not settle", skill.done_reason)
 
 
+class SensitivityAndStaleStateTests(unittest.TestCase):
+    """The two things that made aiming oscillate in the real game."""
+
+    def setUp(self):
+        nav.reset_calibration()
+        self.addCleanup(nav.reset_calibration)
+
+    def test_the_scale_comes_from_minecrafts_own_arithmetic(self):
+        """Given the slider there is nothing to estimate:
+        degrees = counts * 0.15 * (sensitivity * 0.6 + 0.2)**3 * 8"""
+        self.assertAlmostEqual(nav.pixels_per_degree_at(1.0), 1.628, places=2)
+        self.assertAlmostEqual(nav.pixels_per_degree_at(0.5), 6.667, places=2)
+        self.assertIsNone(nav.pixels_per_degree_at(None))
+        self.assertIsNone(nav.pixels_per_degree_at(1.5))
+        self.assertIsNone(nav.pixels_per_degree_at("loud"))
+
+    def test_a_reported_setting_beats_the_hardcoded_guess(self):
+        self.assertEqual(nav.pixels_per_degree(), nav.PIXELS_PER_DEGREE)
+        nav.use_sensitivity(1.0)
+        self.assertAlmostEqual(nav.pixels_per_degree(), 1.628, places=2)
+
+    def test_the_setting_gives_size_and_observation_gives_direction(self):
+        """The slider cannot say which way the axis runs; only watching can.
+        The magnitude should not be thrown away to learn the sign."""
+        nav.use_sensitivity(1.0)
+        nav.observe_turn(-400, 0, (0.0, 0.0), (50.0, 0.0))    # inverted yaw
+        dx = nav.look_delta_for(0.0, 10.0)
+        self.assertLess(dx, 0, "it did not learn the direction")
+        self.assertAlmostEqual(abs(dx), 10 * 1.628, delta=1.0,
+                               msg="it threw away the exact magnitude")
+
+    def test_the_runner_adopts_the_setting_before_the_first_turn(self):
+        world = SimWorld(flat())
+        base = world.read
+
+        def with_sensitivity():
+            state = base()
+            return WorldState(position=state.position, rotation=state.rotation,
+                              surface=state.surface, scan_radius=8,
+                              mouse_sensitivity=1.0,
+                              source="test", confidence=EXACT)
+
+        world.read = with_sensitivity
+        run(world, skills.create("navigate_to", destination=(4, 0)))
+        self.assertAlmostEqual(nav.calibration()["from_game_settings"],
+                               1.628, places=2)
+
+    def test_it_waits_for_a_snapshot_newer_than_the_action(self):
+        """The stale-feedback bug.
+
+        The bridge rewrites its file a few times a second and a look takes
+        ten milliseconds, so reading straight after acting returns the
+        picture from BEFORE the action about half the time — "turned 0.0
+        degrees" for a turn that plainly happened. A feedback loop fed its
+        own stale output oscillates, which is what forty looks at one log
+        actually was."""
+        class Slow(SimWorld):
+            """Like the real mod: a snapshot published on its own clock.
+
+            `read` returns the LAST PUBLISHED picture, not the live world —
+            which is the whole point. Publishing here happens every third
+            poll instead of every 200ms."""
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.publishes = 0
+                self.polls = 0
+                self.snapshot = None
+
+            def _publish(self):
+                self.publishes += 1
+                self.snapshot = SimWorld.read(self)
+
+            def stamp(self):
+                self.polls += 1
+                if self.polls % 3 == 0:
+                    self._publish()
+                return self.publishes
+
+            def read(self):
+                if self.snapshot is None:
+                    self._publish()
+                return self.snapshot
+
+        world = Slow(flat())
+        result = run(world, skills.create("navigate_to", destination=(4, 0)))
+        self.assertGreater(world.polls, result.steps_taken,
+                           "it never waited for a fresh snapshot")
+        # A turn judged against a stale picture reads as no turn at all.
+        # (Matching on the text "0.0 degrees" would also match "50.0
+        # degrees", which is how this assertion first fooled me.)
+        stale = [r.step["note"] for r in result.records
+                 if r.step["action"] == "look"
+                 and r.verification.get("status") == verify_mod.FAILED]
+        self.assertEqual(stale, [],
+                         f"judged a turn against a stale picture: {stale}")
+
+    def test_a_source_that_cannot_date_itself_is_read_once(self):
+        """OCR takes a fresh screenshot every time, so there is nothing to
+        wait for and waiting would just be slower."""
+        world = SimWorld(flat())
+        self.assertFalse(hasattr(world, "stamp"))
+        result = run(world, skills.create("navigate_to", destination=(3, 0)))
+        self.assertTrue(result.records)
+
+
 class TheModelsViewOfTheWorldTests(unittest.TestCase):
     """What the LLM actually receives.
 
