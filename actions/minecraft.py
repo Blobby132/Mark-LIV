@@ -467,8 +467,20 @@ def _run_task(controller, params: dict, player=None) -> str:
     result = runner.run(skill, max_steps=params.get("max_steps",
                                                     MAX_TASK_STEPS))
     if player:
+        # Every step, not just the summary. A task that ends "incomplete" tells
+        # you nothing about WHY, and the per-step trail is the difference
+        # between "it mined four times and nothing broke" and "it never mined
+        # at all" -- which are opposite problems that both read as failure.
+        for entry in result.records:
+            action = entry.step.get("action", "?")
+            held = entry.action_result.get("actual_duration_ms", 0)
+            verdict = entry.verification.get("status", "?")
+            player.write_log(f"[minecraft]   {entry.index + 1}. {action} "
+                             f"{held}ms -> {verdict}")
         player.write_log(f"[minecraft] task {name}: {result.status} "
                          f"({result.steps_taken} steps)")
+        if result.reason:
+            player.write_log(f"[minecraft] {result.reason}")
 
     # The summary line is built to be un-overstatable: it says what was
     # verified, separately from what was attempted.

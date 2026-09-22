@@ -67,6 +67,15 @@ SUPERVISOR_SECONDS = 0.2
 # Enough that a normal action finishing its own release is never pre-empted.
 DEADMAN_GRACE_SECONDS = 0.5
 
+_CHANGE_CONFIRMATIONS = 2
+"""Consecutive probes that must agree the target changed before letting go.
+
+One is not enough: the probe reads a file the game rewrites five times a
+second, so a single differing sample can be stale, torn, or the crosshair
+grazing a neighbour as the view settles. Two at 40ms apart costs 40ms of
+over-mining and removes a whole class of "it held the button for one tick and
+nothing broke"."""
+
 FOCUS_WAIT_SECONDS = 4.0
 """How long an action will wait, BEFORE it starts, for Minecraft to come back
 to the front.
@@ -538,6 +547,7 @@ class MinecraftController:
 
         baseline = self._probe() if stop_when_changed else None
         finished_early = False
+        changed_for = 0
 
         try:
             for key in keys:
@@ -555,14 +565,26 @@ class MinecraftController:
                         focused_throughout = False
                     break
 
-                # Mining: let go the moment the target changes. Holding on
-                # past that wastes the rest of the budget and starts breaking
+                # Mining: let go once the target has changed. Holding on past
+                # that wastes the rest of the budget and starts breaking
                 # whatever was revealed behind it.
+                #
+                # TWO readings, not one. The probe reads a file the game
+                # rewrites five times a second, so a single differing sample
+                # can be a torn or momentarily stale read, or the crosshair
+                # grazing a neighbouring block as the head settles. Releasing
+                # on that would cut the hold to one tick and break nothing --
+                # the same symptom as not mining at all, which this code has
+                # already worn once.
                 if stop_when_changed and baseline is not None:
                     current = self._probe()
                     if current is not None and current != baseline:
-                        finished_early = True
-                        break
+                        changed_for += 1
+                        if changed_for >= _CHANGE_CONFIRMATIONS:
+                            finished_early = True
+                            break
+                    else:
+                        changed_for = 0
 
                 remaining = deadline - time.monotonic()
                 time.sleep(min(TICK_SECONDS, max(0.0, remaining)))

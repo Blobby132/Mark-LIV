@@ -422,6 +422,7 @@ class TestMiningStopsWhenTheBlockGoes(unittest.TestCase):
 
         def probe():
             calls["n"] += 1
+            # Changes and STAYS changed, which is what a broken block does.
             return "oak_log" if calls["n"] < 4 else "air"
 
         controller = self._controller(probe)
@@ -431,6 +432,30 @@ class TestMiningStopsWhenTheBlockGoes(unittest.TestCase):
             # Far short of the eight seconds asked for.
             self.assertLess(result.actual_duration_ms, 3000)
             self.assertIn("stopped_early", result.requested)
+        finally:
+            controller.stop("test")
+
+    def test_a_single_odd_reading_does_not_cut_the_mine_short(self):
+        """The probe reads a file the game rewrites five times a second, so
+        one differing sample can be stale or torn. Releasing on it would hold
+        the button for a single tick and break nothing — indistinguishable
+        from not mining at all."""
+        readings = iter(["oak_log", "oak_log", "dirt", "oak_log", "oak_log",
+                         "oak_log", "oak_log", "oak_log"])
+
+        def flaky():
+            try:
+                return next(readings)
+            except StopIteration:
+                return "oak_log"
+
+        controller = self._controller(flaky)
+        try:
+            result = controller.mine({"duration": 0.4})
+            self.assertTrue(result.ok, result.error)
+            self.assertNotIn("stopped_early", result.requested,
+                             "one odd reading must not end the mine")
+            self.assertGreaterEqual(result.actual_duration_ms, 350)
         finally:
             controller.stop("test")
 

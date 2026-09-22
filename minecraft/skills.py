@@ -58,6 +58,17 @@ Sweeping the view twenty times looking for something you cannot see is not
 perseverance, it is a loop with a step limit for a brake. The skills that
 depend on reading the target check for it once and say what is missing."""
 
+# Every mining step must ask for at least this long. Breaking an oak log by
+# hand takes about three seconds of CONTINUOUS holding, and Minecraft discards
+# progress the instant the button comes up -- so a skill asking for one second
+# mines forever and breaks nothing.
+#
+# Named here, and asserted in the tests, because that is exactly what happened:
+# the action limit was raised to allow a real mining hold and the skills were
+# left asking for the old one second, which looks identical to the input not
+# working at all.
+MIN_USEFUL_MINE_S = 3.0
+
 # Blocks that count as "a tree" for FindBlock's default search.
 LOG_BLOCKS = frozenset({
     "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
@@ -211,7 +222,7 @@ class BreakBlock:
 
     expected: str = ""
     swings: int = 8
-    swing_seconds: float = 1.0
+    swing_seconds: float = action_spec.DEFAULT_MINE_DURATION_S
 
     name = "break_block"
     verifiable_with = ("target_block",)
@@ -387,7 +398,8 @@ class CollectLogs:
             self._last_target = name
             check = (verify_mod.collected(name) if self._can_count
                      else verify_mod.block_broken(name))
-            return Step(action="mine", params={"duration": 1.0},
+            return Step(action="mine",
+                        params={"duration": action_spec.DEFAULT_MINE_DURATION_S},
                         expectation=check,
                         note=f"mine {name} ({done}/{self.count})")
 
@@ -486,6 +498,7 @@ was made."""
 
 
 __all__ = [
+    "MIN_USEFUL_MINE_S",
     "Skill", "WalkForward", "Survey", "FindBlock", "BreakBlock",
     "PlaceBlock", "CollectLogs",
     "BUILTIN_SKILLS", "create", "available", "LOG_BLOCKS", "NOT_YET_POSSIBLE",

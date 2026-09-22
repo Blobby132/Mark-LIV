@@ -591,6 +591,43 @@ class TestBlindTasksStopImmediately(unittest.TestCase):
 
 class TestSkills(unittest.TestCase):
 
+    def test_no_skill_asks_for_a_mine_too_short_to_break_anything(self):
+        """The regression. Mining's limit was raised from 2s to 10s so a block
+        could actually break, and the skills were left asking for the old one
+        second — which discards its progress the moment the button comes up
+        and so breaks nothing, forever.
+
+        It looked exactly like the input not working at all: twelve steps, no
+        error, no block. A limit is only raised for a reason, and the callers
+        have to move with it."""
+        from minecraft import action_spec
+        from minecraft.state import BlockRef, EXACT, WorldState
+
+        looking_at_a_log = WorldState(
+            target_block=BlockRef(x=1, y=2, z=3, name="oak_log"),
+            inventory=(), source="mod-bridge", confidence=EXACT)
+
+        for name in skills.available():
+            built = skills.create(name)
+            for index in range(3):
+                step = built.plan(looking_at_a_log, index, ())
+                if step is None or step.action != "mine":
+                    continue
+                with self.subTest(skill=name):
+                    asked = step.params.get(
+                        "duration", action_spec.DEFAULT_MINE_DURATION_S)
+                    self.assertGreaterEqual(
+                        asked, skills.MIN_USEFUL_MINE_S,
+                        f"{name} asks for a {asked}s mine, which cannot break "
+                        f"an oak log")
+
+    def test_the_default_mine_is_long_enough_and_within_the_limit(self):
+        from minecraft import action_spec
+        self.assertGreaterEqual(action_spec.DEFAULT_MINE_DURATION_S,
+                                skills.MIN_USEFUL_MINE_S)
+        self.assertLessEqual(action_spec.DEFAULT_MINE_DURATION_S,
+                             action_spec.MAX_MINE_DURATION_S)
+
     def test_the_registry_only_builds_known_skills(self):
         for bad in ("rm -rf", "shell", "", None, "chat"):
             with self.subTest(name=repr(bad)):
