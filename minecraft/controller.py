@@ -148,6 +148,9 @@ class MinecraftController:
 
         self._lock = threading.RLock()
         self._cancel = threading.Event()
+        # Consecutive probes that could not see the window. One miss is
+        # tolerated; see _guard.
+        self._window_misses = 0
         self._last_stop_reason = ""
         self._action_in_flight = ""
 
@@ -216,7 +219,22 @@ class MinecraftController:
 
         info = self._locator.probe()
         if not info.found:
-            return "window_gone"
+            # Tolerate ONE miss. Enumerating windows can fail transiently --
+            # it did, spectacularly, when the ctypes prototypes were being
+            # re-declared from several threads at once -- and treating a
+            # single blip as "the game closed" ends the task and costs the
+            # user a fresh confirmation for something that never happened.
+            #
+            # A real close never recovers, so the second consecutive miss
+            # (40ms later) still stops everything. This buys one tick of
+            # patience, not a reason to keep pressing keys at a window that
+            # is gone.
+            with self._lock:
+                self._window_misses += 1
+                missed = self._window_misses
+            return "window_gone" if missed > 1 else ""
+        with self._lock:
+            self._window_misses = 0
         if not info.focus_known:
             return "focus_unknown"
         if not info.foreground:

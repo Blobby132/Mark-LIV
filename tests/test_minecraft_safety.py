@@ -412,5 +412,98 @@ class TestHeadlessCannotStartASession(unittest.TestCase):
                          "a control session opened with no way to ask a human")
 
 
+class TestWindowProbeRobustness(unittest.TestCase):
+    """A transient probe failure is not a closed game.
+
+    This is the regression for a bug that read as "the Minecraft window
+    closed" in the middle of mining, on a window that was plainly still open.
+    The cause was re-declaring the ctypes prototypes on every probe: they live
+    on shared function pointers, and `_guard` runs from the action loop every
+    40ms, the supervisor every 200ms and the focus-wait loop, so one thread
+    could call a function while another was mid-assignment. The call raised,
+    the enumeration callback swallowed it, no windows were found, and the
+    guard called that a closed game."""
+
+    def _controller(self, locator):
+        return MinecraftController(
+            backend=FakeInputBackend(), locator=locator,
+            sessions=SessionManager(), process_module=FakeProcess(),
+            start_watchers=False, focus_wait_s=0.0)
+
+    def test_one_missed_probe_does_not_end_anything(self):
+        locator = FakeLocator()
+        controller = self._controller(locator)
+        try:
+            controller.start_session(duration_s=60)
+            locator.found = False
+            self.assertEqual(controller._guard(), "",
+                             "a single miss must be tolerated")
+        finally:
+            controller.stop("test")
+
+    def test_two_consecutive_misses_do_stop_it(self):
+        """A real close never recovers, so patience must not be unlimited."""
+        locator = FakeLocator()
+        controller = self._controller(locator)
+        try:
+            controller.start_session(duration_s=60)
+            locator.found = False
+            controller._guard()
+            self.assertEqual(controller._guard(), "window_gone")
+        finally:
+            controller.stop("test")
+
+    def test_the_counter_resets_when_the_window_comes_back(self):
+        locator = FakeLocator()
+        controller = self._controller(locator)
+        try:
+            controller.start_session(duration_s=60)
+            locator.found = False
+            controller._guard()            # one miss
+            locator.found = True
+            self.assertEqual(controller._guard(), "")
+            locator.found = False
+            self.assertEqual(controller._guard(), "",
+                             "the earlier miss should not still count")
+        finally:
+            controller.stop("test")
+
+
+class TestProtototypesAreConfiguredOnce(unittest.TestCase):
+    """The prototypes must be declared once, not per probe.
+
+    Asserted structurally because the race itself cannot be reproduced off
+    Windows: what matters is that `_probe_windows` does not mutate shared
+    ctypes state every time it runs."""
+
+    def test_probe_does_not_redeclare_prototypes(self):
+        import inspect
+        from minecraft import window
+
+        source = inspect.getsource(window._probe_windows)
+        self.assertNotIn("_configure(", source,
+                         "_probe_windows must not re-declare prototypes; "
+                         "they are shared across threads")
+        self.assertIn("_ensure_prototypes()", source)
+
+    def test_the_setup_is_guarded_by_a_lock_and_a_flag(self):
+        import inspect
+        from minecraft import window
+
+        source = inspect.getsource(window._ensure_prototypes)
+        self.assertIn("_PROTOTYPES_LOCK", source)
+        self.assertIn("_PROTOTYPES_READY", source)
+
+    def test_a_failed_enumeration_does_not_claim_the_game_closed(self):
+        """Wording matters here: "closed" is final and sends the user to
+        restart the game; "could not find just now" is transient."""
+        import inspect
+        from minecraft import window
+
+        source = inspect.getsource(window._probe_windows)
+        self.assertIn("could not find a game window", source)
+        self.assertNotIn("has closed", source)
+
+
 if __name__ == "__main__":
     unittest.main()

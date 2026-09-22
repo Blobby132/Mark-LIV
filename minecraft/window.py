@@ -32,6 +32,7 @@ PLATFORM REALITY, STATED PLAINLY
 from __future__ import annotations
 
 import ctypes
+import threading
 import platform
 from dataclasses import dataclass
 
@@ -115,6 +116,71 @@ class WindowInfo:
         }
 
 
+_PROTOTYPES_LOCK = threading.Lock()
+_PROTOTYPES_READY = False
+_WNDENUMPROC = None
+_RECT_TYPE = None
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+def _ensure_prototypes():
+    """Declare every user32 signature ONCE, and hand back the callback type.
+
+    WHY ONCE, AND UNDER A LOCK
+        `ctypes.windll.user32` is a cached object and its function pointers
+        are shared, so assigning `.argtypes` mutates state every thread sees.
+        Doing that per probe raced badly: `_guard()` runs from the action
+        loop every 40ms, from the supervisor every 200ms and from the
+        focus-wait loop, so one thread could call a function while another
+        was mid-assignment. The call raised, the enumeration callback
+        swallowed it, no windows were found, and the guard reported
+        `window_gone`.
+
+        Which surfaced as "the Minecraft window closed" in the middle of
+        mining, on a window that was plainly still open -- intermittent,
+        worst when both threads were busiest, and impossible to tell from a
+        real crash. A correctness fix in one place became a liveness bug in
+        another, which is the usual shape of this mistake.
+
+    Returns the WNDENUMPROC type, which must also be created once: a fresh
+    WINFUNCTYPE class per call would keep re-churning EnumWindows' argtypes
+    for no reason."""
+    global _PROTOTYPES_READY, _WNDENUMPROC
+    if _PROTOTYPES_READY:
+        return _WNDENUMPROC
+
+    with _PROTOTYPES_LOCK:
+        if _PROTOTYPES_READY:
+            return _WNDENUMPROC
+
+        user32 = ctypes.windll.user32
+        enumproc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
+                                      ctypes.c_void_p)
+
+        _configure(user32, "GetForegroundWindow", [], ctypes.c_void_p)
+        _configure(user32, "IsWindowVisible", [ctypes.c_void_p], ctypes.c_bool)
+        _configure(user32, "GetWindowThreadProcessId",
+                   [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)],
+                   ctypes.c_ulong)
+        _configure(user32, "GetWindowTextLengthW", [ctypes.c_void_p],
+                   ctypes.c_int)
+        _configure(user32, "GetWindowTextW",
+                   [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int],
+                   ctypes.c_int)
+        _configure(user32, "GetWindowRect",
+                   [ctypes.c_void_p, ctypes.POINTER(_RECT)], ctypes.c_bool)
+        _configure(user32, "EnumWindows", [enumproc, ctypes.c_void_p],
+                   ctypes.c_bool)
+
+        _WNDENUMPROC = enumproc
+        _PROTOTYPES_READY = True
+        return _WNDENUMPROC
+
+
 def _configure(library, name: str, argtypes, restype) -> None:
     """Declare one function's signature, tolerating a missing symbol.
 
@@ -158,43 +224,8 @@ def same_handle(a, b) -> bool:
 
 def _probe_windows(pid: int | None) -> WindowInfo:
     user32 = ctypes.windll.user32
+    WNDENUMPROC = _ensure_prototypes()
 
-    class _RECT(ctypes.Structure):
-        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-
-    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
-                                     ctypes.c_void_p)
-
-    # ── Declare every prototype. This is not tidiness. ───────────────────────
-    #
-    # ctypes assumes a C `int` return -- 32 bits, signed -- for any function
-    # whose restype is not set. Window handles on 64-bit Windows are 64-bit
-    # pointers, so GetForegroundWindow's result was being truncated and
-    # sign-extended, and the comparison against the handle from EnumWindows
-    # (which arrives correctly as c_void_p) failed whenever the real handle
-    # did not happen to fit in 31 bits.
-    #
-    # The symptom was "Minecraft is open but another window has focus" while
-    # Minecraft plainly had focus -- intermittent across launches, because
-    # handle values change, which made it look like a user error rather than
-    # a bug. Passing an out-of-range handle INTO an undeclared function is
-    # the same fault in the other direction: ctypes raises, the enum loop
-    # swallows it, and the window silently goes missing.
-    _configure(user32, "GetForegroundWindow", [], ctypes.c_void_p)
-    _configure(user32, "IsWindowVisible", [ctypes.c_void_p], ctypes.c_bool)
-    _configure(user32, "GetWindowThreadProcessId",
-               [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)],
-               ctypes.c_ulong)
-    _configure(user32, "GetWindowTextLengthW", [ctypes.c_void_p],
-               ctypes.c_int)
-    _configure(user32, "GetWindowTextW",
-               [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int],
-               ctypes.c_int)
-    _configure(user32, "GetWindowRect",
-               [ctypes.c_void_p, ctypes.POINTER(_RECT)], ctypes.c_bool)
-    _configure(user32, "EnumWindows", [WNDENUMPROC, ctypes.c_void_p],
-               ctypes.c_bool)
     found: list[tuple[int, str, int]] = []      # (hwnd, title, area)
 
     def _pid_of(hwnd) -> int:
@@ -235,10 +266,14 @@ def _probe_windows(pid: int | None) -> WindowInfo:
                           detail=f"Could not enumerate windows ({type(e).__name__}).")
 
     if not found:
+        # Deliberately says "could not find" rather than "closed". The
+        # difference matters: a closed game is final and a failed enumeration
+        # is transient, and reporting the second as the first is what made a
+        # thread race read as "the Minecraft window closed" mid-mine.
         return WindowInfo(
             found=False, pid=pid,
-            detail="Minecraft is running but I could not find a game window. "
-                   "It may still be starting up, or it may be minimised.",
+            detail="Minecraft is running but I could not find a game window "
+                   "just now. It may still be starting up, or minimised.",
         )
 
     # The biggest visible window belonging to the process is the game; the
