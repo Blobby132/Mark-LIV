@@ -74,6 +74,20 @@ depend on reading the target check for it once and say what is missing."""
 MIN_USEFUL_MINE_S = 3.0
 
 MAX_SKIPPED_TARGETS = 4
+
+MAX_PICKUP_WALKS = 4
+"""How many times collect_logs walks over to a dropped log before saying it
+could not get it. A broken log drops an item where it fell, often a couple of
+blocks from where the player stood to mine it -- out of pickup range."""
+
+DROP_RADIUS = 4.0
+"""Item entities this close (horizontally) to a block this task broke are
+treated as its drops and fetched. Further than that, an item on the ground is
+somebody else's business."""
+
+_ARRIVED = object()
+"""What _walk_towards returns when the walk is over and nothing is left to
+step: the caller decides what arriving means, instead of a filler step."""
 """Logs to give up on (occluded, unreachable by aim) before the whole task
 does. Enough to work round a tree's leaves; not so many that a task with a
 real aiming problem burns its budget trying every log in the forest."""
@@ -1136,7 +1150,6 @@ class CollectLogs:
     sweep_steps: int = 10
     delta_px: int | None = None
     aim_tolerance_deg: float = 6.0
-    reach: float = 4.0
     max_aim_steps: int = 6
 
     name = "collect_logs"
@@ -1157,6 +1170,10 @@ class CollectLogs:
     _last_estimate: object = None
     _walker: object = None
     _walk_failed: str = ""
+    _broken_at: list = field(default_factory=list)
+    _pickup_walker: object = None
+    _pickup_walks: int = 0
+    _pickup_note: str = ""
 
     @property
     def _done(self) -> int:
@@ -1178,15 +1195,16 @@ class CollectLogs:
             return CANNOT_SEE_TARGET
         how = (" (found by the terrain scan)" if self._used_the_map
                else " (found by sweeping the crosshair)")
-        trouble = self._walk_failed or self._aim_gave_up
+        trouble = (self._pickup_note or self._walk_failed
+                   or self._aim_gave_up)
         if trouble and self._done < self.count:
             return f"{self._progress_text()}{how}. {trouble}"
         return f"{self._progress_text()}{how}"
 
     def _progress_text(self) -> str:
         if self._can_count:
-            return (f"collected {self._collected} of {self.count} log(s), "
-                    f"counted in the inventory")
+            return (f"broke {self._broken} and collected {self._collected} "
+                    f"of {self.count} log(s), counted in the inventory")
         return (f"broke {self._broken} of {self.count} log(s) — I cannot see "
                 f"the inventory, so I am reporting blocks that disappeared, "
                 f"not items picked up")
@@ -1207,6 +1225,15 @@ class CollectLogs:
         self._count_progress(state, history)
         if self._done >= self.count:
             return None
+
+        # Enough broken. Never break more than was asked for: counting only
+        # the inventory, a log that broke and fell out of pickup range looked
+        # like no progress at all, and "collect one log" broke three. What is
+        # left is fetching the drops -- which needs the inventory to see.
+        if self._broken >= self.count:
+            if not self._can_count:
+                return None
+            return self._pick_up(state, local, history)
 
         if local.usable:
             self._used_the_map = True
@@ -1234,18 +1261,22 @@ class CollectLogs:
 
     def _count_progress(self, state, history) -> None:
         self._can_count = state.confidence_of("inventory") != UNKNOWN
+        # Broken: from the record, always. A mine step's verdict says whether
+        # THAT block went, whatever the inventory later says about the drop.
+        broken = [r for r in history
+                  if r.step.get("action") == "mine"
+                  and r.verification.get("status") == verify_mod.SUCCESS]
+        self._broken = len(broken)
+        self._broken_at = []
+        for record in broken:
+            where = (record.step.get("params") or {}).get("expect_at")
+            if where:
+                self._broken_at.append(tuple(where))
         if self._can_count:
-            # The real measure, when it is available: what is in the bag.
+            # Collected: what is actually in the bag, against where it started.
             if self._starting_logs is None:
                 self._starting_logs = _log_total(state)
             self._collected = _log_total(state) - self._starting_logs
-        else:
-            # Count from the record: a swing whose verification says the block
-            # went is the only evidence there is without an inventory.
-            self._broken = sum(
-                1 for r in history
-                if r.step.get("action") == "mine"
-                and r.verification.get("status") == verify_mod.SUCCESS)
 
     def _work_from_the_map(self, state, local, crosshair_readable,
                            history=()):
@@ -1272,9 +1303,27 @@ class CollectLogs:
                     f"no walkable route to it.")
             return None
 
-        distance = target.distance_to(state.position)
-        if distance > self.reach:
-            return self._walk_towards(state, target, history)
+        # Reach is measured the way the game does -- from the eyes, to the
+        # face -- and the same way the crosshair gate below measures it. Two
+        # different "in reach" tests is what left the last real run standing
+        # at the trunk, "arrived" by one and "too far" by the other, turning
+        # on the spot until it gave up.
+        if not aiming_mod.SHARED.within_reach(state.position, target.position):
+            step = self._walk_towards(state, target, history)
+            if step is not _ARRIVED:
+                return step
+            # Walked as close as the ground allows and it is still out of
+            # reach -- high up the trunk, or across something. Skip it.
+            self._skip.add(target.position)
+            self._aim_target = None
+            self._aim_gave_up = (f"The {target.name} at {target.position} is "
+                                 f"out of reach from anywhere I can stand "
+                                 f"next to it.")
+            if len(self._skip) > MAX_SKIPPED_TARGETS:
+                self._walk_failed = self._aim_gave_up
+                return None
+            return self._work_from_the_map(state, local, crosshair_readable,
+                                           history)
 
         # Close enough to hit.
         self._walker = None
@@ -1361,13 +1410,11 @@ class CollectLogs:
         self._last_target = target.name
         estimate = mining_mod.estimate_break_duration(target.name, state=state)
         self._last_estimate = estimate
-        # Best evidence first: the inventory if it is readable, then the
-        # exact coordinate going. Each is a stronger claim than the crosshair
-        # alone, and the verdict's reason says which was used.
-        if self._can_count:
-            check = verify_mod.collected(target.name)
-        else:
-            check = verify_mod.broke_block_at(target.position, target.name)
+        # The step is judged on what it did: did THIS block go. Whether its
+        # drop reached the inventory is a separate question, answered by the
+        # count and the pickup that follows -- judging a mine by the bag
+        # called a broken log a failure and sent the task to break another.
+        check = verify_mod.broke_block_at(target.position, target.name)
         # `expect_at` makes the controller read the crosshair once more at
         # the instant before the button goes down, and press nothing unless
         # it is still on this exact coordinate.
@@ -1406,19 +1453,98 @@ class CollectLogs:
             if self._walker.failed:
                 self._walk_failed = self._walker.done_reason
                 return None
-            self._walker = None        # arrived; mine on the next iteration
-            return self._noop_look(state)
+            self._walker = None
+            return _ARRIVED
         return step
 
-    def _noop_look(self, state):
-        """A step that costs one iteration and changes nothing important.
+    # ── fetching the drops ───────────────────────────────────────────────
 
-        Returning None here would end the task at the moment it arrived at the
-        tree. A small turn gives the loop one more pass to observe and then
-        mine."""
+    def _pick_up(self, state, local, history):
+        """Walk onto the logs this task broke, so they reach the inventory.
+
+        A broken log drops an item where it falls, and the player only picks
+        up what it walks within about a block of. Mining from a few blocks
+        away -- which reach allows -- leaves the drop lying there. The bridge
+        reports item entities with positions, so the drop can be walked to.
+        Bounded: MAX_PICKUP_WALKS walks, then an honest account of where the
+        rest are."""
+        drop = self._nearest_drop(state)
+        if drop is None:
+            self._pickup_walker = None
+            self._pickup_note = (
+                f"I broke {self._broken} log(s) but only {self._collected} "
+                f"reached the inventory, and I cannot see the rest lying "
+                f"anywhere near where they fell.")
+            return None
+        where = _drop_text(drop)
+        if not local.usable:
+            self._pickup_note = (f"The dropped log is on the ground at "
+                                 f"{where}, but I cannot see the terrain to "
+                                 f"walk to it.")
+            return None
+
+        walker = self._pickup_walker
+        if walker is None:
+            if self._pickup_walks >= MAX_PICKUP_WALKS:
+                self._pickup_note = (
+                    f"I broke {self._broken} log(s) and picked up "
+                    f"{self._collected}; the rest is on the ground at {where} "
+                    f"and I could not get to it after {self._pickup_walks} "
+                    f"tries.")
+                return None
+            target = _pickup_column(state, local, drop)
+            if target is None:
+                self._pickup_note = (
+                    f"I broke {self._broken} log(s) and picked up "
+                    f"{self._collected}; the rest is on the ground at {where} "
+                    f"and there is nowhere I can stand close enough to pick "
+                    f"it up.")
+                return None
+            column, within = target
+            self._pickup_walks += 1
+            walker = NavigateTo(destination=column, arrive_within=within)
+            self._pickup_walker = walker
+
+        step = walker.plan(state, 0, history)
+        if step is not None:
+            return step
+        self._pickup_walker = None
+        if walker.failed:
+            if self._pickup_walks >= MAX_PICKUP_WALKS:
+                self._pickup_note = (
+                    f"I broke {self._broken} log(s) and picked up "
+                    f"{self._collected}; the rest is at {where} and I could "
+                    f"not walk there: {walker.done_reason}")
+                return None
+            return self._pick_up(state, local, history)
+        # Standing on it. Pickup happens on contact within a tick or two;
+        # one observed pause lets the inventory catch up -- and is CHECKED,
+        # against the bag, so it is never a filler step.
         return Step(action="look", params={"dx": 1, "dy": 0},
-                    expectation=None,
-                    note="arrived at the tree")
+                    expectation=verify_mod.collected(self._last_target
+                                                     or "oak_log"),
+                    note=f"standing where the dropped log is ({where})")
+
+    def _nearest_drop(self, state):
+        """The closest item on the ground near a block this task broke."""
+        items = [e for e in (getattr(state, "nearby_entities", None) or ())
+                 if getattr(e, "category", None) == "item"
+                 and getattr(e, "position", None) is not None]
+        if not items or state.position is None:
+            return None
+        anchors = self._broken_at or [tuple(state.position)]
+
+        def near_a_break(entity):
+            ex, ez = entity.position[0], entity.position[2]
+            return any(math.hypot(ex - (a[0] + 0.5), ez - (a[2] + 0.5))
+                       <= DROP_RADIUS for a in anchors)
+
+        ours = [e for e in items if near_a_break(e)]
+        if not ours:
+            return None
+        return min(ours, key=lambda e: math.hypot(
+            e.position[0] - state.position[0],
+            e.position[2] - state.position[2]))
 
     def _work_from_the_crosshair(self, state):
         """The old behaviour, kept for when the mod is not running."""
@@ -1428,8 +1554,8 @@ class CollectLogs:
 
         if name in LOG_BLOCKS:
             self._last_target = name
-            check = (verify_mod.collected(name) if self._can_count
-                     else verify_mod.block_broken(name))
+            # Judged on the block, never the bag -- see _mine.
+            check = verify_mod.block_broken(name)
             return Step(action="mine",
                         params=_mine_params(self._mine_seconds(), block),
                         expectation=check,
@@ -1474,6 +1600,44 @@ class CollectLogs:
         if last != "mine":
             return None
         return "sweep for a different log"
+
+
+def _pickup_column(state, local, drop):
+    """Where to stand to pick `drop` up: (column, arrive_within), or None.
+
+    The drop's own column first. But a log broken at the bottom of a trunk
+    drops INTO the trunk's column, under the logs still standing above it,
+    where nobody fits -- and Minecraft collects from a box about 1.4 blocks
+    either side of the player, so standing in the next column over does it.
+    Hence the neighbours, nearest to the player first, each only if there is
+    a walkable route to it. Stopping closer to a neighbour's centre keeps the
+    item inside that box."""
+    try:
+        cx = int(math.floor(drop.position[0]))
+        cz = int(math.floor(drop.position[2]))
+        px, pz = state.position[0], state.position[2]
+    except (TypeError, IndexError, ValueError, AttributeError):
+        return None
+    here = (int(math.floor(px)), int(math.floor(pz)))
+    neighbours = sorted(((cx + 1, cz), (cx - 1, cz), (cx, cz + 1), (cx, cz - 1)),
+                        key=lambda c: math.hypot(c[0] + 0.5 - px,
+                                                 c[1] + 0.5 - pz))
+    for column, within in [((cx, cz), 0.6)] + [(c, 0.35) for c in neighbours]:
+        if column == here:
+            return column, within
+        if not local.standable(*column):
+            continue
+        if nav.find_path(state, column).found:
+            return column, within
+    return None
+
+
+def _drop_text(entity) -> str:
+    try:
+        x, y, z = entity.position
+        return f"({x:.0f}, {y:.0f}, {z:.0f})"
+    except (TypeError, ValueError):
+        return "somewhere nearby"
 
 
 def _log_total(state) -> int:

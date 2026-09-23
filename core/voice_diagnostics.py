@@ -59,7 +59,10 @@ SPEECH_LEVEL = 0.06
 # four is about a quarter of a second — longer than a keystroke or a cough.
 SPEECH_FRAMES = 4
 
-LOST_INPUT = "VOICE_PIPELINE_LOST_INPUT"
+LOST_INPUT = "VOICE_NO_TRANSCRIPT"
+"""Loud audio at the microphone that no transcript ever followed. Named for
+what was observed, not for a conclusion: game audio, music and coughs look
+exactly like this, and so does speech the pipeline lost."""
 HEARD_IGNORED = "VOICE_HEARD_BUT_UNANSWERED"
 
 # How long after a finished turn to wait for the model to say or do something.
@@ -70,8 +73,10 @@ UNANSWERED_AFTER_S = 8.0
 
 @dataclass
 class _Utterance:
-    """One stretch of local speech, and what became of it."""
+    """One stretch of loud audio at the microphone, and what became of it."""
     started_at: float
+    last_loud_at: float = 0.0
+    replies_at_start: int = 0
     frames: int = 0
     queued: int = 0
     dropped: int = 0
@@ -137,6 +142,7 @@ class VoiceDiagnostics:
     lost_utterances: int = 0
     unanswered_turns: int = 0
     last_loss: str = ""
+    last_loss_kind: str = ""       # dropped / gated / unsent / no_transcript
     last_user_speech_at: float = 0.0
     last_transcript_at: float = 0.0
 
@@ -195,6 +201,11 @@ class VoiceDiagnostics:
         try:
             with self._lock:
                 setattr(self, field_name, getattr(self, field_name) + 1)
+                if why == "speaking":
+                    # Loud audio while JARVIS is talking is JARVIS, through
+                    # the speakers. It must not start an "utterance" -- that
+                    # is how every reply was being reported as lost input.
+                    self._loud_run = 0
         except Exception:
             pass
 
@@ -243,8 +254,11 @@ class VoiceDiagnostics:
             self._loud_run += 1
             if self._loud_run == SPEECH_FRAMES and self._open is None:
                 self.last_user_speech_at = self._clock()
-                self._open = _Utterance(started_at=self.last_user_speech_at,
-                                        sent_at_start=self.sent)
+                self._open = _Utterance(
+                    started_at=self.last_user_speech_at,
+                    last_loud_at=self.last_user_speech_at,
+                    replies_at_start=self.responses + self.tool_calls,
+                    sent_at_start=self.sent)
                 # Measured at the microphone, BEFORE every gate -- the same
                 # place the HUD meter is drawn from. It says someone spoke,
                 # never that anything was sent; the entries after it say that.
@@ -252,6 +266,7 @@ class VoiceDiagnostics:
                                      "speech_at_mic", ""))
             if self._open is not None:
                 self._open.frames += 1
+                self._open.last_loud_at = self._clock()
         else:
             self._loud_run = 0
 
@@ -558,13 +573,21 @@ class VoiceDiagnostics:
                 open_one = self._open
                 if open_one is None:
                     return ""
-                waited = self._clock() - open_one.started_at
-                if waited < LOST_INPUT_AFTER_S:
+                # Timed from when the sound STOPPED, not when it started:
+                # this server sends the transcript once the turn ends, so a
+                # five-second sentence was being declared lost at second six.
+                quiet = self._clock() - (open_one.last_loud_at
+                                         or open_one.started_at)
+                if quiet < LOST_INPUT_AFTER_S:
                     return ""
                 self._open = None
                 self._loud_run = 0
+                if self.responses + self.tool_calls > open_one.replies_at_start:
+                    # Something answered after this sound began. Whatever it
+                    # was, the pipe was working and nothing was lost.
+                    return ""
                 self.lost_utterances += 1
-                message = self._explain(open_one, waited)
+                message = self._explain(open_one, quiet)
                 self.last_loss = message
                 self._event((self._clock(), "LOST",
                                      message.split(" — ", 1)[-1][:100]))
@@ -579,9 +602,14 @@ class VoiceDiagnostics:
         them: each stage has a different fix and they all look the same from
         the outside."""
         sent_during = self.sent - utterance.sent_at_start
-        head = (f"{LOST_INPUT}: {waited:.0f}s after you spoke "
-                f"({utterance.frames} frames) there is still no transcript")
+        head = (f"{LOST_INPUT}: loud audio at the microphone "
+                f"({utterance.frames} frames), and {waited:.0f}s after it "
+                f"stopped there is still no transcript and no reply")
 
+        self.last_loss_kind = ("dropped" if utterance.dropped else
+                               "gated" if utterance.queued == 0 else
+                               "unsent" if sent_during == 0 else
+                               "no_transcript")
         if utterance.dropped:
             return (f"{head} — {utterance.dropped} frames were DROPPED because "
                     f"the send queue was full. The audio never left this "
@@ -599,9 +627,12 @@ class VoiceDiagnostics:
                     f"were sent. The send loop is stuck or the socket is gone "
                     f"({self.send_errors} send errors, {self.reconnects} "
                     f"reconnects).")
-        return (f"{head} — {sent_during} frames reached Gemini and it returned "
-                f"no transcription. The audio arrived; the server did not turn "
-                f"it into a turn. " + self._proactive_hint())
+        return (f"{head} — {sent_during} frames reached Gemini and no "
+                f"transcript came back. Sound that is not speech looks exactly "
+                f"like this: game audio or music from speakers (the microphone "
+                f"sends it to Gemini too — headphones stop that), a cough, a "
+                f"door. If you WERE talking to JARVIS then, the server did not "
+                f"recognise it as speech. " + self._proactive_hint())
 
     def _proactive_hint(self) -> str:
         """What proactive audio has to do with it, from how it is ACTUALLY
@@ -695,7 +726,7 @@ class VoiceDiagnostics:
             f"errors={s['errors'] + s['send_errors'] + s['callback_errors']}",
         ]
         if s["lost_utterances"]:
-            parts.append(f"LOST={s['lost_utterances']}")
+            parts.append(f"no_transcript={s['lost_utterances']}")
         if s["unanswered_turns"]:
             parts.append(f"UNANSWERED={s['unanswered_turns']}")
         return " ".join(parts)

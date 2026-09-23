@@ -2541,6 +2541,7 @@ class JarvisLive:
         counters distinguish "the queue ate it", "the socket ate it" and "the
         server heard it and chose not to answer", which look identical from
         the outside and have completely different fixes."""
+        last_ambiguous = 0.0
         while True:
             await asyncio.sleep(1.0)
             for check in (self._voice.check_for_loss,
@@ -2552,6 +2553,17 @@ class JarvisLive:
                 if not problem:
                     continue
                 print(f"[JARVIS] {problem}")
+                # Loud sound that no transcript followed is ambiguous -- game
+                # audio from speakers produces it all the time -- so the HUD
+                # shows it at most once a minute. Every other finding (a drop,
+                # a closed gate, a stuck sender, words heard and not answered)
+                # is definite and always shown. The console gets everything.
+                if (check == self._voice.check_for_loss
+                        and self._voice.last_loss_kind == "no_transcript"):
+                    now = time.monotonic()
+                    if now - last_ambiguous < 60.0:
+                        continue
+                    last_ambiguous = now
                 self.ui.write_log(f"SYS: {problem}")
                 self.ui.write_log(
                     f"SYS: voice pipeline — {self._voice.line()}")

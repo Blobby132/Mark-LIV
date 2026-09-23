@@ -62,6 +62,7 @@ class _Attempt:
     action: str
     fingerprint: str
     status: str
+    missing: tuple = ()      # fields the check wanted and could not read
 
 
 @dataclass
@@ -80,6 +81,7 @@ class ProgressMonitor:
             action=str(action or ""),
             fingerprint=_fingerprint(verification),
             status=str((verification or {}).get("status") or ""),
+            missing=tuple((verification or {}).get("missing_fields") or ()),
         ))
 
     def reset(self) -> None:
@@ -152,10 +154,24 @@ class ProgressMonitor:
             return (f"I tried to {last} {self.repeats} times and nothing "
                     f"changed. Something is in the way, or I am aiming at the "
                     f"wrong thing — I stopped rather than keep going.")
+        # Two different things arrive here as UNVERIFIABLE, and they need
+        # opposite explanations. A check that could not READ its fields is
+        # blindness. A step with no check at all is the plan repeating itself
+        # -- and blaming F3 for that sent a working bridge-mod setup looking
+        # for a problem it did not have.
+        streak = self.history[-self.blind_streak:]
+        unread = sorted({name for attempt in streak
+                         for name in attempt.missing})
+        if not unread:
+            return (f"I took {self.blind_streak} steps in a row that nothing "
+                    f"was checking — my own plan going round in a loop, not "
+                    f"a problem seeing the game — so I stopped.")
         return (f"I have taken {self.blind_streak} actions in a row without "
-                f"being able to see whether any of them worked, so I stopped "
-                f"rather than keep going blind. Reading the game state needs "
-                f"the F3 overlay open and OCR installed.")
+                f"being able to see whether any of them worked — I could not "
+                f"read {', '.join(unread)} — so I stopped rather than keep "
+                f"going blind. With the bridge mod running those come "
+                f"straight from the game (bridge_check.bat says whether it "
+                f"is); without it they need the F3 overlay and OCR.")
 
     def as_dict(self) -> dict:
         return {
