@@ -25,6 +25,7 @@ little way out when nothing touching the tree will do.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -39,8 +40,9 @@ from minecraft.mod_bridge import ModBridgeStateSource               # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 
 from tests.test_minecraft_navigation import (                       # noqa: E402
-    SimWorld, flat, run, state_from,
+    SimWorld, _entered_face, flat, run, state_from,
 )
+from tests.test_live_run_regressions import LeafWorld               # noqa: E402
 
 OLD = "markliv.minecraft.state/3"
 NEW = "markliv.minecraft.state/4"
@@ -246,6 +248,134 @@ class ApproachRingTests(unittest.TestCase):
         for column in [(-3, 4), (7, 2), (5, 2), (4, 0), (6, 1)]:
             self.assertEqual(column in reachable,
                              nav.find_path(state, column).found, column)
+
+
+class ShortOakWorld(LeafWorld):
+    """A world kept as individual blocks and reported the way the new jar
+    reports it.
+
+    TreeWorld is a heightmap: a column's reported top is solid all the way
+    down. Under a canopy that is exactly wrong -- there is air beneath the
+    leaves, and breaking one changes what the next column looks like. So
+    here the blocks are the truth, the crosshair is a ray through them, and
+    the terrain scan is recomputed from them with the mod's rule (the floor
+    nearest the feet with two free blocks above) on every read."""
+
+    GROUND = 63
+
+    def __init__(self, logs, leaves, **kwargs):
+        super().__init__(flat(), logs, blocks=leaves, **kwargs)
+
+    def solid_at(self, cell):
+        if cell[1] <= self.GROUND:
+            return "grass_block"
+        for log in self.logs:
+            if log.position == cell:
+                return log.name
+        block = self.blocks.get(cell)
+        return block.name if block is not None else None
+
+    def scan(self):
+        feet = math.floor(self.y)
+        out = []
+        for x in range(-RADIUS, RADIUS + 1):
+            for z in range(-RADIUS, RADIUS + 1):
+                best = None
+                for y in range(feet + 4, feet - 6, -1):
+                    if (self.solid_at((x, y, z))
+                            and not self.solid_at((x, y + 1, z))
+                            and not self.solid_at((x, y + 2, z))):
+                        distance = abs(y + 1 - feet)
+                        if best is None or distance <= best[0]:
+                            best = (distance, y)
+                if best is None:
+                    continue
+                y = best[1]
+                room = 0
+                while room < 4 and not self.solid_at((x, y + 1 + room, z)):
+                    room += 1
+                out.append(NearbyBlock(x, y, z, self.solid_at((x, y, z)),
+                                       True, room))
+        return out
+
+    def read(self):
+        self.surface = self.scan()
+        self.ground = {(b.x, b.z): b for b in self.surface}
+        return LeafWorld.read(self)
+
+    def crosshair(self):
+        yaw, pitch = math.radians(self.yaw), math.radians(self.pitch)
+        ux = -math.sin(yaw) * math.cos(pitch)
+        uy = -math.sin(pitch)
+        uz = math.cos(yaw) * math.cos(pitch)
+        ex, ey, ez = self.x, self.y + self.EYE, self.z
+        previous = (math.floor(ex), math.floor(ey), math.floor(ez))
+        distance = 0.0
+        while distance <= self.REACH:
+            cell = (math.floor(ex + ux * distance),
+                    math.floor(ey + uy * distance),
+                    math.floor(ez + uz * distance))
+            if cell != previous:
+                name = self.solid_at(cell)
+                if name is not None:
+                    return cell, name, _entered_face(previous, cell)
+                previous = cell
+            distance += 0.02
+        return None
+
+
+def short_oak():
+    """An oak with the shortest trunk the game grows -- four logs -- whose
+    lowest leaves hang one block above the ground, at head height, two
+    columns out all the way round. A third of oaks are this shape."""
+    tx, tz = TRUNK
+    logs = [NearbyBlock(tx, y, tz, "oak_log", True) for y in range(64, 68)]
+    leaves = []
+    for y, radius in ((65, 2), (66, 2), (67, 1), (68, 1)):
+        for x in range(tx - radius, tx + radius + 1):
+            for z in range(tz - radius, tz + radius + 1):
+                if (x, z) == TRUNK and y < 68:
+                    continue
+                leaves.append(NearbyBlock(x, y, z, "oak_leaves", True))
+    return logs, leaves
+
+
+class ShortOakTests(unittest.TestCase):
+    """Nowhere within two columns of a short oak has room to stand, and
+    from three out its logs are behind leaves. It used to say "no walkable
+    route"; it should walk up and cut its way in."""
+
+    def setUp(self):
+        aiming_mod.SHARED.reset()
+
+    def test_it_finds_somewhere_to_stand(self):
+        world = ShortOakWorld(*short_oak(), inventory={"oak_log": 0})
+        state = world.read()
+        log = nav.nearest_block(state, "log", reachable_only=True)
+        self.assertIsNotNone(log, "a short oak is still 'unreachable'")
+        self.assertTrue(in_ring(nav.approach_column(state, log), 3))
+
+    def test_it_cuts_through_the_leaves_and_gets_a_log(self):
+        world = ShortOakWorld(*short_oak(), inventory={"oak_log": 0})
+        skill = skills.create("collect_logs", count=1)
+        result = run(world, skill, max_steps=45)
+        self.assertEqual(len(world.broken), 1, skill.done_reason)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertEqual(world.wrong_block_swings, 0)
+        self.assertTrue(world.leaves_broken)
+        self.assertLessEqual(len(world.leaves_broken),
+                             skills.MAX_LEAVES_PER_LOG)
+        clears = [r for r in result.records
+                  if r.step.get("note", "").startswith("clear ")]
+        self.assertEqual(len(clears), len(world.leaves_broken))
+
+    def test_a_stone_wall_is_still_not_seen_through(self):
+        """Only leaves are let through: they are what collect_logs clears."""
+        logs, leaves = short_oak()
+        stone = [NearbyBlock(b.x, b.y, b.z, "stone", True) for b in leaves]
+        world = ShortOakWorld(logs, stone, inventory={"oak_log": 0})
+        self.assertIsNone(nav.nearest_block(world.read(), "log",
+                                            reachable_only=True))
 
 
 class OutdatedJarTests(unittest.TestCase):

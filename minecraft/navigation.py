@@ -364,7 +364,13 @@ class LocalMap:
                     return (column, "head")
         return None
 
-    def sight_is_clear(self, eye, point, skip=(), stride: float = 0.1):
+    def leafy(self, x: int, z: int) -> bool:
+        """Is this column's reported block, or what is in it, leaves?"""
+        return any(str(name).endswith("_leaves")
+                   for name in (self.block_at(x, z), self.cover_at(x, z)))
+
+    def sight_is_clear(self, eye, point, skip=(), stride: float = 0.1,
+                       leaves_ok: bool = False):
         """Does a straight line from `eye` to `point` pass only through
         space the map says is open?
 
@@ -372,7 +378,13 @@ class LocalMap:
         it, below whatever caps that column's clearance -- a canopy, a
         ledge, a roof. Columns in `skip` (the viewer's own, the target's)
         are not checked, and an unscanned column is not open: a view nobody
-        looked along is not a view."""
+        looked along is not a view.
+
+        `leaves_ok` lets the line through columns the map shows as leaves,
+        for a caller that will clear them: collect_logs breaks leaves in
+        front of a log, and a short oak's canopy hangs at head height all
+        the way round, so without this its logs are never "in view" from
+        anywhere a player can stand."""
         try:
             x0, y0, z0 = (float(v) for v in eye[:3])
             x1, y1, z1 = (float(v) for v in point[:3])
@@ -391,11 +403,11 @@ class LocalMap:
             ground = self.ground_at(*column)
             if ground is None:
                 return False
-            if y < ground + 1:
-                return False
             room = self.clearance_at(*column)
-            if room is not None and room < MAX_REPORTED_CLEARANCE \
-                    and y >= ground + 1 + room:
+            blocked = y < ground + 1 or (
+                room is not None and room < MAX_REPORTED_CLEARANCE
+                and y >= ground + 1 + room)
+            if blocked and not (leaves_ok and self.leafy(*column)):
                 return False
         return True
 
@@ -1018,8 +1030,8 @@ def _can_touch(local: LocalMap, column: tuple, block) -> bool:
     """Could a player standing at `column` hit `block`?
 
     In reach by the same eye-to-face measure the mining skills use, and with
-    nothing the map knows of in between -- a wall, or the leaves of the very
-    tree being approached. Reach through a wall is not reach."""
+    nothing the map knows of in between but leaves, which collect_logs
+    clears. Reach through a wall is not reach."""
     ground = local.ground_at(*column)
     if ground is None:
         return False
@@ -1032,7 +1044,8 @@ def _can_touch(local: LocalMap, column: tuple, block) -> bool:
         return False
     eye = (feet[0], feet[1] + aiming.EYE_HEIGHT, feet[2])
     return local.sight_is_clear(eye, aiming.target_point(target, feet),
-                                skip=(column, (target[0], target[2])))
+                                skip=(column, (target[0], target[2])),
+                                leaves_ok=True)
 
 
 def _approach(local: LocalMap, reachable, block):
