@@ -61,9 +61,10 @@ from minecraft.state import (
     empty_state,
 )
 
-SCHEMA = "markliv.minecraft.state/3"
+SCHEMA = "markliv.minecraft.state/4"
 
-SUPPORTED_SCHEMAS = frozenset({SCHEMA, "markliv.minecraft.state/2",
+SUPPORTED_SCHEMAS = frozenset({SCHEMA, "markliv.minecraft.state/3",
+                               "markliv.minecraft.state/2",
                                "markliv.minecraft.state/1"})
 """Schemas this reader understands.
 
@@ -184,6 +185,19 @@ class ModBridgeStateSource:
         except (TypeError, ValueError):
             return None
 
+    def schema(self):
+        """Which schema the running mod writes, or None if it cannot be read.
+
+        For saying "an older jar is loaded" in words: the older ones still
+        work, but cannot see the ground under a tree's leaves."""
+        payload = self._payload()
+        return None if payload is None else payload.get("schema")
+
+    def outdated(self) -> bool:
+        """Is a jar older than this code expects loaded?"""
+        found = self.schema()
+        return found is not None and found != SCHEMA
+
     def read(self) -> WorldState:
         """One reading. Never raises: every failure becomes an empty state
         with a note, because a planner that gets an exception here has nothing
@@ -255,7 +269,7 @@ class ModBridgeStateSource:
             time_of_day=_integer(payload.get("time_of_day")),
             light_level=_integer(payload.get("light_level")),
             nearby_entities=_entities(payload.get("nearby_entities")),
-            surface=_blocks(payload.get("surface")),
+            surface=_surface(payload.get("surface"), payload.get("schema")),
             notable_blocks=_blocks(payload.get("notable_blocks")),
             mouse_sensitivity=_number(payload.get("mouse_sensitivity")),
             on_ground=(payload["on_ground"]
@@ -418,8 +432,77 @@ def _terrain_block(value):
             clearance = max(0, int(value[5]))
         except (TypeError, ValueError):
             clearance = None
+    # Schema /4 adds what a player standing on the floor would be inside.
+    cover = _short_name(value[6]) if len(value) > 6 else None
     return NearbyBlock(x=x, y=y, z=z, name=name, solid=solid,
-                       clearance=clearance)
+                       clearance=clearance, cover=cover)
+
+
+FLOOR_SCHEMA = "markliv.minecraft.state/4"
+"""The first schema whose `surface` is the floor nearest the player's feet.
+
+Before it, each column reported its TOPMOST block. Under a tree that is the
+canopy -- a wall of leaves four blocks up round every trunk -- and on open
+ground it is often a grass tuft, which has no collision and so looked like
+no floor at all. A real run on flat grassland could not walk to a single
+tree. An older jar still gets the grass fixed below; only a newer jar can
+see under the leaves."""
+
+GROUND_COVER = frozenset({
+    "short_grass", "grass", "fern", "dead_bush", "bush", "short_dry_grass",
+    "leaf_litter", "pink_petals", "wildflowers", "firefly_bush",
+    "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet",
+    "oxeye_daisy", "cornflower", "lily_of_the_valley", "torchflower",
+    "open_eyeblossom", "closed_eyeblossom", "brown_mushroom", "red_mushroom",
+    "sweet_berry_bush", "wither_rose",
+})
+"""Plants one block tall that cannot exist without a floor directly under
+them -- the game breaks them the moment it goes. So an old jar reporting one
+of these as a column's top is also reporting a floor one block down, as a
+fact of the game rather than a guess. Hazards stay in the list: the plant
+becomes the floor's cover, and the planner still refuses to walk through
+it."""
+
+TALL_GROUND_COVER = frozenset({
+    "tall_grass", "large_fern", "sunflower", "lilac", "rose_bush", "peony",
+    "pitcher_plant", "tall_dry_grass",
+})
+"""Two blocks tall. Seen from above, the top half is what the old scan
+found, so the floor is two blocks down."""
+
+_CLEARANCE_CAP = 4
+"""The mod's MAX_CLEARANCE: it stops counting headroom here."""
+
+
+def _floor_under(block):
+    """An old jar's plant-topped column, as the floor the plant stands on.
+
+    Anything not on the lists above is left exactly as reported -- a torch,
+    a rail, a vine hanging over a drop. Those need not sit on anything below
+    them, and inventing a floor under a vine is how a route walks off a
+    cliff."""
+    if block.solid is not False:
+        return block
+    if block.name in TALL_GROUND_COVER:
+        depth = 2
+    elif block.name in GROUND_COVER or block.name.endswith(
+            ("_sapling", "_tulip")):
+        depth = 1
+    else:
+        return block
+    clearance = None if block.clearance is None else \
+        min(_CLEARANCE_CAP, block.clearance + depth)
+    return NearbyBlock(x=block.x, y=block.y - depth, z=block.z,
+                       name="ground", solid=None, clearance=clearance,
+                       cover=block.name)
+
+
+def _surface(value, schema):
+    """The terrain columns, as floors whichever jar reported them."""
+    blocks = _blocks(value)
+    if blocks is None or schema == FLOOR_SCHEMA:
+        return blocks
+    return tuple(_floor_under(block) for block in blocks)
 
 
 def _blocks(value):

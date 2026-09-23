@@ -38,6 +38,7 @@ from core.voice_diagnostics import (                                # noqa: E402
 )
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import skills                                        # noqa: E402
+from minecraft import mining as mining_mod                          # noqa: E402
 from minecraft import verification as verify_mod                    # noqa: E402
 from minecraft.progress import BLIND_AFTER, ProgressMonitor         # noqa: E402
 from minecraft.state import EntityRef, NearbyBlock                  # noqa: E402
@@ -286,6 +287,135 @@ class VoiceWatchdogFalseAlarmTests(unittest.TestCase):
         self.assertIn("not speech", found[0])
         self.assertIn("game audio", found[0])
         self.assertIn("no_transcript=1", self.diag.line())
+
+
+# ── The second run ───────────────────────────────────────────────────────────
+
+class LeafWorld(TreeWorld):
+    """TreeWorld whose leaves can be broken, as the game's can: hold attack
+    on a leaf block long enough and it goes."""
+
+    def mine(self, params):
+        hit = self.crosshair()
+        if hit is not None and hit[0] in self.blocks \
+                and hit[1].endswith("_leaves"):
+            self.swings += 1
+            needed = mining_mod.estimate_break_duration(hit[1]).seconds
+            if float(params.get("duration", 0)) >= needed:
+                del self.blocks[hit[0]]
+                self.leaves_broken.append(hit[0])
+            return self._result("mine", params)
+        return TreeWorld.mine(self, params)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.leaves_broken = []
+
+
+def canopy_round(log, below=True):
+    """Leaves boxing a log in on every side a player could see it from."""
+    x, y, z = log
+    sides = [(x - 1, y, z), (x + 1, y, z), (x, y, z - 1), (x, y, z + 1)]
+    if below:
+        sides.append((x, y - 1, z))
+    return [NearbyBlock(*p, "oak_leaves", True) for p in sides]
+
+
+class LeavesInTheWayTests(unittest.TestCase):
+    """From the second run: the aim settled 0 degrees off four logs in turn
+    and the crosshair never landed on one. Every step said "aim at oak_log"
+    and none said what it was actually looking at."""
+
+    def setUp(self):
+        aiming_mod.SHARED.reset()
+
+    def test_aim_steps_say_what_the_crosshair_is_on(self):
+        world = TreeWorld(flat(), [NearbyBlock(5, 67, 0, "oak_log", True)],
+                          blocks=canopy_round((5, 67, 0)), inventory={})
+        result = run(world, skills.create("collect_logs", count=1))
+        aims = [r.step.get("note", "") for r in result.records
+                if r.step.get("note", "").startswith("aim at")]
+        self.assertTrue(aims)
+        self.assertTrue(any("crosshair on oak_leaves (5, 66, 0)" in note
+                            for note in aims), aims)
+
+    def test_a_leaf_in_front_of_the_log_is_cleared_and_the_log_mined(self):
+        log = NearbyBlock(5, 67, 0, "oak_log", True)
+        world = LeafWorld(flat(), [log], blocks=canopy_round(log.position),
+                          inventory={"oak_log": 0})
+        skill = skills.create("collect_logs", count=1)
+        result = run(world, skill)
+        self.assertEqual(len(world.leaves_broken), 1, world.leaves_broken)
+        self.assertEqual([b.position for b in world.broken], [log.position])
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertEqual(world.wrong_block_swings, 0)
+        clears = [r for r in result.records
+                  if r.step.get("note", "").startswith("clear oak_leaves")]
+        self.assertEqual(len(clears), 1)
+        self.assertEqual(clears[0].verification["status"], verify_mod.SUCCESS)
+
+    def test_a_cleared_leaf_is_not_counted_as_a_log(self):
+        """Count 1: a successful leaf break must not end the task as if it
+        were the log."""
+        log = NearbyBlock(5, 67, 0, "oak_log", True)
+        world = LeafWorld(flat(), [log], blocks=canopy_round(log.position),
+                          inventory=None)          # counting broken blocks
+        skill = skills.create("collect_logs", count=1)
+        run(world, skill)
+        self.assertEqual([b.position for b in world.broken], [log.position],
+                         "stopped after the leaf, as if it were the log")
+        self.assertIn("broke 1 of 1", skill.done_reason)
+
+    def test_leaf_clearing_is_bounded_and_the_blocker_is_reported(self):
+        """Leaves that will not break: a few tries, then a different log,
+        and the report still names what was in the way."""
+        high = NearbyBlock(5, 72, 0, "oak_log", True)
+        blocked = NearbyBlock(5, 67, 0, "oak_log", True)
+        world = TreeWorld(flat(), [blocked, high],
+                          blocks=canopy_round(blocked.position), inventory={})
+        skill = skills.create("collect_logs", count=1)
+        result = run(world, skill)
+        clears = [r for r in result.records
+                  if r.step.get("note", "").startswith("clear ")]
+        self.assertEqual(len(clears), skills.MAX_LEAVES_PER_LOG)
+        self.assertEqual(world.broken, [])
+        self.assertIn("out of reach", skill.done_reason)
+        self.assertIn("oak_leaves", skill.done_reason,
+                      "the first, telling reason was overwritten")
+
+    def test_a_leaf_behind_the_log_is_left_alone(self):
+        """Leaves are only broken when they are NEARER than the log."""
+        log = NearbyBlock(5, 64, 0, "oak_log", True)
+        skill = skills.create("collect_logs", count=1)
+        state = TreeWorld(flat(), [log], inventory={}).read()
+        from minecraft.state import BlockRef
+        state = dataclasses.replace(
+            state, position=(3.5, 64.0, 0.5),
+            target_block=BlockRef(name="oak_leaves", x=6, y=64, z=0))
+        self.assertIsNone(skill._clear_leaves(state, log))
+
+
+class StatusLineTests(unittest.TestCase):
+
+    def test_an_unlimited_session_does_not_break_status(self):
+        """`status` failed with TypeError: an unlimited session has no
+        remaining time, and None was formatted as a number."""
+        from actions import minecraft as mc_actions
+        line = mc_actions._status_line({
+            "minecraft_running": True,
+            "window": {"found": True, "foreground": True},
+            "session_active": True,
+            "session": {"unlimited": True, "remaining_seconds": None}})
+        self.assertIn("no time limit", line)
+
+    def test_a_timed_session_still_says_how_long_is_left(self):
+        from actions import minecraft as mc_actions
+        line = mc_actions._status_line({
+            "minecraft_running": True,
+            "window": {"found": True, "foreground": True},
+            "session_active": True,
+            "session": {"unlimited": False, "remaining_seconds": 312.4}})
+        self.assertIn("312s left", line)
 
 
 if __name__ == "__main__":

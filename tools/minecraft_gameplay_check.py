@@ -173,7 +173,11 @@ def section_a(rig: Rig) -> bool:
     print(f"  Head clearance:         {'reported' if has_clearance else 'MISSING'}")
     print(f"  Mouse sensitivity:      {state.mouse_sensitivity}")
     print(f"  On the ground:          {state.on_ground}")
-    ok = local.usable and has_clearance and state.mouse_sensitivity is not None
+    sees_floors = not rig.bridge.outdated()
+    print(f"  Ground under trees:     "
+          f"{'seen' if sees_floors else 'NOT SEEN (older jar)'}")
+    ok = local.usable and has_clearance and state.mouse_sensitivity is not None \
+        and sees_floors
     record("bridge is the current version", PASS if ok else FAIL,
            "" if ok else "an older jar is loaded — install_mod.bat, then "
                          "restart Minecraft")

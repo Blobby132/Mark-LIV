@@ -1698,18 +1698,33 @@ class CrosshairTargetingTests(unittest.TestCase):
                          "the log above is a different block")
         self.assertFalse(mining_mod.crosshair_on(state, (2, 64, 0), "stone"))
 
-    def test_a_leaf_in_front_of_the_log_is_never_mined(self):
+    def test_a_leaf_in_front_of_the_log_is_never_mined_as_the_log(self):
         """Pointed straight at the log with a leaf in the way, holding attack
         breaks the leaf. The old check was "is the angle close", which said
-        yes, and swung."""
+        yes, and swung -- at the LOG, believing it was hitting the log.
+
+        Breaking the leaf on purpose is allowed now (collect_logs clears a
+        few leaves in the way; see test_live_run_regressions). What must
+        never happen is the old bug: a swing meant for the log while the
+        crosshair is on something else. So every swing here must be a
+        labelled clear aimed at the leaf's own coordinate, and there are only
+        a bounded few of them. This world's leaves do not break, so the log
+        stays hidden and the task must say what was in the way."""
         log = NearbyBlock(4, 65, 0, "oak_log", True)
         leaf = NearbyBlock(3, 65, 0, "oak_leaves", True)
         world = TreeWorld(flat(), [log], blocks=[leaf],
                           position=(0.5, 64.0, 0.5), yaw=-90.0)
         skill = skills.create("collect_logs", count=1)
-        run(world, skill, max_steps=20)
-        self.assertEqual(world.wrong_block_swings, 0,
-                         "it swung at something that was not a log")
+        result = run(world, skill, max_steps=20)
+        for record in result.records:
+            if record.step["action"] != "mine":
+                continue
+            self.assertEqual(tuple(record.step["params"]["expect_at"]),
+                             leaf.position,
+                             "it swung at the log with a leaf in front of it")
+            self.assertTrue(record.step["note"].startswith("clear oak_leaves"))
+        self.assertLessEqual(world.wrong_block_swings,
+                             skills.MAX_LEAVES_PER_LOG)
         self.assertIn(log, world.logs, "it cannot have broken a hidden log")
         self.assertTrue(skill.failed)
         self.assertIn("in the way", skill.done_reason)

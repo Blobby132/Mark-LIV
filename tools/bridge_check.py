@@ -181,14 +181,17 @@ def main() -> int:
     print(f"\n{RULE}\n  IS THE MOD UP TO DATE?\n{RULE}")
     has_clearance = any(b.clearance is not None for b in (state.surface or ()))
     has_sensitivity = state.mouse_sensitivity is not None
+    sees_floors = not source.outdated()
     print(f"  Head clearance reported:   {'yes' if has_clearance else 'NO'}")
+    print(f"  Ground under trees:        {'yes' if sees_floors else 'NO'}")
     print(f"  Mouse sensitivity:         "
           f"{state.mouse_sensitivity if has_sensitivity else 'NOT REPORTED'}")
     print(f"  Standing on the ground:    {state.on_ground}")
-    if not (has_clearance and has_sensitivity):
+    if not (has_clearance and has_sensitivity and sees_floors):
         print("\n  An OLDER jar is loaded. It still works, but without these")
-        print("  JARVIS cannot tell a low branch from open ground, and has to")
-        print("  guess how far your mouse turns. Reinstall and restart:")
+        print("  JARVIS cannot tell a low branch from open ground, cannot see")
+        print("  the ground under a tree (so it may find no way to one), and")
+        print("  has to guess how far your mouse turns. Reinstall and restart:")
         print("    install_mod.bat")
 
     print(f"\n{RULE}\n  CAN IT NAVIGATE?\n{RULE}")

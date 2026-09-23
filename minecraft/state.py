@@ -115,6 +115,13 @@ class NearbyBlock:
     A column can have perfect footing and a branch one block above it, and a
     planner that knows only the ground walks you into the branch. None means
     the bridge did not say, which is not the same as zero."""
+    cover: str | None = None
+    """For a floor: the first thing a player standing on it would be INSIDE
+    -- grass at the feet, a berry bush, fire, a vine at head height -- or
+    None when that space is empty or the bridge did not say.
+
+    Everything reported here is passable, which is not the same as harmless.
+    A route through fire walks through fire, so the planner has to see it."""
 
     @property
     def position(self) -> tuple:

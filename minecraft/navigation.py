@@ -87,7 +87,7 @@ mostly invention anyway."""
 HAZARDS = frozenset({
     "lava", "flowing_lava", "fire", "soul_fire", "magma_block", "cactus",
     "sweet_berry_bush", "wither_rose", "powder_snow", "campfire",
-    "soul_campfire",
+    "soul_campfire", "cobweb",
 })
 
 LIQUIDS = frozenset({"water", "flowing_water", "lava", "flowing_lava"})
@@ -126,7 +126,8 @@ class LocalMap:
     entries) and immutable in practice, so a path is planned against one
     consistent snapshot rather than a world shifting underneath it."""
 
-    ground: dict = field(default_factory=dict)      # (x, z) -> (y, name, solid)
+    # (x, z) -> (y, name, solid, clearance, cover)
+    ground: dict = field(default_factory=dict)
     origin: tuple | None = None                     # player (x, y, z)
     radius: int | None = None
 
@@ -139,7 +140,8 @@ class LocalMap:
             # Last one wins; the bridge reports one surface per column, so a
             # duplicate means a malformed payload rather than a real choice.
             ground[(block.x, block.z)] = (block.y, block.name, block.solid,
-                                          block.clearance)
+                                          block.clearance,
+                                          getattr(block, "cover", None))
 
         position = getattr(state, "position", None)
         origin = None
@@ -201,6 +203,12 @@ class LocalMap:
         entry = self.ground.get((x, z))
         return None if entry is None else entry[1]
 
+    def cover_at(self, x: int, z: int):
+        """What a player standing here would be inside -- grass, a flower, a
+        berry bush -- or None for empty space or an unreported column."""
+        entry = self.ground.get((x, z))
+        return None if entry is None or len(entry) < 5 else entry[4]
+
     def standable(self, x: int, z: int) -> bool:
         """Can a player stand here at all?
 
@@ -211,6 +219,10 @@ class LocalMap:
             return False
         _y, name, solid = entry[0], entry[1], entry[2]
         if name in HAZARDS or name in LIQUIDS:
+            return False
+        # What you would be standing IN. Grass is fine; a berry bush or fire
+        # is walked through, not over, and hurts all the same.
+        if self.cover_at(x, z) in HAZARDS:
             return False
         # `solid` is None when the game did not say. Treated as standable
         # because the bridge only reports a column's surface when it found a
@@ -351,6 +363,41 @@ class LocalMap:
                 if room < (feet - ground) + PLAYER_HEIGHT:
                     return (column, "head")
         return None
+
+    def sight_is_clear(self, eye, point, skip=(), stride: float = 0.1):
+        """Does a straight line from `eye` to `point` pass only through
+        space the map says is open?
+
+        Open means above a column's ground and, where the bridge measured
+        it, below whatever caps that column's clearance -- a canopy, a
+        ledge, a roof. Columns in `skip` (the viewer's own, the target's)
+        are not checked, and an unscanned column is not open: a view nobody
+        looked along is not a view."""
+        try:
+            x0, y0, z0 = (float(v) for v in eye[:3])
+            x1, y1, z1 = (float(v) for v in point[:3])
+        except (TypeError, ValueError):
+            return False
+        skip = set(skip)
+        samples = max(1, int(math.ceil(
+            math.dist((x0, y0, z0), (x1, y1, z1)) / stride)))
+        for i in range(samples + 1):
+            t = i / samples
+            x, y, z = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, \
+                z0 + (z1 - z0) * t
+            column = (math.floor(x), math.floor(z))
+            if column in skip:
+                continue
+            ground = self.ground_at(*column)
+            if ground is None:
+                return False
+            if y < ground + 1:
+                return False
+            room = self.clearance_at(*column)
+            if room is not None and room < MAX_REPORTED_CLEARANCE \
+                    and y >= ground + 1 + room:
+                return False
+        return True
 
     def line_is_walkable(self, start, end) -> bool:
         """Can the player walk this straight line without jumping?
@@ -670,6 +717,9 @@ def obstacle_ahead(state, heading_to=None) -> Obstacle:
     if reason == "unknown":
         return Obstacle(UNSEEN, column=column)
     if reason == "impassable":
+        cover = local.cover_at(*column)
+        if cover in HAZARDS:
+            return Obstacle(HAZARD, column=column, detail=_readable(cover))
         if name in HAZARDS:
             return Obstacle(HAZARD, column=column, detail=_readable(name))
         if name in LIQUIDS:
@@ -908,8 +958,12 @@ def nearest_block(state, category: str, reachable_only: bool = False,
     if not reachable_only:
         return candidates[0] if candidates else None
 
+    # One flood from the player answers "can I get there" for every
+    # candidate at once, instead of a search per column per candidate.
+    local = LocalMap.from_state(state)
+    reachable = reachable_columns(local)
     for block in candidates:
-        if approach_column(state, block) is not None:
+        if _approach(local, reachable, block) is not None:
             return block
     return None
 
@@ -927,36 +981,100 @@ def nearest_entity(state, category: str | None = None):
     return min(known, key=lambda e: e.distance)
 
 
-def approach_column(state, block, max_nodes: int = MAX_NODES):
-    """A standable column next to `block` that there is a route to, or None.
+APPROACH_RINGS = 3
+"""How far out from a block to look for somewhere to stand and reach it.
 
-    You cannot path INTO a block -- a log occupies the space you would stand
-    in. So the goal is one of its neighbours, and the nearest reachable one
-    wins. Returning None is the honest answer to "can I get to that tree",
-    and is what stops a skill setting off towards something across a ravine."""
-    local = LocalMap.from_state(state)
+One ring -- the eight columns touching it -- was the first design. Round a
+tree those are all under the canopy, and under a low canopy there is not
+room to stand, so "walk to the tree" failed for every short oak. Reach is
+4.5 blocks from the eyes: two or three columns out is still close enough to
+hit a trunk, and is where a person would stand."""
+
+
+def reachable_columns(local: LocalMap, max_nodes: int = MAX_NODES):
+    """Every column there is a walkable route to from where the player
+    stands -- by the same rules find_path uses, since it walks the same
+    neighbours. Empty when the map is unusable or does not cover the
+    player's own column."""
+    if not local.usable:
+        return frozenset()
+    start = (local.origin[0], local.origin[2])
+    if not local.is_known(*start):
+        return frozenset()
+    seen = {start}
+    frontier = [start]
+    expanded = 0
+    while frontier and expanded < max_nodes:
+        current = frontier.pop()
+        expanded += 1
+        for neighbour, _cost in local.neighbours(current):
+            if neighbour not in seen:
+                seen.add(neighbour)
+                frontier.append(neighbour)
+    return frozenset(seen)
+
+
+def _can_touch(local: LocalMap, column: tuple, block) -> bool:
+    """Could a player standing at `column` hit `block`?
+
+    In reach by the same eye-to-face measure the mining skills use, and with
+    nothing the map knows of in between -- a wall, or the leaves of the very
+    tree being approached. Reach through a wall is not reach."""
+    ground = local.ground_at(*column)
+    if ground is None:
+        return False
+    feet = (column[0] + 0.5, ground + 1, column[1] + 0.5)
+    try:
+        target = (int(block.x), int(block.y), int(block.z))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not aiming.SHARED.within_reach(feet, target):
+        return False
+    eye = (feet[0], feet[1] + aiming.EYE_HEIGHT, feet[2])
+    return local.sight_is_clear(eye, aiming.target_point(target, feet),
+                                skip=(column, (target[0], target[2])))
+
+
+def _approach(local: LocalMap, reachable, block):
+    """The nearest place to stand for `block`: touching it if possible,
+    otherwise up to APPROACH_RINGS columns out and still within reach."""
     if not local.usable:
         return None
-
     try:
         bx, bz = int(block.x), int(block.z)
     except (AttributeError, TypeError, ValueError):
         return None
 
-    around = [(bx + dx, bz + dz)
-              for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1),
-                             (1, 1), (1, -1), (-1, 1), (-1, -1))]
-    around.sort(key=lambda c: abs(c[0] - local.origin[0])
-                + abs(c[1] - local.origin[2]))
-
-    for column in around:
-        if not local.standable(*column):
-            continue
-        if column == (local.origin[0], local.origin[2]):
-            return column
-        if find_path(state, column, max_nodes=max_nodes).found:
+    here = (local.origin[0], local.origin[2])
+    for ring in range(1, APPROACH_RINGS + 1):
+        columns = [(bx + dx, bz + dz)
+                   for dx in range(-ring, ring + 1)
+                   for dz in range(-ring, ring + 1)
+                   if max(abs(dx), abs(dz)) == ring]
+        columns.sort(key=lambda c: abs(c[0] - here[0]) + abs(c[1] - here[1]))
+        for column in columns:
+            if column not in reachable or not local.standable(*column):
+                continue
+            # Next to it counts whatever the height: the skill measures
+            # reach again when it gets there, and says so if a log is too
+            # high. Further out is only worth walking to if it is in reach.
+            if ring > 1 and not _can_touch(local, column, block):
+                continue
             return column
     return None
+
+
+def approach_column(state, block, max_nodes: int = MAX_NODES):
+    """A standable column near `block` that there is a route to, or None.
+
+    You cannot path INTO a block -- a log occupies the space you would stand
+    in. So the goal is somewhere beside it: a neighbour if one can be
+    reached, otherwise a column a little further out that is still within
+    reach. Returning None is the honest answer to "can I get to that tree",
+    and is what stops a skill setting off towards something across a
+    ravine."""
+    local = LocalMap.from_state(state)
+    return _approach(local, reachable_columns(local, max_nodes), block)
 
 
 def is_walkable(state, x: int, z: int) -> bool:
@@ -1014,6 +1132,7 @@ def summarise(state) -> dict:
 
 __all__ += [
     "blocks_matching", "blocks_in_category", "ores", "nearest_block",
-    "nearest_entity", "approach_column", "is_walkable", "is_known",
+    "nearest_entity", "approach_column", "reachable_columns",
+    "is_walkable", "is_known",
     "reachable", "summarise",
 ]

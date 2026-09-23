@@ -808,6 +808,14 @@ def _source_label(source) -> str:
     identical in a list of actions."""
     name = type(source).__name__
     if name.startswith("ModBridge"):
+        try:
+            outdated = bool(source.outdated())
+        except Exception:
+            outdated = False
+        if outdated:
+            return ("the bridge mod — but an OLDER version, which cannot see "
+                    "the ground under trees, so it may find no way to one. "
+                    "Run install_mod.bat and restart Minecraft")
         return "the bridge mod — exact, including the terrain around you"
     if name.startswith("DebugOverlay"):
         return ("the F3 overlay via OCR — position and the block under the "
@@ -876,7 +884,12 @@ def _status_line(status: dict) -> str:
         return "Minecraft is running but I cannot find its window."
     if status.get("session_active"):
         session = status.get("session") or {}
-        return (f"Controlling Minecraft — {session.get('remaining_seconds', 0):.0f}s "
+        remaining = session.get("remaining_seconds")
+        # An unlimited session has no remaining time -- None, not zero -- and
+        # formatting None as a number is what made "status" fail outright.
+        if session.get("unlimited") or not isinstance(remaining, (int, float)):
+            return "Controlling Minecraft — the session has no time limit."
+        return (f"Controlling Minecraft — {remaining:.0f}s "
                 f"left on the session.")
     focus = "in front" if window.get("foreground") else "not in front"
     return (f"Minecraft is running and its window is {focus}. "
@@ -946,6 +959,10 @@ TOOL = {
         "than retrying with a bigger number. If it says it stopped N blocks "
         "short because the task ran out of steps, call it again with the "
         "same destination: it carries on from where it is.\n"
+        "collect_logs walks to the nearest tree it can reach, breaks logs "
+        "until it has the count, and walks over the drops to pick them up. "
+        "If leaves are between it and a log it breaks those first — a few "
+        "at most, never counted as logs.\n"
         "REPORTING RESULTS HONESTLY — this matters most:\n"
         "  * Holding attack is not breaking a block. Never say a block broke, "
         "a tree was chopped or wood was collected unless "

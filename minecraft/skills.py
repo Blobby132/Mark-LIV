@@ -75,6 +75,16 @@ MIN_USEFUL_MINE_S = 3.0
 
 MAX_SKIPPED_TARGETS = 4
 
+MAX_LEAVES_PER_LOG = 3
+"""Leaf blocks collect_logs will break to get at one log, before trying a
+different log instead.
+
+From a real run: the aim settled on four logs in turn, 0 degrees off each
+time, and never once landed -- the canopy was between the eye and the trunk.
+Leaves are what is usually in front of a log, and they break in a fraction
+of a second by hand. Only a leaf NEARER than the log is broken, only at the
+exact coordinate the crosshair reports, and never counted as a log."""
+
 MAX_PICKUP_WALKS = 4
 """How many times collect_logs walks over to a dropped log before saying it
 could not get it. A broken log drops an item where it fell, often a couple of
@@ -137,6 +147,26 @@ def _crosshair_at(state):
         return (int(block.x), int(block.y), int(block.z)), block.name
     except (TypeError, ValueError):
         return None
+
+
+def _centre(position) -> tuple:
+    return (position[0] + 0.5, position[1] + 0.5, position[2] + 0.5)
+
+
+def _crosshair_text(state) -> str:
+    """What the crosshair is on, for a person reading the step trail.
+
+    An aim that reaches 0 degrees off and still does not land is only
+    explicable by what it landed on INSTEAD -- a leaf, the next log, the
+    ground -- and the trail used not to say."""
+    seen = _crosshair_at(state)
+    if seen is None:
+        name = getattr(getattr(state, "target_block", None), "name", None)
+        if name == "air" and state.confidence_of("target_block") != UNKNOWN:
+            return "crosshair on nothing within reach"
+        return "crosshair unreadable"
+    position, name = seen
+    return f"crosshair on {name} {position}"
 
 
 # Blocks that count as "a tree" for FindBlock's default search.
@@ -1165,6 +1195,9 @@ class CollectLogs:
     _aim_target: tuple | None = None
     _aim_tries: int = 0
     _aim_gave_up: str = ""
+    _in_the_way: str = ""
+    _cleared: set = field(default_factory=set)
+    _leaves_for: dict = field(default_factory=dict)
     _aim_errors: list = field(default_factory=list)
     _skip: set = field(default_factory=set)
     _last_estimate: object = None
@@ -1197,6 +1230,11 @@ class CollectLogs:
                else " (found by sweeping the crosshair)")
         trouble = (self._pickup_note or self._walk_failed
                    or self._aim_gave_up)
+        # Later logs skipped for reach overwrite the reason, and the first
+        # one -- the log it pointed straight at and could not hit -- is the
+        # one that explains the rest.
+        if trouble and self._in_the_way and self._in_the_way not in trouble:
+            trouble = f"{trouble} Before that: {self._in_the_way}"
         if trouble and self._done < self.count:
             return f"{self._progress_text()}{how}. {trouble}"
         return f"{self._progress_text()}{how}"
@@ -1265,7 +1303,8 @@ class CollectLogs:
         # THAT block went, whatever the inventory later says about the drop.
         broken = [r for r in history
                   if r.step.get("action") == "mine"
-                  and r.verification.get("status") == verify_mod.SUCCESS]
+                  and r.verification.get("status") == verify_mod.SUCCESS
+                  and not self._was_clearing(r)]
         self._broken = len(broken)
         self._broken_at = []
         for record in broken:
@@ -1361,13 +1400,18 @@ class CollectLogs:
                 expectation=verify_mod.turned(min_degrees=1.0),
                 note=(f"aim at {target.name} {target.position} "
                       f"({error:.0f}° off, try {self._aim_tries} of "
-                      f"{self.max_aim_steps})"))
+                      f"{self.max_aim_steps}; {_crosshair_text(state)})"))
 
         # Pointed as well as we are going to get, and the crosshair is NOT on
-        # a log. Something is in front of it — a leaf, the trunk's own edge,
-        # another block — or aiming stopped converging. Either way, holding
-        # attack now would break whatever IS under the crosshair, which is
-        # exactly the thing not to do. Try a different log instead.
+        # a log. Leaves in front of it are broken on purpose, a few at most;
+        # anything else -- the trunk's own edge, another block -- or an aim
+        # that stopped converging, and holding attack now would break
+        # whatever IS under the crosshair, which is exactly the thing not to
+        # do. Try a different log instead.
+        if converging is None:
+            clearing = self._clear_leaves(state, target)
+            if clearing is not None:
+                return clearing
         seen = getattr(state, "target_block", None)
         seen_name = getattr(seen, "name", None) or "nothing"
         if converging is not None:
@@ -1378,6 +1422,8 @@ class CollectLogs:
             self._aim_gave_up = (
                 f"I aimed at the {target.name} at {target.position} but the "
                 f"crosshair lands on {seen_name} — something is in the way.")
+            if not self._in_the_way:
+                self._in_the_way = self._aim_gave_up
         self._skip.add(target.position)
         self._aim_target = None
         if len(self._skip) > MAX_SKIPPED_TARGETS:
@@ -1385,6 +1431,53 @@ class CollectLogs:
             return None
         return self._work_from_the_map(state, local, crosshair_readable,
                                        history)
+
+    def _clear_leaves(self, state, target):
+        """A step breaking the leaf block between the eye and `target`, or
+        None if the crosshair is not on one worth breaking."""
+        seen = _crosshair_at(state)
+        if seen is None:
+            return None
+        position, name = seen
+        if not str(name).endswith("_leaves") or position in self._skip:
+            return None
+        cleared = self._leaves_for.get(target.position, 0)
+        if cleared >= MAX_LEAVES_PER_LOG:
+            return None
+        if not aiming_mod.SHARED.within_reach(state.position, position):
+            return None
+        # In the way means NEARER than the log. A leaf behind it would mean
+        # the aim is off, and breaking it would fix nothing.
+        try:
+            eye = (state.position[0], state.position[1] + aiming_mod.EYE_HEIGHT,
+                   state.position[2])
+        except (TypeError, IndexError):
+            return None
+        if aiming_mod.distance_to(eye, _centre(position)) >= \
+                aiming_mod.distance_to(eye, _centre(target.position)):
+            return None
+
+        self._leaves_for[target.position] = cleared + 1
+        self._cleared.add(position)
+        # A fresh aim at the same log once the leaf is gone.
+        self._aim_tries = 0
+        self._aim_errors = []
+        estimate = mining_mod.estimate_break_duration(name, state=state)
+        return Step(action="mine",
+                    params={"duration": self._mine_seconds(estimate),
+                            "expect_at": list(position)},
+                    expectation=verify_mod.broke_block_at(position, name),
+                    note=(f"clear {name} at {position}, in the way of the "
+                          f"{target.name} at {target.position} "
+                          f"({cleared + 1} of {MAX_LEAVES_PER_LOG})"))
+
+    def _was_clearing(self, record) -> bool:
+        """Did this mine step break leaves in the way, not a log?"""
+        where = (record.step.get("params") or {}).get("expect_at")
+        try:
+            return tuple(int(v) for v in where) in self._cleared
+        except (TypeError, ValueError):
+            return False
 
     def _log_under_crosshair(self, state):
         """The log the bridge says the crosshair is on, if it is within reach.

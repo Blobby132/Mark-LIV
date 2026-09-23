@@ -109,6 +109,9 @@ public class MarkLivBridge implements ClientModInitializer {
     /** How far above a surface block to bother measuring empty space. */
     private static final int MAX_CLEARANCE = 4;
 
+    /** Blocks of passable space a standing player needs. */
+    private static final int PLAYER_HEIGHT = 2;
+
     /**
      * Refuse to write beyond this. A payload that grows without bound is a
      * bug somewhere above, and truncating is better than handing the reader a
@@ -116,7 +119,7 @@ public class MarkLivBridge implements ClientModInitializer {
      */
     private static final int MAX_PAYLOAD_BYTES = 256 * 1024;
 
-    private static final String SCHEMA = "markliv.minecraft.state/3";
+    private static final String SCHEMA = "markliv.minecraft.state/4";
 
     private Path target;
     private Path temp;
@@ -299,49 +302,50 @@ public class MarkLivBridge implements ClientModInitializer {
     private record Terrain(String surface, String notable) { }
 
     /**
-     * Blocks of empty space directly above a surface block, capped.
+     * Can a player's body occupy this block?
      *
-     * <p>Capped at {@link #MAX_CLEARANCE} because nothing downstream cares
-     * whether the sky is four blocks up or four hundred -- a player needs
-     * two, and a jump needs three. Counting further would cost scan time to
-     * report a number no one reads.
+     * <p>Judged on the COLLISION shape, not on air: grass, flowers, torches
+     * and signs all occupy a block and none of them stop you walking through.
+     * Treating those as solid would make a flowery meadow impassable.
      *
-     * <p>Judged on the COLLISION shape, not on air: tall grass, flowers,
-     * torches and signs all occupy a block and none of them stop you walking
-     * through. Treating those as a ceiling would make a flowery meadow
-     * impassable.
+     * <p>Fluid is not passable. Water has no collision shape either, and
+     * without this a riverbed would look like dry floor with the river as
+     * headroom -- a route straight through the water, which the planner
+     * cannot walk.
      */
-    private int headroom(net.minecraft.world.level.Level level,
-                         BlockPos.MutableBlockPos cursor,
-                         int x, int y, int z) {
-        int clear = 0;
-        for (int up = 1; up <= MAX_CLEARANCE; up++) {
-            cursor.set(x, y + up, z);
-            BlockState above = level.getBlockState(cursor);
-            if (!above.isAir()
-                    && !above.getCollisionShape(level, cursor).isEmpty()) {
-                break;
-            }
-            clear++;
-        }
-        cursor.set(x, y, z);
-        return clear;
+    private static boolean passable(net.minecraft.world.level.Level level,
+                                    BlockPos pos, BlockState state) {
+        return state.isAir()
+                || (state.getCollisionShape(level, pos).isEmpty()
+                    && state.getFluidState().isEmpty());
     }
 
     /**
      * One pass over the volume around the player, producing two things.
      *
-     * <p><b>surface</b> is the topmost standable block in each column: what a
-     * path planner needs, and nothing more. A full voxel dump of this volume
-     * would be several thousand entries to say what 441 already say.
+     * <p><b>surface</b> is the floor in each column: what a path planner
+     * needs, and nothing more. A full voxel dump of this volume would be
+     * several thousand entries to say what 441 already say. Each entry is
+     * {@code [x, y, z, block, solid, clearance, cover]}: the floor, whether
+     * it has collision, how many passable blocks are above it (capped at
+     * {@link #MAX_CLEARANCE}), and the first non-air block a player standing
+     * there would be inside -- grass at the feet, a berry bush, fire -- or
+     * null.
+     *
+     * <p>The floor is chosen by {@link ColumnScan#floor}: the block with
+     * room for a player above it NEAREST the player's feet. It used to be the
+     * topmost block, which under a tree is the canopy. A column with no floor
+     * that fits a player reports its topmost block instead, with the
+     * clearance that says it does not fit -- water, lava and a trunk under a
+     * low canopy stay visible as places not to go.
      *
      * <p><b>notable</b> is the blocks worth travelling to -- logs, ores,
      * water, work stations -- with their real coordinates, so "find a tree"
      * stops meaning "sweep the crosshair and hope".
      *
-     * <p>A column with no solid block in range is OMITTED rather than
-     * reported as air. The reader then knows it does not know, instead of
-     * being told there is a floor where nobody looked.
+     * <p>A column with nothing in range is OMITTED rather than reported as
+     * air. The reader then knows it does not know, instead of being told
+     * there is a floor where nobody looked.
      */
     private Terrain scanTerrain(net.minecraft.world.level.Level level,
                                 BlockPos feet) {
@@ -353,50 +357,61 @@ public class MarkLivBridge implements ClientModInitializer {
         int originZ = feet.getZ();
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
+        // Each column is read once, top down, from MAX_CLEARANCE above the
+        // scan's top -- so the headroom over the highest scanned block is
+        // measured, not assumed -- to the scan's bottom.
+        int top = SCAN_UP + MAX_CLEARANCE;
+        int length = top + SCAN_DOWN + 1;
+        int first = MAX_CLEARANCE;          // index of dy = SCAN_UP
+        int last = length - 1;              // index of dy = -SCAN_DOWN
+        int feetIndex = top;                // index of dy = 0
+        String[] names = new String[length];
+        boolean[] air = new boolean[length];
+        boolean[] collides = new boolean[length];
+        boolean[] open = new boolean[length];
+
         for (int dx = -SCAN_RADIUS; dx <= SCAN_RADIUS; dx++) {
             for (int dz = -SCAN_RADIUS; dz <= SCAN_RADIUS; dz++) {
                 int x = originX + dx;
                 int z = originZ + dz;
-                boolean haveSurface = false;
 
-                // Top down: the first solid block is the one you stand on.
-                for (int dy = SCAN_UP; dy >= -SCAN_DOWN; dy--) {
-                    int y = originY + dy;
-                    cursor.set(x, y, z);
+                for (int i = 0; i < length; i++) {
+                    cursor.set(x, originY + top - i, z);
                     BlockState state = level.getBlockState(cursor);
-                    if (state.isAir()) {
-                        continue;
-                    }
-                    String name = BuiltInRegistries.BLOCK
+                    air[i] = state.isAir();
+                    collides[i] = !air[i] && !state
+                            .getCollisionShape(level, cursor).isEmpty();
+                    open[i] = passable(level, cursor, state);
+                    names[i] = air[i] ? null : BuiltInRegistries.BLOCK
                             .getKey(state.getBlock()).toString();
 
-                    if (!haveSurface) {
-                        haveSurface = true;
-                        boolean solid = !state.getCollisionShape(level, cursor)
-                                .isEmpty();
-                        // How much room is there to STAND here? A column can
-                        // have perfectly good ground and a branch, a ledge or
-                        // a ceiling one block above it, and a planner that
-                        // only knows the ground walks the player into it.
-                        //
-                        // One integer per column answers it, which is why it
-                        // is measured here rather than shipping the whole
-                        // volume: a player needs two, so 0 or 1 means "you
-                        // cannot be here" and the route goes round.
-                        int clearance = headroom(level, cursor, x, y, z);
-                        surface.add(Json.array(
-                                Integer.toString(x), Integer.toString(y),
-                                Integer.toString(z), Json.quote(name),
-                                Boolean.toString(solid),
-                                Integer.toString(clearance)));
-                    }
-
-                    if (notable.size() < MAX_NOTABLE && isNotable(name)) {
+                    if (i >= first && !air[i]
+                            && notable.size() < MAX_NOTABLE
+                            && isNotable(names[i])) {
                         notable.add(Json.array(
-                                Integer.toString(x), Integer.toString(y),
-                                Integer.toString(z), Json.quote(name)));
+                                Integer.toString(x),
+                                Integer.toString(originY + top - i),
+                                Integer.toString(z), Json.quote(names[i])));
                     }
                 }
+
+                int floor = ColumnScan.floor(collides, open, first, last,
+                        feetIndex, PLAYER_HEIGHT, MAX_CLEARANCE);
+                int chosen = floor >= 0 ? floor
+                        : ColumnScan.top(air, first, last);
+                if (chosen < 0) {
+                    continue;
+                }
+                int cover = floor >= 0
+                        ? ColumnScan.cover(air, floor, PLAYER_HEIGHT) : -1;
+                surface.add(Json.array(
+                        Integer.toString(x),
+                        Integer.toString(originY + top - chosen),
+                        Integer.toString(z), Json.quote(names[chosen]),
+                        Boolean.toString(collides[chosen]),
+                        Integer.toString(ColumnScan.clearance(
+                                open, chosen, MAX_CLEARANCE)),
+                        cover < 0 ? "null" : Json.quote(names[cover])));
             }
         }
 
