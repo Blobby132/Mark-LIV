@@ -25,6 +25,7 @@ WHAT THIS FILE DELIBERATELY DOES NOT DO
 from __future__ import annotations
 
 from core import capabilities
+from core import interrupts
 from core import ocr as core_ocr
 
 from minecraft import capabilities as mc_phase
@@ -34,14 +35,17 @@ from minecraft import skills as mc_skills
 from minecraft.controller import MinecraftController
 from minecraft.debug_overlay import DebugOverlayStateSource, NEEDS_MOD_BRIDGE
 from minecraft.mod_bridge import ModBridgeStateSource
-from minecraft.errors import CapabilityDisabled, InvalidAction, MinecraftError
+from minecraft.errors import (
+    CapabilityDisabled, InvalidAction, MinecraftError, TaskAlreadyRunning,
+)
 from minecraft.observation import Observer
 from minecraft.state import VisionStateSource
 from minecraft.session import (
     DEFAULT_SESSION_SECONDS, GRANT_SUMMARY, MAX_SESSION_SECONDS,
     MIN_SESSION_SECONDS, UNLIMITED,
 )
-from minecraft.task_runner import MAX_TASK_STEPS, TaskRunner
+from minecraft.task_runner import MAX_TASK_SECONDS, MAX_TASK_STEPS, TaskRunner
+from minecraft.task_slot import TaskSlot
 
 # One controller for the process. Minecraft is one game with one window and one
 # session, and a second controller would mean a second ledger — two records of
@@ -50,6 +54,20 @@ _controller: MinecraftController | None = None
 _observer: Observer | None = None
 _state_source = None
 _state_source_pinned = False
+
+# The one background task, if any. See minecraft/task_slot.py: run_task starts
+# a task here and returns at once, so the conversation -- including "stop" --
+# is not held up for the length of the task.
+_slot = TaskSlot()
+
+# Actions that press something. While a task is running these are refused,
+# so a direct command cannot fight the task for the keyboard. Reading, status,
+# stopping and cancelling are never refused.
+_INPUT_ACTIONS = frozenset({
+    "move", "move_and_jump", "jump", "look", "sneak", "sprint", "attack",
+    "mine", "place", "build", "interact", "use_item", "eat", "drop",
+    "hotbar_select", "inventory", "toggle_debug", "run_task",
+})
 
 
 def _target_probe():
@@ -73,6 +91,38 @@ def _get_controller() -> MinecraftController:
         _controller = MinecraftController(progress_probe=_target_probe)
         _observer = Observer(_controller._locator)
     return _controller
+
+
+def _minecraft_busy() -> bool:
+    """Is anything running that a spoken "stop" should reach?"""
+    if _slot.busy():
+        return True
+    controller = _controller
+    return bool(controller is not None and getattr(controller, "busy", False))
+
+
+def cancel_running(reason: str = "cancelled") -> dict:
+    """Stop the running task and any action in progress; keep the session.
+
+    What a spoken "stop" and a withdrawn tool call both mean. Never refused,
+    never blocks: the task is asked to stop, and the controller releases
+    every input right now rather than waiting for it to."""
+    job = _slot.cancel(reason)
+    report = {"task_cancelled": job.name if job is not None else None}
+    controller = _controller
+    if controller is not None:
+        try:
+            report.update(controller.cancel_current(reason))
+        except Exception as e:                    # pragma: no cover
+            report["error"] = f"{type(e).__name__}: {e}"
+    return report
+
+
+# A spoken "stop" reaches this directly, without waiting for the model to
+# decide to call a tool -- see core/interrupts.py. Registered at import, which
+# happens once, when the action loader discovers this file.
+interrupts.register("minecraft", _minecraft_busy, cancel_running,
+                    tools=("minecraft_control",))
 
 
 def _get_observer() -> Observer:
@@ -140,10 +190,11 @@ def _get_state_source():
 def _reset_for_tests(controller=None, observer=None, state_source=None) -> None:
     """Swap in fakes. Only the tests call this; it exists so they can exercise
     the real adapter rather than a copy of its logic."""
-    global _controller, _observer, _state_source, _state_source_pinned
+    global _controller, _observer, _state_source, _state_source_pinned, _slot
     _controller = controller
     _observer = observer
     _state_source = state_source
+    _slot = TaskSlot()
     # A fake handed in here is used exactly as given; the real resolution
     # order would otherwise replace it with whatever this machine has.
     _state_source_pinned = state_source is not None
@@ -187,6 +238,10 @@ _CAPABILITY_BY_ACTION = {
     "hotbar_select": capabilities.MINECRAFT_ITEMS,
     "inventory":     capabilities.MINECRAFT_INVENTORY,
     "run_task":      capabilities.MINECRAFT_TASK,
+    # About the background task. Status is a read; cancelling is a stop, and
+    # like every stop it is never refused.
+    "task_status":   capabilities.MINECRAFT_READ_STATE,
+    "cancel_task":   capabilities.MINECRAFT_STOP,
 
     # Named so they resolve to their real capability and are refused by the
     # phase gate with an explanation, rather than falling through to the
@@ -298,7 +353,7 @@ def _result_line(result, player=None) -> str:
 # ── The handler ──────────────────────────────────────────────────────────────
 
 def minecraft_control(parameters: dict = None, player=None,
-                      session_memory=None, response=None) -> str:
+                      session_memory=None, response=None, speak=None) -> str:
     params = parameters or {}
     action = str(params.get("action", "")).lower().strip()
 
@@ -319,12 +374,48 @@ def minecraft_control(parameters: dict = None, player=None,
     try:
         controller = _get_controller()
 
+        # One thing at a time on the keyboard. While a task runs, anything
+        # that presses keys is refused -- not queued -- and says how to stop
+        # the task. Reading, status and every kind of stop stay available.
+        running = _slot.current()
+        if running is not None and action in _INPUT_ACTIONS:
+            if player:
+                player.write_log(f"[minecraft] refused {action}: the "
+                                 f"{running.name} task is running")
+            return (f"I did not do that: the {running.name} task is still "
+                    f"running ({running.elapsed:.0f}s so far) and it has the "
+                    f"controls. Say stop, or use cancel_task, to end it "
+                    f"first.\n{running.as_dict()}")
+
         if action == "status":
             status = controller.status()
             status["state_source"] = _source_label(_get_state_source())
+            status["task"] = (running.as_dict() if running is not None
+                              else None)
             return (f"{_status_line(status)}\n"
                     f"Reading the world from: {status['state_source']}\n"
                     f"{status}")
+
+        if action == "task_status":
+            if running is not None:
+                return (f"The {running.name} task is running "
+                        f"({running.elapsed:.0f}s so far).\n"
+                        f"{running.as_dict()}")
+            last = _slot.last()
+            if last is None:
+                return "No Minecraft task has run yet."
+            return (f"No task is running. The last one was {last.name}: "
+                    f"{_job_summary(last)}\n{last.as_dict()}")
+
+        if action == "cancel_task":
+            outcome = cancel_running("cancelled by request")
+            if player:
+                player.write_log("[minecraft] task cancelled, all input "
+                                 "released; session still open")
+            what = (f"Cancelled the {outcome['task_cancelled']} task."
+                    if outcome.get("task_cancelled")
+                    else "No task was running; I released anything held.")
+            return (f"{what} The control session is still open.\n{outcome}")
 
         if action == "observe":
             observation = _get_observer().capture()
@@ -382,6 +473,10 @@ def minecraft_control(parameters: dict = None, player=None,
                     f"{info['emergency_stop']}{warning}\n{info}")
 
         if action in ("end_session", "stop"):
+            # The task first, so no further step starts; then the controller,
+            # which releases everything now and ends the session.
+            _slot.cancel("stopped by request" if action == "stop"
+                         else "ended by request")
             outcome = controller.stop(
                 "stopped by request" if action == "stop" else "ended by request")
             if action == "end_session":
@@ -398,6 +493,9 @@ def minecraft_control(parameters: dict = None, player=None,
 
         if action == "move":
             return _result_line(controller.move(params), player)
+
+        if action == "move_and_jump":
+            return _result_line(controller.move_and_jump(params), player)
 
         if action == "jump":
             return _result_line(controller.jump(params), player)
@@ -439,7 +537,7 @@ def minecraft_control(parameters: dict = None, player=None,
             return _result_line(controller.sprint(params), player)
 
         if action == "run_task":
-            return _run_task(controller, params, player)
+            return _run_task(controller, params, player, speak)
 
         # Reachable only if someone adds a name to _CAPABILITY_BY_ACTION and
         # to ENABLED without writing the handler.
@@ -474,13 +572,21 @@ def minecraft_control(parameters: dict = None, player=None,
                 f"still open.")
 
 
-def _run_task(controller, params: dict, player=None) -> str:
-    """Run one bounded skill to completion, or to its limit.
+def _run_task(controller, params: dict, player=None, speak=None) -> str:
+    """Start one bounded skill in the background, and return at once.
 
     The model chooses WHICH skill and with what parameters. It does not get to
     describe the steps: a skill is ordinary Python, so the sequence of actions
     is decided in source and the runner validates every one of them again
-    against `action_spec` before it reaches the controller."""
+    against `action_spec` before it reaches the controller.
+
+    WHY IT DOES NOT WAIT FOR THE TASK
+        A task can take two minutes, and this function runs inside the tool
+        call the voice session is waiting on. Waiting here meant nothing the
+        user said in those two minutes could be acted on -- "stop" included.
+        So the task goes to the background slot and the tool call answers
+        "started"; the real result is reported into the conversation through
+        `speak` when the task ends, and to the HUD step by step as before."""
     name = str(params.get("task", "")).strip().lower()
     if not name:
         return (f"Which task? I have: {', '.join(mc_skills.available())}. "
@@ -492,6 +598,12 @@ def _run_task(controller, params: dict, player=None) -> str:
                 "count", "slot", "target"):
         if key in params:
             options[key] = params[key]
+    if name in ("aim_at_block", "mine_block"):
+        block = _block_from(params)
+        if isinstance(block, str):
+            return block
+        options.update(x=block[0], y=block[1], z=block[2])
+        options.pop("target", None)
     if name == "navigate_to":
         column = _destination_from(params)
         if isinstance(column, str):
@@ -511,53 +623,163 @@ def _run_task(controller, params: dict, player=None) -> str:
         return (f"'{name}' does not take those options ({e}). "
                 f"Try it without them.")
 
+    # Refuse NOW what the task would only discover on its first step, so the
+    # answer arrives in this turn rather than as a report a moment later.
+    # Focus is deliberately not checked: every action waits briefly for the
+    # game to come back to the front, because the confirmation banner is
+    # always in front of it the moment a session starts.
+    blocked = _session_refusal(controller)
+    if blocked:
+        return blocked
+
     runner = TaskRunner(controller, _get_state_source(),
                         observer=_get_observer())
-    result = runner.run(skill, max_steps=params.get("max_steps",
-                                                    MAX_TASK_STEPS))
-    if player:
-        # Every step, not just the summary. A task that ends "incomplete" tells
-        # you nothing about WHY, and the per-step trail is the difference
-        # between "it mined four times and nothing broke" and "it never mined
-        # at all" -- which are opposite problems that both read as failure.
-        source = _get_state_source()
-        player.write_log(f"[minecraft] reading the world from: "
-                         f"{_source_label(source)}")
-        for entry in result.records:
-            action = entry.step.get("action", "?")
-            held = entry.action_result.get("actual_duration_ms", 0)
-            verdict = entry.verification.get("status", "?")
-            # The note is the only part that says WHAT it was doing --
-            # "aim at oak_log (5, 64, 3)" and "looking for a log" are the
-            # same `look` action and completely different situations.
-            # Dropping it made these logs unreadable after the fact.
-            note = entry.step.get("note", "")
-            # Two different ways a hold ends short, and they mean opposite
-            # things: the guard stopping it, and mining letting go because
-            # the block went. Neither was visible in this log, which is why
-            # a 126ms swing looked like nothing at all.
-            cut = entry.action_result.get("stopped_reason") or ""
-            if not cut:
-                cut = (entry.action_result.get("requested") or {}).get(
-                    "stopped_early") or ""
-            line = (f"[minecraft]   {entry.index + 1}. {action} "
-                    f"{held}ms -> {verdict}")
-            if note:
-                line += f"  | {note}"
-            if cut:
-                line += f"  | CUT SHORT: {cut}"
-            player.write_log(line)
-            why = entry.verification.get("reason") or ""
-            if why and verdict != "success":
-                player.write_log(f"[minecraft]        {why}")
-        player.write_log(f"[minecraft] task {name}: {result.status} "
-                         f"({result.steps_taken} steps)")
-        if result.reason:
-            player.write_log(f"[minecraft] {result.reason}")
 
-    # The summary line is built to be un-overstatable: it says what was
-    # verified, separately from what was attempted.
-    return f"{result.describe()}\n{result.as_dict()}"
+    def _finished(job):
+        _log_task(player, job)
+        if speak is not None:
+            try:
+                speak(_completion_notice(job))
+            except Exception:
+                pass
+
+    try:
+        job = _slot.start(runner, skill, name=name,
+                          max_steps=params.get("max_steps", MAX_TASK_STEPS),
+                          on_done=_finished)
+    except TaskAlreadyRunning as e:
+        return f"I did not start {name}: {e}"
+
+    if player:
+        player.write_log(f"[minecraft] task {name} started in the background "
+                         f"(say stop to cancel it)")
+    return (f"Started {name} — {job.goal}. It is running now, in the "
+            f"background, for at most {MAX_TASK_SECONDS:.0f} seconds. It is "
+            f"NOT finished: do not tell the user it worked. When it ends, a "
+            f"message beginning [Minecraft task] will say what actually "
+            f"happened; relay that. If the user says stop, it stops at once.\n"
+            f"{job.as_dict()}")
+
+
+_SESSION_REFUSALS = {
+    "no_session": "There is no Minecraft control session. Ask me to start "
+                  "one — one confirmation covers all ordinary gameplay.",
+    "session_expired": "The Minecraft session has run out. Start another if "
+                       "you want me to keep playing.",
+    "session_cancelled": "The Minecraft session was stopped. Start another "
+                         "if you want me to keep playing.",
+    "session_inactive": "The Minecraft session has ended. Start another if "
+                        "you want me to keep playing.",
+    "process_gone": "Minecraft is not running.",
+    "window_gone": "I cannot find the Minecraft window.",
+}
+
+
+def _session_refusal(controller) -> str:
+    """Why a task cannot start at all right now, or ''."""
+    guard = getattr(controller, "_guard", None)
+    if not callable(guard):
+        return ""
+    try:
+        reason = guard()
+    except Exception:
+        return ""
+    # Focus is the one failure a task may start through: see the caller.
+    if not reason or reason == "focus_lost":
+        return ""
+    explanation = _SESSION_REFUSALS.get(
+        reason,
+        f"Minecraft control is stopped ({reason}). Start a new session to "
+        f"keep playing.")
+    return f"I did not start the task: {explanation}"
+
+
+def _job_summary(job) -> str:
+    """One honest sentence about a finished task."""
+    if job.error:
+        return f"it ended with an internal error ({job.error})."
+    result = job.result
+    if result is None:
+        return "it produced no result."
+    return result.describe()
+
+
+def _completion_notice(job) -> str:
+    """What the model is told when a task ends. Built not to overstate it.
+
+    Sent into the conversation, so it is short: the task's own verdict, which
+    already separates what was verified from what was attempted -- never the
+    step-by-step record, which goes to the HUD."""
+    if job.cancel_reason:
+        session = _controller.sessions.current if _controller else None
+        still_open = bool(session is not None and session.active)
+        return (f"[Minecraft task] {job.name} was stopped ({job.cancel_reason})."
+                f" {_job_summary(job)} Every key and button is released"
+                + ("; the control session is still open."
+                   if still_open else ".")
+                + " Tell the user in one short sentence.")
+    return (f"[Minecraft task] {job.name} finished. {_job_summary(job)} Tell "
+            f"the user in one or two sentences and do not claim more than "
+            f"this says.")
+
+
+def _log_task(player, job) -> None:
+    """The step-by-step trail, on the HUD. Unchanged from when the task ran
+    in the foreground -- only moved to when it finishes."""
+    if not player:
+        return
+    try:
+        _write_task_trail(player, job)
+    except Exception:
+        pass
+
+
+def _write_task_trail(player, job) -> None:
+    name = job.name
+    if job.error:
+        player.write_log(f"[minecraft] task {name}: error — {job.error}")
+        return
+    result = job.result
+    if result is None:
+        return
+    # Every step, not just the summary. A task that ends "incomplete" tells
+    # you nothing about WHY, and the per-step trail is the difference
+    # between "it mined four times and nothing broke" and "it never mined
+    # at all" -- which are opposite problems that both read as failure.
+    source = _get_state_source()
+    player.write_log(f"[minecraft] reading the world from: "
+                     f"{_source_label(source)}")
+    for entry in result.records:
+        action = entry.step.get("action", "?")
+        held = entry.action_result.get("actual_duration_ms", 0)
+        verdict = entry.verification.get("status", "?")
+        # The note is the only part that says WHAT it was doing --
+        # "aim at oak_log (5, 64, 3)" and "looking for a log" are the
+        # same `look` action and completely different situations.
+        # Dropping it made these logs unreadable after the fact.
+        note = entry.step.get("note", "")
+        # Two different ways a hold ends short, and they mean opposite
+        # things: the guard stopping it, and mining letting go because
+        # the block went. Neither was visible in this log, which is why
+        # a 126ms swing looked like nothing at all.
+        cut = entry.action_result.get("stopped_reason") or ""
+        if not cut:
+            cut = (entry.action_result.get("requested") or {}).get(
+                "stopped_early") or ""
+        line = (f"[minecraft]   {entry.index + 1}. {action} "
+                f"{held}ms -> {verdict}")
+        if note:
+            line += f"  | {note}"
+        if cut:
+            line += f"  | CUT SHORT: {cut}"
+        player.write_log(line)
+        why = entry.verification.get("reason") or ""
+        if why and verdict != "success":
+            player.write_log(f"[minecraft]        {why}")
+    player.write_log(f"[minecraft] task {name}: {result.status} "
+                     f"({result.steps_taken} steps)")
+    if result.reason:
+        player.write_log(f"[minecraft] {result.reason}")
 
 
 def _what_is_under_the_crosshair(state):
@@ -591,6 +813,17 @@ def _source_label(source) -> str:
         return ("the F3 overlay via OCR — position and the block under the "
                 "crosshair only, NO terrain, so it cannot navigate")
     return "nothing that can read the game"
+
+
+def _block_from(params: dict):
+    """(x, y, z) of one block from the model's parameters, or a sentence
+    saying what is missing. Never invented: aiming at a coordinate this code
+    made up would turn the camera towards nothing in particular."""
+    try:
+        return (int(params["x"]), int(params["y"]), int(params["z"]))
+    except (KeyError, TypeError, ValueError):
+        return ("aim_at_block and mine_block need x, y and z as whole numbers "
+                "— a block that look_around or read_state reported.")
 
 
 def _destination_from(params: dict):
@@ -665,23 +898,47 @@ TOOL = {
         "start_session again while one is open; if you are unsure, call "
         "status.\n"
         "READING (no session needed): status, observe, read_state, "
-        "look_around, toggle_debug (presses F3, which read_state needs).\n"
+        "look_around, task_status. With the bridge mod, read_state and "
+        "look_around read the game's own data: position, rotation, health, "
+        "hunger, the inventory, the held item, the block under the crosshair "
+        "(name, x, y, z, face) and the terrain around the player. Without "
+        "it, read_state falls back to the F3 overlay (toggle_debug presses "
+        "F3, and like every key press needs a session).\n"
         "look_around is the one to use for 'what is around me', 'is there a "
         "tree nearby', 'any mobs'. It returns the nearest log, stone, water, "
         "ores and mobs with coordinates, from the bridge mod's terrain scan. "
         "If it says it cannot see the world, say that — do not describe a "
         "world from the crosshair or from memory.\n"
-        "GAMEPLAY: move (direction, duration<=2s), move_and_jump (walks and "
-        "jumps together — the only way onto a one-block ledge), "
-        "look (dx/dy in PIXELS, "
-        "<=400 each — degrees are NOT supported), jump, sneak, sprint, "
-        "attack, mine, place, interact, use_item, eat, drop, hotbar_select "
-        "(slot 1-9), inventory (state=open|close), stop.\n"
+        "GAMEPLAY: move (direction, duration up to 2s), move_and_jump (walks "
+        "and jumps together, up to 1s — the way onto a one-block ledge), "
+        "look (dx/dy in PIXELS, up to 400 each — not degrees; to point at a "
+        "particular block use run_task aim_at_block instead), jump, sneak "
+        "and sprint (up to 2s), attack (up to 2s), mine (one continuous hold "
+        "of up to 10s that lets go when the bridge sees the block change), "
+        "place, interact (up to 1s), use_item and eat (up to 2s), drop (one "
+        "item), hotbar_select (slot 1-9), inventory (state=open|close), "
+        "stop. Longer durations are shortened to the limit, not refused.\n"
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
-        "break_block, place_block, collect_logs, navigate_to. It stops "
-        "itself at a fixed step ceiling, after two minutes, or when it "
-        "detects it is making no progress.\n"
+        "break_block, place_block, collect_logs, navigate_to, aim_at_block, "
+        "mine_block. A task RUNS IN THE BACKGROUND: run_task answers "
+        "'started' at once, and when the task ends a message beginning "
+        "[Minecraft task] reports what actually happened — relay that, and "
+        "never say a task worked before it arrives. A task stops itself "
+        "after 45 steps, after two minutes, or when it detects it is making "
+        "no progress. Only one runs at a time, and while it runs the other "
+        "gameplay actions are refused; task_status says how it is going.\n"
+        "STOPPING: if the user says stop, halt or cancel while a task or "
+        "action is running, it is stopped at once and every key released "
+        "(the control session stays open). cancel_task does the same. stop "
+        "(the action) also ENDS the control session; F12 is the hard stop "
+        "and ends it too.\n"
+        "aim_at_block and mine_block take x, y and z — a block look_around "
+        "or read_state actually reported. They turn until the game itself "
+        "confirms the crosshair is on that exact block; mine_block then "
+        "breaks it and checks that the block at that coordinate is gone. "
+        "Neither mines anything if the aim cannot be confirmed, and neither "
+        "walks: if the block is out of reach, navigate_to first.\n"
         "navigate_to walks somewhere, routing round obstacles: give it "
         "either x and z, or target='log'|'stone'|'water'. It refuses a "
         "destination outside the scanned area instead of setting off "
@@ -690,9 +947,9 @@ TOOL = {
         "short because the task ran out of steps, call it again with the "
         "same destination: it carries on from where it is.\n"
         "REPORTING RESULTS HONESTLY — this matters most:\n"
-        "  * One mine does NOT break a block. Breaking an oak log takes "
-        "several. Never say a block broke, a tree was chopped or wood was "
-        "collected unless verification.status == 'success'.\n"
+        "  * Holding attack is not breaking a block. Never say a block broke, "
+        "a tree was chopped or wood was collected unless "
+        "verification.status == 'success' or the task report says so.\n"
         "  * 'unverifiable' means I could not SEE whether it worked. Say "
         "that plainly; do not treat it as success or as failure.\n"
         "  * Whether I can confirm an item was PICKED UP depends on the "
@@ -703,8 +960,9 @@ TOOL = {
         "  * An unknown block is not air, and a place I have not scanned is "
         "not empty ground. If something says UNKNOWN, report UNKNOWN.\n"
         "  * ok == true only means the input reached the game.\n"
-        "Movement only works while Minecraft is the window in front. If the "
-        "user alt-tabs or presses F12 everything stops and the session ends."
+        "Input only goes to Minecraft while it is the window in front: if "
+        "the user alt-tabs away, anything held is released within one tick "
+        "and a running task stops."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -713,23 +971,27 @@ TOOL = {
                 "type": "STRING",
                 "description": (
                     "status | observe | read_state | look_around | "
-                    "toggle_debug | "
+                    "task_status | toggle_debug | "
                     "start_session | end_session | move | move_and_jump | "
                     "look | jump | "
                     "sneak | sprint | attack | mine | place | interact | "
                     "use_item | eat | drop | hotbar_select | inventory | "
-                    "run_task | stop"),
+                    "run_task | cancel_task | stop"),
             },
             "direction": {
                 "type": "STRING",
-                "description": ("For move/sneak/sprint: forward | back | "
-                                "left | right."),
+                "description": ("For move/move_and_jump/sneak/sprint: "
+                                "forward | back | left | right."),
             },
             "duration": {
                 "type": "NUMBER",
-                "description": ("Seconds to hold, up to 2.0 for every action "
-                                "that takes one. Longer requests are "
-                                "shortened to 2.0, not refused."),
+                "description": ("Seconds to hold. Limits: move, sneak, "
+                                "sprint, attack, use_item, eat 2.0; mine "
+                                "10.0; move_and_jump and interact 1.0. "
+                                "Longer requests are shortened to the "
+                                "limit, not refused. place, drop, jump, "
+                                "hotbar_select and inventory are taps and "
+                                "take no duration."),
             },
             "dx": {
                 "type": "INTEGER",
@@ -762,18 +1024,26 @@ TOOL = {
                 "type": "STRING",
                 "description": ("For run_task: walk_forward | survey | "
                                 "find_block | break_block | place_block | "
-                                "collect_logs | navigate_to."),
+                                "collect_logs | navigate_to | aim_at_block | "
+                                "mine_block."),
             },
             "x": {
                 "type": "INTEGER",
-                "description": ("For run_task navigate_to: the destination's "
-                                "x. Use a coordinate look_around actually "
+                "description": ("For run_task navigate_to, aim_at_block and "
+                                "mine_block: the block's x. Use a coordinate "
+                                "look_around or read_state actually "
                                 "reported; do not invent one."),
+            },
+            "y": {
+                "type": "INTEGER",
+                "description": ("For run_task aim_at_block and mine_block: "
+                                "the block's y."),
             },
             "z": {
                 "type": "INTEGER",
-                "description": ("For run_task navigate_to: the destination's "
-                                "z. Needs x as well."),
+                "description": ("For run_task navigate_to, aim_at_block and "
+                                "mine_block: the block's z. Needs x as "
+                                "well."),
             },
             "target": {
                 "type": "STRING",
@@ -785,9 +1055,11 @@ TOOL = {
             },
             "count": {
                 "type": "INTEGER",
-                "description": ("For collect_logs: how many logs to break. "
-                                "Note I cannot read the inventory, so I "
-                                "report blocks broken, not items collected."),
+                "description": ("For collect_logs: how many logs to get. With "
+                                "the bridge mod they are counted in the "
+                                "inventory (collected); without it I can "
+                                "only report blocks that disappeared "
+                                "(broke)."),
             },
             "seconds": {
                 "type": "NUMBER",
@@ -796,14 +1068,15 @@ TOOL = {
             "expected": {
                 "type": "STRING",
                 "description": (
-                    "For the break_block task: the block name expected under "
-                    "the crosshair, e.g. 'oak_log'. If something else is "
-                    "there the task stops rather than break the wrong thing."),
+                    "For break_block, aim_at_block and mine_block: the block "
+                    "name that must be there, e.g. 'oak_log'. If something "
+                    "else is, the task stops rather than break the wrong "
+                    "thing."),
             },
             "max_steps": {
                 "type": "INTEGER",
                 "description": ("For run_task: fewer steps than the limit of "
-                                "20. It cannot be raised above 20."),
+                                "45. It cannot be raised above 45."),
             },
         },
         "required": ["action"],

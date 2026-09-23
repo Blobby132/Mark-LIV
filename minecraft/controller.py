@@ -163,6 +163,23 @@ class MinecraftController:
         self._last_stop_reason = ""
         self._action_in_flight = ""
 
+        # Cancelling the CURRENT action without ending the session: what a
+        # spoken "stop" or a withdrawn tool call means. Each action records the
+        # epoch it started in and stops the moment it changes, so a cancel
+        # reaches exactly the actions already running -- never one that starts
+        # afterwards, and never the session itself. See cancel_current().
+        self._abort_epoch = 0
+        self._abort_reason = ""
+        # A running task's own cancel flag, checked with the guard while one of
+        # its steps holds input. Closes the gap between the runner checking
+        # for a cancel and the step it had already decided on pressing keys.
+        self._task_cancel: threading.Event | None = None
+        # One input action at a time. Tasks now run off the voice thread, so a
+        # direct command and a task step could otherwise both hold keys, and
+        # two holders of one ledger each release the other's inputs early.
+        # Acquired without waiting: a second action is refused, not queued.
+        self._input_slot = threading.Lock()
+
         self._emergency = emergency if emergency is not None else \
             EmergencyStopWatcher(on_stop=self._on_emergency)
         self._supervisor: threading.Thread | None = None
@@ -264,7 +281,8 @@ class MinecraftController:
         except Exception:
             return None
 
-    def _await_focus(self, seconds: float | None = None) -> str:
+    def _await_focus(self, seconds: float | None = None,
+                     epoch: int | None = None) -> str:
         """Wait briefly for Minecraft to come back to the front.
 
         Returns the guard's verdict when it stops waiting. Only `focus_lost`
@@ -279,9 +297,48 @@ class MinecraftController:
         while reason == "focus_lost" and time.monotonic() < deadline:
             if self._cancel.is_set():
                 break
+            if epoch is not None and self._aborted(epoch):
+                break
             time.sleep(TICK_SECONDS)
             reason = self._guard()
         return reason
+
+    def _aborted(self, epoch: int) -> str:
+        """Why the action that started in `epoch` should stop, or ''.
+
+        Separate from `_guard` on purpose. The guard's failures are safety
+        events -- the supervisor answers them by ending the session -- while
+        this is a person saying "stop that", which releases the keys and
+        leaves the session they approved exactly as it was."""
+        if self._abort_epoch != epoch:
+            return "cancelled"
+        task_cancel = self._task_cancel
+        if task_cancel is not None and task_cancel.is_set():
+            return "cancelled"
+        return ""
+
+    def _cancelled_result(self, action: str, requested: dict,
+                          clamped: bool, elapsed_ms: int = 0,
+                          released: tuple = ()) -> ActionResult:
+        return ActionResult(
+            ok=False, action=action, requested=requested,
+            actual_duration_ms=elapsed_ms, stopped_reason="cancelled",
+            window_focused_throughout=False, clamped=clamped,
+            released=released, error_class="Cancelled",
+            error=(f"Cancelled: {self._abort_reason or 'stop requested'}. "
+                   f"Every key and button is released; the session is "
+                   f"still open."),
+        )
+
+    def _busy_result(self, action: str, requested: dict,
+                     clamped: bool) -> ActionResult:
+        running = self._action_in_flight or "another action"
+        return ActionResult(
+            ok=False, action=action, requested=requested,
+            stopped_reason="busy", clamped=clamped, error_class="Busy",
+            error=(f"A Minecraft action ({running}) is still running. I "
+                   f"pressed nothing; one action at a time."),
+        )
 
     def _require_ready(self) -> None:
         """Turn a guard failure into the right exception, for the pre-flight
@@ -359,6 +416,42 @@ class MinecraftController:
         return {"released": list(report.released),
                 "failed_to_release": list(report.failed),
                 "clean": report.clean}
+
+    def cancel_current(self, reason: str = "cancelled") -> dict:
+        """Stop whatever action is running now, and keep the session.
+
+        What "stop" means when a person says it to a player mid-task: let go,
+        stand still, and wait -- not "revoke the permission I gave you". The
+        running action stops inside one tick, every input comes up, and the
+        next command works without a new confirmation.
+
+        Never refused and never blocks, like every other stop here. It is not
+        a replacement for F12 or `stop()`: those end the session, and remain
+        the hard stop."""
+        with self._lock:
+            self._abort_epoch += 1
+            self._abort_reason = str(reason or "cancelled")[:120]
+        report = self._ledger.release_all()
+        return {
+            "cancelled": True,
+            "reason": self._abort_reason,
+            "released": list(report.released),
+            "failed_to_release": list(report.failed),
+            "session_ended": False,
+            "clean": report.clean,
+        }
+
+    def cancellable(self, event: threading.Event) -> "_TaskCancelScope":
+        """Tie the actions run inside a `with` block to a task's cancel flag.
+
+        The task runner wraps each step in this, so cancelling the task stops
+        the step already in progress rather than only preventing the next."""
+        return _TaskCancelScope(self, event)
+
+    @property
+    def busy(self) -> bool:
+        """An input action is running right now."""
+        return self._input_slot.locked()
 
     def emergency_stop(self, reason: str = "emergency stop") -> dict:
         """Stop now. Never refused, never confirmed, callable from anywhere.
@@ -511,7 +604,8 @@ class MinecraftController:
 
     def _hold_inputs(self, keys: tuple, buttons: tuple, seconds: float,
                      action: str, requested: dict, clamped: bool,
-                     stop_when_changed: bool = False) -> ActionResult:
+                     stop_when_changed: bool = False,
+                     expect_target: tuple | None = None) -> ActionResult:
         """Hold keys and/or mouse buttons for up to `seconds`, re-checking the
         world every tick.
 
@@ -523,14 +617,35 @@ class MinecraftController:
 
         Every input goes down through the ledger before the timing loop starts,
         so a failure part-way through a multi-key hold still has every earlier
-        input recorded and therefore released."""
+        input recorded and therefore released.
+
+        `expect_target`, when given, is the (x, y, z) the progress probe must
+        report BEFORE anything is pressed. Mining a block the crosshair is not
+        confirmed to be on is how the wrong thing gets broken, so a mismatch,
+        or a probe that cannot say, refuses the action with nothing pressed."""
+        # One input action at a time, refused rather than queued -- see
+        # _input_slot. Outside the try below on purpose: an action that never
+        # got the slot must not release inputs another action is holding.
+        if not self._input_slot.acquire(blocking=False):
+            return self._busy_result(action, requested, clamped)
+        try:
+            return self._hold_inputs_owned(keys, buttons, seconds, action,
+                                           requested, clamped,
+                                           stop_when_changed, expect_target)
+        finally:
+            self._input_slot.release()
+
+    def _hold_inputs_owned(self, keys, buttons, seconds, action, requested,
+                           clamped, stop_when_changed, expect_target):
+        """`_hold_inputs`, once this thread owns the input slot."""
         started = time.monotonic()
+        epoch = self._abort_epoch
         stopped_reason: str | None = None
         focused_throughout = True
         error_class = error = ""
         released: tuple = ()
 
-        self._await_focus()
+        self._await_focus(epoch=epoch)
 
         try:
             self._require_ready()
@@ -541,6 +656,18 @@ class MinecraftController:
                 window_focused_throughout=False, clamped=clamped,
                 error_class=type(e).__name__, error=str(e),
             )
+
+        if self._aborted(epoch):
+            return self._cancelled_result(action, requested, clamped)
+
+        if expect_target is not None:
+            mismatch = self._target_mismatch(expect_target)
+            if mismatch:
+                return ActionResult(
+                    ok=False, action=action, requested=requested,
+                    stopped_reason="target_not_confirmed", clamped=clamped,
+                    error_class="TargetNotConfirmed", error=mismatch,
+                )
 
         with self._lock:
             self._action_in_flight = action
@@ -563,6 +690,14 @@ class MinecraftController:
                     focused_throughout = reason != "focus_lost" and focused_throughout
                     if reason in ("focus_lost", "focus_unknown"):
                         focused_throughout = False
+                    break
+
+                # A person said stop, or the task this step belongs to was
+                # cancelled. Checked every tick like the guard, and answered
+                # the same way -- everything comes up in the `finally` -- but
+                # without ending the session. See _aborted.
+                if self._aborted(epoch):
+                    stopped_reason = "cancelled"
                     break
 
                 # Mining: let go once the target has changed. Holding on past
@@ -607,6 +742,9 @@ class MinecraftController:
                 self._action_in_flight = ""
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        if stopped_reason == "cancelled" and not error:
+            return self._cancelled_result(action, requested, clamped,
+                                          elapsed_ms, released)
         ok = stopped_reason is None and not error
         if finished_early:
             requested = dict(requested)
@@ -620,6 +758,30 @@ class MinecraftController:
             error_class=error_class,
             error=error or (_explain(stopped_reason) if stopped_reason else ""),
         )
+
+    def _target_mismatch(self, expected) -> str:
+        """'' when the probe confirms the crosshair is on `expected` (x, y, z),
+        otherwise a sentence saying what it is on instead.
+
+        Read at the last moment before input goes down, so the check is about
+        where the crosshair IS, not where it was when the step was planned."""
+        try:
+            want = (int(expected[0]), int(expected[1]), int(expected[2]))
+        except (TypeError, ValueError, IndexError):
+            return f"{expected!r} is not a block coordinate I can check."
+        seen = self._probe()
+        if seen is None:
+            return (f"I cannot read what the crosshair is on, so I will not "
+                    f"mine: I could not confirm it is on {want}.")
+        try:
+            name, where = seen[0], (int(seen[1]), int(seen[2]), int(seen[3]))
+        except (TypeError, ValueError, IndexError):
+            return (f"The crosshair reading was incomplete, so I could not "
+                    f"confirm it is on {want}; nothing was pressed.")
+        if where != want:
+            return (f"The crosshair is on {name} at {where}, not on {want}. "
+                    f"Nothing was pressed.")
+        return ""
 
     def move(self, params: dict) -> ActionResult:
         refusal = self._require_authorized(core_caps.MINECRAFT_MOVEMENT,
@@ -724,7 +886,8 @@ class MinecraftController:
         spec = action_spec.parse_mine(params or {})
         return self._hold_inputs((), spec.buttons, spec.duration, "mine",
                                  spec.as_dict(), spec.clamped,
-                                 stop_when_changed=True)
+                                 stop_when_changed=True,
+                                 expect_target=spec.expect_target)
 
     def place(self, params: dict | None = None) -> ActionResult:
         return self._gameplay(core_caps.MINECRAFT_BUILD, "place",
@@ -804,9 +967,19 @@ class MinecraftController:
         if refusal is not None:
             return refusal
         spec = action_spec.parse_look(params or {})
-        started = time.monotonic()
+        if not self._input_slot.acquire(blocking=False):
+            return self._busy_result("look", spec.as_dict(), spec.clamped)
+        try:
+            return self._look_owned(spec)
+        finally:
+            self._input_slot.release()
 
-        self._await_focus()
+    def _look_owned(self, spec) -> ActionResult:
+        """`look`, once this thread owns the input slot."""
+        started = time.monotonic()
+        epoch = self._abort_epoch
+
+        self._await_focus(epoch=epoch)
 
         try:
             self._require_ready()
@@ -816,6 +989,10 @@ class MinecraftController:
                 stopped_reason=_reason_for(e), clamped=spec.clamped,
                 error_class=type(e).__name__, error=str(e),
             )
+
+        if self._aborted(epoch):
+            return self._cancelled_result("look", spec.as_dict(),
+                                          spec.clamped)
 
         try:
             self._ledger.move_mouse(spec.dx, spec.dy)
@@ -837,6 +1014,7 @@ class MinecraftController:
 
     ACTIONS = {
         "move": "move", "jump": "jump", "look": "look",
+        "move_and_jump": "move_and_jump",
         "sneak": "sneak", "sprint": "sprint",
         "attack": "attack", "mine": "mine",
         "place": "place", "interact": "interact",
@@ -893,6 +1071,28 @@ class MinecraftController:
         }
 
 
+class _TaskCancelScope:
+    """`with controller.cancellable(event):` -- see that method.
+
+    A small class rather than contextlib, which this package does not import
+    (tests/test_minecraft_boundary.py keeps the import list short on
+    purpose)."""
+
+    def __init__(self, controller: "MinecraftController", event):
+        self._controller = controller
+        self._event = event
+        self._previous = None
+
+    def __enter__(self):
+        self._previous = self._controller._task_cancel
+        self._controller._task_cancel = self._event
+        return self
+
+    def __exit__(self, *_exc):
+        self._controller._task_cancel = self._previous
+        return False
+
+
 def _reason_for(error: Exception) -> str:
     """The guard vocabulary for a pre-flight exception.
 
@@ -937,6 +1137,12 @@ def _explain(reason: str | None) -> str:
         "stopped": "A stop was requested.",
         "input_unavailable": "I could not send input on this machine.",
         "deadman": "A key was held too long and was released automatically.",
+        "cancelled": "Cancelled on request. Every input is released and the "
+                     "session is still open.",
+        "busy": "Another Minecraft action was still running, so this one "
+                "pressed nothing.",
+        "target_not_confirmed": "The crosshair was not confirmed on the "
+                                "intended block, so nothing was pressed.",
     }.get(reason or "", "")
 
 

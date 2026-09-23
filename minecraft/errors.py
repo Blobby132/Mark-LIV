@@ -89,8 +89,17 @@ class InteractionNotGranted(MinecraftError):
     allows -- not silently upgrading the one already open."""
 
 
+class TaskAlreadyRunning(MinecraftError):
+    """A task was asked for while another one is still running.
+
+    Refused rather than queued or replaced: two tasks sharing one keyboard
+    would each release the other's keys mid-hold, and silently replacing the
+    running one would cancel something the user asked for without saying so."""
+
+
 __all__ = [
     "MinecraftError", "InteractionNotGranted", "InvalidAction", "CapabilityDisabled",
+    "TaskAlreadyRunning",
     "MinecraftNotRunning", "WindowNotFound", "WindowNotFocused",
     "NoActiveSession", "SessionExpired", "InputBackendUnavailable",
     "EmergencyStop", "ObservationFailed",

@@ -220,6 +220,10 @@ class HoldSpec:
     duration: float = 0.0
     requested_duration: float = 0.0
     detail: dict = None
+    # Mining only: the (x, y, z) the crosshair must be CONFIRMED on before the
+    # button goes down. A precondition, not a destination -- it can only make
+    # a mine refuse, never make one reach somewhere else.
+    expect_target: tuple = None
 
     @property
     def clamped(self) -> bool:
@@ -230,6 +234,8 @@ class HoldSpec:
                "requested_duration": self.requested_duration}
         if self.detail:
             out.update(self.detail)
+        if self.expect_target is not None:
+            out["expect_at"] = list(self.expect_target)
         return out
 
 
@@ -484,7 +490,25 @@ def parse_mine(params: dict) -> HoldSpec:
     duration, requested = _bounded_duration(params, DEFAULT_MINE_DURATION_S,
                                             MAX_MINE_DURATION_S)
     return HoldSpec(action="mine", buttons=(ATTACK_BUTTON,),
-                    duration=duration, requested_duration=requested)
+                    duration=duration, requested_duration=requested,
+                    expect_target=_parse_expect_at(params))
+
+
+def _parse_expect_at(params: dict):
+    """The optional `expect_at` precondition: exactly three whole numbers.
+
+    Anything else is refused rather than ignored. A precondition that was
+    silently dropped would let the mine go ahead unchecked, which is the one
+    thing asking for it was meant to prevent."""
+    raw = (params or {}).get("expect_at")
+    if raw is None:
+        return None
+    if isinstance(raw, (str, bytes)) or not hasattr(raw, "__len__") \
+            or len(raw) != 3:
+        raise InvalidAction(
+            "'expect_at' must be the block coordinate [x, y, z] the "
+            "crosshair has to be on before mining.")
+    return tuple(_as_int(v, "expect_at") for v in raw)
 
 
 def parse_place(params: dict) -> HoldSpec:

@@ -70,6 +70,7 @@ from minecraft import verification as verify_mod
 from minecraft import action_spec
 from minecraft import navigation as nav
 from minecraft.errors import InvalidAction
+from minecraft.controller import FOCUS_WAIT_SECONDS
 from minecraft.progress import ProgressMonitor
 from minecraft.state import empty_state
 
@@ -310,6 +311,13 @@ class TaskRunner:
         replans = 0
         deadline = self._clock() + self._max_seconds
 
+        # Give the game a moment to come back to the front before the first
+        # step -- the same grace every single action already gets, for the
+        # same reason: the moment a task is asked for is very often the moment
+        # a JARVIS window (the session confirmation) is in front. Only at the
+        # start: losing focus DURING a task still stops it at the next step.
+        self._await_initial_focus()
+
         # The one observation before the loop. Every later one comes from a
         # step's "after" and is reused as the next step's "before".
         state = self._read_state()
@@ -388,6 +396,22 @@ class TaskRunner:
             reason = f"{STEP_LIMIT}: {summary}"
         return self._result(INCOMPLETE, goal, reason, records, state)
 
+    def _await_initial_focus(self) -> None:
+        """Wait, bounded, while the only thing wrong is that Minecraft is not
+        in front. Every other guard failure is left for the loop to report."""
+        wait = getattr(self._controller, "_focus_wait_s", FOCUS_WAIT_SECONDS)
+        try:
+            limit = self._clock() + max(0.0, float(wait))
+        except (TypeError, ValueError):
+            return
+        while self._clock() < limit and not self._cancel.is_set():
+            try:
+                if self._controller._guard() != "focus_lost":
+                    return
+            except Exception:
+                return
+            self._sleep(FRESH_STATE_POLL_S * 2)
+
     @staticmethod
     def _learn_the_mouse(record) -> None:
         """Measure this machine's mouse sensitivity from any turn.
@@ -453,8 +477,18 @@ class TaskRunner:
         method = getattr(self._controller, DISPATCH[step.action])
         stamp_before = self._stamp()
 
+        # Tie this step to the task's cancel flag, so cancelling the task
+        # stops the hold already under way -- not only the next step. Fakes
+        # without the hook run the step plainly, as before.
+        scope_for = getattr(self._controller, "cancellable", None)
+        scope = scope_for(self._cancel) if callable(scope_for) else None
+
         try:
-            result = method(dict(step.params or {}))
+            if scope is not None:
+                with scope:
+                    result = method(dict(step.params or {}))
+            else:
+                result = method(dict(step.params or {}))
             delivered = bool(getattr(result, "ok", False))
             result_dict = result.as_dict()
         except InvalidAction as e:

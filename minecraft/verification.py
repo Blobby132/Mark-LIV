@@ -496,8 +496,14 @@ def broke_block_at(position, name: str | None = None) -> Expectation:
         if where is None:
             return False, f"{position!r} is not a block coordinate."
 
-        # 1. The scan.
+        # 1. The scan -- but only with the player standing where they were.
+        # The bridge caps its list of notable blocks and fills it in scan
+        # order from the player's own block, so a step to one side reshuffles
+        # which coordinates make the list. A coordinate missing after the
+        # player moved may simply have been crowded out, which is not a break.
         was, now = listed(before), listed(after)
+        if not _same_block_position(before, after):
+            was = None
         if was is not None and (wanted is None or was.name == wanted):
             if now is None or now.name != was.name:
                 return True, (f"the {was.name} at {where} is gone "
@@ -527,6 +533,16 @@ def broke_block_at(position, name: str | None = None) -> Expectation:
                        goal=f"break the {wanted or 'block'} at {where}",
                        fields=("target_block", "rotation"),
                        predicate=predicate)
+
+
+def _same_block_position(before, after) -> bool:
+    """Is the player standing in the same block as before? False when either
+    position is unreadable -- the scan evidence then does not count."""
+    try:
+        return all(math.floor(float(a)) == math.floor(float(b))
+                   for a, b in zip(before.position[:3], after.position[:3]))
+    except (TypeError, IndexError, AttributeError, ValueError):
+        return False
 
 
 def _camera_steady(before, after) -> bool:
