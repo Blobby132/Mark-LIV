@@ -1774,7 +1774,14 @@ def _pickup_column(state, local, drop):
     neighbours = sorted(((cx + 1, cz), (cx - 1, cz), (cx, cz + 1), (cx, cz - 1)),
                         key=lambda c: math.hypot(c[0] + 0.5 - px,
                                                  c[1] + 0.5 - pz))
-    for column, within in [((cx, cz), 0.6)] + [(c, 0.35) for c in neighbours]:
+    # Logs still standing over the drop mean it is under the trunk. The scan
+    # lists every log, so this does not depend on how the ground there was
+    # read: a real run with an older mod routed into a trunk's column for a
+    # pickup and walked into the tree.
+    candidates = [(c, 0.35) for c in neighbours]
+    if not _under_the_trunk(state, (cx, cz), drop.position[1]):
+        candidates.insert(0, ((cx, cz), 0.6))
+    for column, within in candidates:
         if column == here:
             return column, within
         if not local.standable(*column):
@@ -1782,6 +1789,15 @@ def _pickup_column(state, local, drop):
         if nav.find_path(state, column).found:
             return column, within
     return None
+
+
+def _under_the_trunk(state, column, drop_y) -> bool:
+    """Is there a log in this column above a drop lying at `drop_y`?"""
+    for block in (getattr(state, "notable_blocks", None) or ()):
+        if (block.name in LOG_BLOCKS and (block.x, block.z) == column
+                and block.y >= math.floor(drop_y)):
+            return True
+    return False
 
 
 def _drop_text(entity) -> str:

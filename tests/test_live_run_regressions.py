@@ -158,6 +158,26 @@ class CollectOneLogTests(unittest.TestCase):
         self.assertNotEqual((math.floor(world.x), math.floor(world.z)),
                             (5, 0), "it walked into the trunk")
 
+    def test_a_drop_under_the_trunk_is_fetched_from_beside_it_whatever_the_map_says(self):
+        """From the fourth run, with an older mod: the pickup walked straight
+        into the trunk's column and stalled against the tree. Here the map
+        wrongly shows that column as open ground; the logs still standing in
+        it must be enough to keep the pickup out."""
+        logs = trunk(height=4)                       # y 64..67 at (5, 0)
+        world = DropWorld(flat(), logs, inventory={"oak_log": 0},
+                          drop_under_trunk=True)
+        world.x, world.z = 2.5, 0.5
+        skill = skills.create("collect_logs", count=1)
+        result = run(world, skill, max_steps=40)
+
+        self.assertEqual(world.inventory["oak_log"], 1, skill.done_reason)
+        mined_at = [r.step["action"] for r in result.records].index("mine")
+        walks = [r.step.get("note", "") for r in result.records[mined_at:]
+                 if r.step["action"] in ("move", "move_and_jump")]
+        self.assertTrue(walks, "it never walked to the drop")
+        self.assertFalse([w for w in walks if "(5, 0)" in w],
+                         f"it walked into the trunk: {walks}")
+
     def test_a_drop_that_cannot_be_fetched_does_not_start_more_breaking(self):
         class LostDrops(DropWorld):
             def read(self):
