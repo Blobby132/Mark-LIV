@@ -307,17 +307,24 @@ def holding_slot(slot: int) -> Expectation:
                        fields=("selected_slot",), predicate=predicate)
 
 
-def collected(item: str, at_least: int = 1) -> Expectation:
+def collected(item, at_least: int = 1, label: str | None = None) -> Expectation:
     """More of `item` in the inventory than before.
+
+    `item` is one name or a set of them -- "any kind of log" is a set, and
+    counting only the kind broken last is what called a real pickup of an
+    oak log "no more birch_log than before".
 
     The check that was impossible until the bridge existed, and the one that
     matters most: every other way of confirming a mined block watches it
     disappear, which is not the same as picking it up. An item that fell in
     lava, landed out of reach, or despawned was still broken and never
     collected, and only a count can tell those apart."""
+    names = frozenset({item}) if isinstance(item, str) else frozenset(item)
+    item = label or (item if isinstance(item, str) else "of them")
+
     def predicate(before, after):
-        was = _count_of(before, item)
-        now = _count_of(after, item)
+        was = _count_of(before, names)
+        now = _count_of(after, names)
         gained = now - was
         if gained >= at_least:
             return True, f"picked up {gained} {item} ({was} to {now})."
@@ -330,11 +337,13 @@ def collected(item: str, at_least: int = 1) -> Expectation:
                        fields=("inventory",), predicate=predicate)
 
 
-def _count_of(state: WorldState, item: str) -> int:
-    """How many of `item` the inventory holds, across every stack."""
+def _count_of(state: WorldState, names) -> int:
+    """How many of `names` the inventory holds, across every stack."""
+    if isinstance(names, str):
+        names = frozenset({names})
     total = 0
     for stack in (state.inventory or ()):
-        if getattr(stack, "name", None) == item:
+        if getattr(stack, "name", None) in names:
             total += int(getattr(stack, "count", 0) or 0)
     return total
 

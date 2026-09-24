@@ -935,7 +935,8 @@ TOOL = {
         "stop. Longer durations are shortened to the limit, not refused.\n"
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
-        "break_block, place_block, collect_logs, navigate_to, aim_at_block, "
+        "break_block, place_block, collect_logs, fell_tree, navigate_to, "
+        "aim_at_block, "
         "mine_block. A task RUNS IN THE BACKGROUND: run_task answers "
         "'started' at once, and when the task ends a message beginning "
         "[Minecraft task] reports what actually happened — relay that, and "
@@ -963,10 +964,17 @@ TOOL = {
         "same destination: it carries on from where it is.\n"
         "collect_logs walks to the nearest tree it can reach, breaks logs "
         "until it has the count, and walks over the drops to pick them up. "
-        "If leaves are between it and a log it breaks those first — a few "
-        "at most, never counted as logs. break_block only breaks whatever "
-        "the crosshair is on right now — it does not aim or walk — so for "
-        "'break a log' or 'chop a tree' use collect_logs.\n"
+        "It finishes one tree before starting another. fell_tree takes "
+        "every log it can reach from ONE tree — the one in front, else the "
+        "nearest — picks them up and stops: use it for 'chop down the "
+        "tree', 'mine the tree' or 'the rest of the tree', not collect_logs "
+        "with a guessed count. Both break leaves in the way first — a few "
+        "at most, never counted as logs. Their reports name the tree each "
+        "log came from and any logs left too high to reach: answer 'which "
+        "tree' or 'why that tree' from that report, and if it does not say, "
+        "say you do not know rather than guess. break_block only breaks "
+        "whatever the crosshair is on right now — it does not aim or walk — "
+        "so for 'break a log' use collect_logs.\n"
         "REPORTING RESULTS HONESTLY — this matters most:\n"
         "  * Holding attack is not breaking a block. Never say a block broke, "
         "a tree was chopped or wood was collected unless "
@@ -1045,8 +1053,8 @@ TOOL = {
                 "type": "STRING",
                 "description": ("For run_task: walk_forward | survey | "
                                 "find_block | break_block | place_block | "
-                                "collect_logs | navigate_to | aim_at_block | "
-                                "mine_block."),
+                                "collect_logs | fell_tree | navigate_to | "
+                                "aim_at_block | mine_block."),
             },
             "x": {
                 "type": "INTEGER",

@@ -963,9 +963,18 @@ def nearest_block(state, category: str, reachable_only: bool = False,
     if position is None:
         return None
 
+    return nearest_of(state, blocks_in_category(state, category),
+                      reachable_only=reachable_only, exclude=exclude)
+
+
+def nearest_of(state, blocks, reachable_only: bool = False, exclude=None):
+    """The closest of `blocks`, or None -- nearest_block over a given set,
+    such as the logs of one tree."""
+    position = getattr(state, "position", None)
+    if position is None:
+        return None
     skip = set(exclude or ())
-    candidates = sorted((b for b in blocks_in_category(state, category)
-                         if b.position not in skip),
+    candidates = sorted((b for b in blocks if b.position not in skip),
                         key=lambda b: b.distance_to(position))
     if not reachable_only:
         return candidates[0] if candidates else None
@@ -978,6 +987,34 @@ def nearest_block(state, category: str, reachable_only: bool = False,
         if _approach(local, reachable, block) is not None:
             return block
     return None
+
+
+def tree_logs(state, seeds) -> tuple:
+    """Every log in the scan connected to the positions in `seeds`: one tree.
+
+    Connected means touching, diagonals included -- a big oak's branches
+    meet its trunk at an edge or a corner -- and the same kind of log, so an
+    oak growing against a birch stays two trees. Seeds that are no longer
+    logs (already broken) are ignored, so a trunk whose bottom log is gone
+    is still found from the logs above it."""
+    logs = {b.position: b for b in (getattr(state, "notable_blocks", None)
+                                    or ())
+            if b.name in LOG_BLOCKS}
+    frontier = [p for p in seeds if p in logs]
+    seen = set(frontier)
+    while frontier:
+        x, y, z = frontier.pop()
+        name = logs[(x, y, z)].name
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    other = (x + dx, y + dy, z + dz)
+                    if other in logs and other not in seen \
+                            and logs[other].name == name:
+                        seen.add(other)
+                        frontier.append(other)
+    return tuple(sorted((logs[p] for p in seen),
+                        key=lambda b: (b.y, b.x, b.z)))
 
 
 def nearest_entity(state, category: str | None = None):
@@ -1146,6 +1183,7 @@ def summarise(state) -> dict:
 __all__ += [
     "blocks_matching", "blocks_in_category", "ores", "nearest_block",
     "nearest_entity", "approach_column", "reachable_columns",
+    "nearest_of", "tree_logs",
     "is_walkable", "is_known",
     "reachable", "summarise",
 ]

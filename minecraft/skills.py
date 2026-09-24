@@ -85,6 +85,11 @@ Leaves are what is usually in front of a log, and they break in a fraction
 of a second by hand. Only a leaf NEARER than the log is broken, only at the
 exact coordinate the crosshair reports, and never counted as a log."""
 
+MAX_TREE_LOGS = 24
+"""The most logs fell_tree will break. A tree has four to a dozen that can
+be reached from the ground; this only stops a grove of touching trunks
+turning one request into an afternoon."""
+
 MAX_PICKUP_WALKS = 4
 """How many times collect_logs walks over to a dropped log before saying it
 could not get it. A broken log drops an item where it fell, often a couple of
@@ -1240,6 +1245,9 @@ class CollectLogs:
     delta_px: int | None = None
     aim_tolerance_deg: float = 6.0
     max_aim_steps: int = 6
+    whole_tree: bool = False
+    """fell_tree: every log of one tree it can reach, then stop -- rather
+    than a count of logs from wherever they are nearest."""
 
     name = "collect_logs"
     verifiable_with = ("surface", "target_block", "inventory")
@@ -1266,6 +1274,14 @@ class CollectLogs:
     _pickup_walker: object = None
     _pickup_walks: int = 0
     _pickup_note: str = ""
+    _fetch_baseline: int | None = None
+    _fetching: str = ""
+    # The tree being worked on: positions of its logs, and for every log
+    # this task has seen, which tree it belongs to -- (kind, trunk column).
+    _tree: set = field(default_factory=set)
+    _tree_of: dict = field(default_factory=dict)
+    _tree_done: bool = False
+    _tree_left: tuple = ()
 
     @property
     def _done(self) -> int:
@@ -1274,11 +1290,19 @@ class CollectLogs:
     @property
     def failed(self) -> bool:
         """Blind, or short of the count. Either way this is not a success,
-        and the runner reports it as incomplete rather than done."""
+        and the runner reports it as incomplete rather than done.
+
+        Felling a tree has no count: it failed if it broke nothing, or broke
+        logs it then could not pick up."""
+        if self.whole_tree:
+            return (self._blind or self._broken == 0
+                    or (self._can_count and self._collected < self._broken))
         return self._blind or self._done < self.count
 
     @property
     def goal(self) -> str:
+        if self.whole_tree:
+            return "fell the tree"
         return f"break {self.count} log(s)"
 
     @property
@@ -1294,17 +1318,57 @@ class CollectLogs:
         # one that explains the rest.
         if trouble and self._in_the_way and self._in_the_way not in trouble:
             trouble = f"{trouble} Before that: {self._in_the_way}"
-        if trouble and self._done < self.count:
+        if trouble and self.failed:
             return f"{self._progress_text()}{how}. {trouble}"
         return f"{self._progress_text()}{how}"
 
     def _progress_text(self) -> str:
+        if self.whole_tree:
+            return self._tree_progress_text()
         if self._can_count:
             return (f"broke {self._broken} and collected {self._collected} "
-                    f"of {self.count} log(s), counted in the inventory")
-        return (f"broke {self._broken} of {self.count} log(s) — I cannot see "
-                f"the inventory, so I am reporting blocks that disappeared, "
-                f"not items picked up")
+                    f"of {self.count} log(s), counted in the inventory"
+                    f"{self._trees_text()}")
+        return (f"broke {self._broken} of {self.count} log(s){self._trees_text()}"
+                f" — I cannot see the inventory, so I am reporting blocks "
+                f"that disappeared, not items picked up")
+
+    def _tree_progress_text(self) -> str:
+        labels = [self._tree_of.get(tuple(w)) for w in self._broken_at]
+        labels = [l for l in labels if l is not None]
+        tree = _tree_label(labels[0]) if labels else "the tree"
+        text = f"broke {self._broken} log(s) from {tree}"
+        if self._can_count:
+            text += (f" and collected {self._collected}, counted in the "
+                     f"inventory")
+        else:
+            text += (" — I cannot see the inventory, so these are blocks "
+                     "that disappeared, not items picked up")
+        if self._tree_left:
+            heights = sorted({b.y for b in self._tree_left})
+            span = (f"y {heights[0]}" if len(heights) == 1
+                    else f"y {heights[0]}–{heights[-1]}")
+            text += (f"; {len(self._tree_left)} more log(s) of it are still "
+                     f"standing ({span}) where I cannot reach or hit them")
+        elif self._tree_done:
+            text += "; none of it is left standing that I can see"
+        return text
+
+    def _trees_text(self) -> str:
+        """Which trees the broken logs came from, so "why did you mine that
+        tree" has a true answer rather than an invented one."""
+        counts: dict = {}
+        for where in self._broken_at:
+            label = self._tree_of.get(tuple(where))
+            if label is not None:
+                counts[label] = counts.get(label, 0) + 1
+        if not counts:
+            return ""
+        if len(counts) == 1:
+            return f", all from {_tree_label(next(iter(counts)))}"
+        parts = [f"{n} from {_tree_label(label)}"
+                 for label, n in counts.items()]
+        return f" — {', '.join(parts)}"
 
     # ── planning ─────────────────────────────────────────────────────────
 
@@ -1320,17 +1384,27 @@ class CollectLogs:
             return None
 
         self._count_progress(state, history)
-        if self._done >= self.count:
-            return None
-
-        # Enough broken. Never break more than was asked for: counting only
-        # the inventory, a log that broke and fell out of pickup range looked
-        # like no progress at all, and "collect one log" broke three. What is
-        # left is fetching the drops -- which needs the inventory to see.
-        if self._broken >= self.count:
-            if not self._can_count:
+        if self.whole_tree:
+            if not local.usable:
+                self._walk_failed = ("Felling a whole tree needs the terrain "
+                                     "scan from the bridge mod, to tell one "
+                                     "tree's logs from the next.")
                 return None
-            return self._pick_up(state, local, history)
+            if self._tree_done or self._broken >= MAX_TREE_LOGS:
+                return self._after_the_tree(state, local, history)
+        else:
+            if self._done >= self.count:
+                return None
+
+            # Enough broken. Never break more than was asked for: counting
+            # only the inventory, a log that broke and fell out of pickup
+            # range looked like no progress at all, and "collect one log"
+            # broke three. What is left is fetching the drops -- which needs
+            # the inventory to see.
+            if self._broken >= self.count:
+                if not self._can_count:
+                    return None
+                return self._pick_up(state, local, history)
 
         if local.usable:
             self._used_the_map = True
@@ -1338,6 +1412,8 @@ class CollectLogs:
                                            history)
             if step is not None:
                 return step
+            if self._tree_done:
+                return self._after_the_tree(state, local, history)
             if self._walk_failed:
                 return None
             # The map had nothing useful to add; fall through to the sweep,
@@ -1378,9 +1454,10 @@ class CollectLogs:
 
     def _work_from_the_map(self, state, local, crosshair_readable,
                            history=()):
-        """Nearest log: walk to it if it is far, aim and mine if it is close."""
-        target = nav.nearest_block(state, "log", reachable_only=True,
-                                   exclude=self._skip)
+        """Next log: walk to it if it is far, aim and mine if it is close."""
+        target = self._next_log(state)
+        if target is None and self._tree_done:
+            return None
         if target is None:
             seen = nav.nearest_block(state, "log")
             if seen is not None and seen.position in self._skip \
@@ -1491,6 +1568,60 @@ class CollectLogs:
         return self._work_from_the_map(state, local, crosshair_readable,
                                        history)
 
+    def _next_log(self, state):
+        """The next log to go for.
+
+        From the tree already started, while it has one within reach of
+        somewhere to stand. Only then another tree: the nearest, or the one
+        under the crosshair. "Nearest log" on its own hopped between trees
+        whenever a pickup walk left another trunk a little closer."""
+        if self._tree:
+            logs = nav.tree_logs(state, self._tree)
+            self._adopt(logs)
+            target = nav.nearest_of(state, logs, reachable_only=True,
+                                    exclude=self._skip)
+            if target is not None:
+                return target
+            if self.whole_tree:
+                self._tree_done = True
+                self._tree_left = logs
+                return None
+            self._tree = set()            # this one is done; the next tree
+
+        start = self._log_under_crosshair(state)
+        if start is None:
+            start = nav.nearest_block(state, "log", reachable_only=True,
+                                      exclude=self._skip)
+        if start is None:
+            return None
+        self._adopt(nav.tree_logs(state, {start.position}) or (start,))
+        return start
+
+    def _adopt(self, logs) -> None:
+        """Make `logs` the tree being worked on, keeping the name it was
+        first given -- its trunk moves up as the bottom logs go."""
+        if not logs:
+            return
+        label = next((self._tree_of[b.position] for b in logs
+                      if b.position in self._tree_of), None)
+        if label is None:
+            lowest = min(logs, key=lambda b: b.y)
+            label = (lowest.name, (lowest.x, lowest.z))
+        for block in logs:
+            self._tree.add(block.position)
+            self._tree_of.setdefault(block.position, label)
+
+    def _tally(self) -> str:
+        if self.whole_tree:
+            return f"{self._broken} broken from this tree so far"
+        return f"{self._done}/{self.count}"
+
+    def _after_the_tree(self, state, local, history):
+        """Felled as far as it can be: pick up what fell, then stop."""
+        if self._can_count and self._collected < self._broken:
+            return self._pick_up(state, local, history)
+        return None
+
     def _clear_leaves(self, state, target):
         """A step breaking the leaf block between the eye and `target`, or
         None if the crosshair is not on one worth breaking."""
@@ -1553,6 +1684,10 @@ class CollectLogs:
             return None
         if position in self._skip:
             return None
+        # Once a tree is started, a log of ANOTHER tree that happens to be
+        # under the crosshair is not the next one: finishing this tree is.
+        if self._tree and position not in self._tree:
+            return None
         if not aiming_mod.SHARED.within_reach(state.position, position):
             return None
         return nav_target(position, target.name)
@@ -1575,8 +1710,7 @@ class CollectLogs:
                             "expect_at": list(target.position)},
                     expectation=check,
                     note=(f"mine {target.name} at {target.position} "
-                          f"({self._done}/{self.count}; "
-                          f"{estimate.describe()})"))
+                          f"({self._tally()}; {estimate.describe()})"))
 
     def _walk_towards(self, state, target, history=()):
         """Delegate the walking to the navigation skill.
@@ -1656,11 +1790,21 @@ class CollectLogs:
             self._pickup_walks += 1
             walker = NavigateTo(destination=column, arrive_within=within)
             self._pickup_walker = walker
+            self._fetch_baseline = _log_total(state)
+            self._fetching = where
 
         step = walker.plan(state, 0, history)
         if step is not None:
             return step
         self._pickup_walker = None
+        # Picked up on the way: pickup happens on contact, often a step
+        # before "arriving". Checking the bag against the moment AFTER that
+        # reads as nothing gained -- the real run's "no more birch_log than
+        # before", for an oak log that had just been collected.
+        if self._fetch_baseline is not None \
+                and _log_total(state) > self._fetch_baseline:
+            self._fetch_baseline = None
+            return self._pick_up(state, local, history)
         if walker.failed:
             if self._pickup_walks >= MAX_PICKUP_WALKS:
                 self._pickup_note = (
@@ -1673,9 +1817,10 @@ class CollectLogs:
         # one observed pause lets the inventory catch up -- and is CHECKED,
         # against the bag, so it is never a filler step.
         return Step(action="look", params={"dx": 1, "dy": 0},
-                    expectation=verify_mod.collected(self._last_target
-                                                     or "oak_log"),
-                    note=f"standing where the dropped log is ({where})")
+                    expectation=verify_mod.collected(LOG_BLOCKS,
+                                                     label="logs"),
+                    note=(f"standing where the dropped log is "
+                          f"({self._fetching or where})"))
 
     def _nearest_drop(self, state):
         """The closest item on the ground near a block this task broke."""
@@ -1798,6 +1943,15 @@ def _under_the_trunk(state, column, drop_y) -> bool:
                 and block.y >= math.floor(drop_y)):
             return True
     return False
+
+
+def _tree_label(label) -> str:
+    """("birch_log", (-39, -201)) as "the birch tree at (-39, -201)"."""
+    name, (x, z) = label
+    kind = " ".join(str(name).split("_"))
+    if kind.endswith(" log"):
+        kind = kind[:-4]
+    return f"the {kind} tree at ({x}, {z})"
 
 
 def _drop_text(entity) -> str:
@@ -1993,6 +2147,7 @@ BUILTIN_SKILLS = {
     "break_block": BreakBlock,
     "place_block": PlaceBlock,
     "collect_logs": CollectLogs,
+    "fell_tree": lambda **kwargs: CollectLogs(whole_tree=True, **kwargs),
     "navigate_to": NavigateTo,
     "aim_at_block": AimAtBlock,
     "mine_block": _mine_block,
