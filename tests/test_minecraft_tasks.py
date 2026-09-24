@@ -652,14 +652,19 @@ class TestSkills(unittest.TestCase):
 
     def test_break_block_stops_rather_than_break_the_wrong_thing(self):
         """Aimed at stone while asked for a log: stopping is correct, and
-        strictly better than mining whatever happens to be there."""
+        strictly better than mining whatever happens to be there.
+
+        Stopping is right; calling it COMPLETED was not. Nothing was broken,
+        and a completed task reaches the assistant as "done" -- which is how
+        a real run told the user "the block is gone" about a block that was
+        never there."""
         source = StaticSource(WorldState(
             target_block=BlockRef(name="stone"), source="f3",
             confidence=INFERRED))
         controller = FakeController()
         result = runner(controller, source).run(
             skills.BreakBlock(expected="oak_log"))
-        self.assertEqual(result.status, COMPLETED)
+        self.assertEqual(result.status, INCOMPLETE)
         self.assertIn("stone", result.reason)
         self.assertEqual(controller.calls, [],
                          "it swung at the wrong block")

@@ -168,6 +168,11 @@ class ModBridgeStateSource:
 
     # ── reading ──────────────────────────────────────────────────────────────
 
+    stamp_units = "epoch_ms"
+    """`stamp()` is the wall-clock millisecond the snapshot was TAKEN, on the
+    game's own thread -- so a reader can ask not just "is this a new
+    snapshot" but "was it taken after my action had landed"."""
+
     def stamp(self):
         """When the mod last wrote, in its own milliseconds, or None.
 

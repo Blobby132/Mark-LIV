@@ -16,7 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import navigation
-from minecraft.mod_bridge import ModBridgeStateSource, state_file_path  # noqa: E402
+from minecraft.mod_bridge import (                                      # noqa: E402
+    SCHEMA, ModBridgeStateSource, state_file_path,
+)
 from minecraft.state import EXACT                                       # noqa: E402
 
 RULE = "─" * 72
@@ -68,6 +70,57 @@ def inspect_running_game() -> dict:
         except Exception:
             continue
     return info
+
+
+def bundled_jar():
+    jars = sorted((Path(__file__).resolve().parent.parent / "mods")
+                  .glob("markliv-bridge-*.jar"))
+    return jars[-1] if jars else None
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
+def explain_outdated(source) -> None:
+    """An older mod is running. Say which of the two usual reasons it is.
+
+    Either the new jar never reached the folder the game loads from --
+    installed while Minecraft was open (Windows keeps a running game's jar
+    locked), or into a different instance -- or it did, and the game has not
+    been restarted since, so the old one is still what is loaded."""
+    print(f"\n{RULE}\n  WHY IS THE OLD MOD STILL RUNNING?\n{RULE}")
+    print(f"  Running mod reports : {source.schema()}")
+    print(f"  This JARVIS expects : {SCHEMA}")
+    game = inspect_running_game()
+    bundled = bundled_jar()
+    if not game["game_dir"] or bundled is None:
+        print("\n  Quit Minecraft completely, run install_mod.bat, then start")
+        print("  Minecraft again. Installing while the game is open can fail:")
+        print("  Windows locks the jar the game has loaded.")
+        return
+    mods = Path(game["game_dir"]) / "mods"
+    installed = sorted(mods.glob("markliv-bridge-*.jar"))
+    print(f"  The game loads mods from: {mods}")
+    current = [j for j in installed if _same_file(j, bundled)]
+    if current:
+        print(f"\n  The NEW jar is in that folder ({current[0].name}), but")
+        print("  Minecraft has not been restarted since it was copied, so the")
+        print("  old one is still loaded. Quit Minecraft completely and start")
+        print("  it again.")
+        return
+    if installed:
+        print(f"\n  The jar in that folder ({installed[0].name}) is the OLD one:")
+        print("  the copy did not happen. Quit Minecraft first -- Windows")
+        print("  locks it while the game runs -- then run:")
+    else:
+        print("\n  There is no copy of the mod in that folder at all, so the")
+        print("  one running is loaded from somewhere else. Quit Minecraft,")
+        print("  then run:")
+    print(f"    py tools\\install_mod.py --into \"{game['game_dir']}\"")
 
 
 def explain_why_not() -> None:
@@ -193,6 +246,8 @@ def main() -> int:
         print("  the ground under a tree (so it may find no way to one), and")
         print("  has to guess how far your mouse turns. Reinstall and restart:")
         print("    install_mod.bat")
+        if not sees_floors:
+            explain_outdated(source)
 
     print(f"\n{RULE}\n  CAN IT NAVIGATE?\n{RULE}")
     local = navigation.LocalMap.from_state(state)

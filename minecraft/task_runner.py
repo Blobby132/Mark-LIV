@@ -116,6 +116,16 @@ that has stopped writing costs one step rather than the whole task."""
 
 FRESH_STATE_POLL_S = 0.02
 
+INPUT_SETTLE_MS = 50.0
+"""How long after an action a snapshot must have been taken to count as
+showing it: one game tick, which also covers a frame at 20 fps.
+
+"Newer than before the action" was the first rule, and it let through a
+snapshot taken DURING a 13ms look, before Minecraft had applied the mouse
+movement. A real run turned -39 degrees, read "turned 0.0", turned -39 again
+and then +39 back. The bridge dates each snapshot in wall-clock milliseconds,
+so the snapshot can be required to postdate the action itself."""
+
 MIN_OBSERVATION_INTERVAL_S = 0.25
 """The floor between steps. Minecraft runs at 20 ticks per second, so anything
 under about 50ms observes the same tick twice and learns nothing from it."""
@@ -265,6 +275,17 @@ class TaskResult:
         return head + detail + "."
 
 
+def _taken_by(stamp, wanted) -> bool:
+    """Was a snapshot stamped `stamp` taken at or after `wanted` (both wall
+    milliseconds)? True when there is no requirement."""
+    if wanted is None:
+        return True
+    try:
+        return float(stamp) >= wanted
+    except (TypeError, ValueError):
+        return False
+
+
 class TaskRunner:
     """Runs one skill against a live controller, and stops for any reason.
 
@@ -274,7 +295,7 @@ class TaskRunner:
     def __init__(self, controller, state_source, observer=None,
                  interval_s: float = DEFAULT_OBSERVATION_INTERVAL_S,
                  sleeper=None, max_seconds: float = MAX_TASK_SECONDS,
-                 clock=None):
+                 clock=None, wall_clock=None):
         self._controller = controller
         self._state_source = state_source
         self._observer = observer
@@ -282,6 +303,8 @@ class TaskRunner:
         # Injectable so tests do not spend real seconds waiting.
         self._sleep = sleeper if sleeper is not None else time.sleep
         self._clock = clock if clock is not None else time.monotonic
+        # Wall time, for comparing with a source that dates its snapshots.
+        self._wall = wall_clock if wall_clock is not None else time.time
         self._max_seconds = max(1.0, min(float(max_seconds), MAX_TASK_SECONDS))
         self._cancel = threading.Event()
         self.progress = ProgressMonitor()
@@ -500,7 +523,7 @@ class TaskRunner:
             result_dict = {"ok": False, "action": step.action,
                            "error_class": type(e).__name__, "error": str(e)}
 
-        after = self._observe_after(stamp_before)
+        after = self._observe_after(stamp_before, self._wall() * 1000.0)
 
         if step.expectation is None:
             checked = verify_mod.unverifiable(
@@ -566,7 +589,7 @@ class TaskRunner:
         except Exception:
             return None
 
-    def _observe_after(self, stamp_before):
+    def _observe_after(self, stamp_before, acted_at_ms=None):
         """Read the world, waiting for a picture taken AFTER the action.
 
         WHY THE WAIT EXISTS
@@ -583,13 +606,24 @@ class TaskRunner:
 
             Sources that cannot say when they last read (OCR takes a fresh
             screenshot every time) return None here and are read once, as
-            before."""
+            before.
+
+            NEWER IS NOT ENOUGH
+            A snapshot taken during the action, or in the instant after it
+            before the game applied the input, is newer and still shows the
+            world from before. A source that dates its snapshots in wall
+            time (the bridge) must produce one taken INPUT_SETTLE_MS after
+            the action ended."""
         if stamp_before is None:
             return self._read_state()
 
+        dated = getattr(self._state_source, "stamp_units", None) == "epoch_ms"
+        wanted = (acted_at_ms + INPUT_SETTLE_MS
+                  if dated and acted_at_ms is not None else None)
         deadline = self._clock() + FRESH_STATE_TIMEOUT_S
         while self._clock() < deadline:
-            if self._stamp() != stamp_before:
+            stamp = self._stamp()
+            if stamp != stamp_before and _taken_by(stamp, wanted):
                 break
             self._sleep(FRESH_STATE_POLL_S)
         return self._read_state()

@@ -815,7 +815,9 @@ def _source_label(source) -> str:
         if outdated:
             return ("the bridge mod — but an OLDER version, which cannot see "
                     "the ground under trees, so it may find no way to one. "
-                    "Run install_mod.bat and restart Minecraft")
+                    "Quit Minecraft, run install_mod.bat, then start "
+                    "Minecraft again; if this line is still here after "
+                    "that, py tools\\bridge_check.py says why")
         return "the bridge mod — exact, including the terrain around you"
     if name.startswith("DebugOverlay"):
         return ("the F3 overlay via OCR — position and the block under the "
@@ -962,7 +964,9 @@ TOOL = {
         "collect_logs walks to the nearest tree it can reach, breaks logs "
         "until it has the count, and walks over the drops to pick them up. "
         "If leaves are between it and a log it breaks those first — a few "
-        "at most, never counted as logs.\n"
+        "at most, never counted as logs. break_block only breaks whatever "
+        "the crosshair is on right now — it does not aim or walk — so for "
+        "'break a log' or 'chop a tree' use collect_logs.\n"
         "REPORTING RESULTS HONESTLY — this matters most:\n"
         "  * Holding attack is not breaking a block. Never say a block broke, "
         "a tree was chopped or wood was collected unless "

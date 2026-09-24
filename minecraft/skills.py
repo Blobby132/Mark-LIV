@@ -411,15 +411,46 @@ class BreakBlock:
     def done_reason(self) -> str:
         return self._reason
 
+    @property
+    def failed(self) -> bool:
+        """Anything short of a swing verified to have broken the block.
+
+        Without this the runner reported every ending as "done" -- including
+        "there was nothing there" and "I stopped rather than break the wrong
+        block" -- and the assistant told the user the block was gone."""
+        return not self._broken
+
     _reason: str = ""
+    _broken: bool = False
 
     def plan(self, state, step_index: int, history: tuple):
         block = state.target_block
         name = getattr(block, "name", None) if block else None
 
-        # Gone — either air or nothing under the crosshair at all.
-        if step_index > 0 and name in (None, "air", "cave_air", "void_air"):
+        # Gone: only on the word of a swing's own verification. The crosshair
+        # reading air afterwards is not enough -- it read air in a real run
+        # where there had never been a block, and "the block is gone" went
+        # back to the user.
+        mines = [r for r in history if r.step.get("action") == "mine"]
+        if any(r.verification.get("status") == verify_mod.SUCCESS
+               for r in mines):
+            self._broken = True
             self._reason = "the block is gone"
+            return None
+
+        # Nothing there. Holding attack at air breaks nothing and would be
+        # reported as trying; say so instead.
+        if name in _AIR:
+            if mines and mines[-1].verification.get("status") \
+                    == verify_mod.UNVERIFIABLE:
+                self._reason = ("the crosshair now sees nothing, but I could "
+                                "not see what was there before the swing, so "
+                                "I cannot say whether it broke")
+            else:
+                self._reason = ("there is no block under the crosshair within "
+                                "reach, so there is nothing to break. For a "
+                                "tree, collect_logs finds, walks to and aims "
+                                "at a log by itself")
             return None
 
         # Aimed at the wrong thing. Stop rather than mine whatever happens to
@@ -440,6 +471,9 @@ class BreakBlock:
             expectation=verify_mod.block_broken(self.expected or None),
             note=f"swing {step_index + 1}",
         )
+
+
+_AIR = frozenset({"air", "cave_air", "void_air"})
 
 
 @dataclass
@@ -598,6 +632,7 @@ class NavigateTo:
     _blind: bool = False
     _stopped: str = ""
     _arrived: bool = False
+    _goal_block: object = None
 
     @property
     def goal(self) -> str:
@@ -622,8 +657,9 @@ class NavigateTo:
                     f"{self._where_text(self._seen_at)} is as far as I got.")
         if self._arrived:
             where = self._destination
-            return (f"arrived at ({where[0]}, {where[1]})" if where
+            text = (f"arrived at ({where[0]}, {where[1]})" if where
                     else "arrived")
+            return text + self._how_close()
         # Running out of steps mid-route is a normal outcome for a long walk,
         # and "stopped" on its own is useless to anyone deciding what to do
         # next. Say where it got to and how much was left, so calling it
@@ -708,6 +744,7 @@ class NavigateTo:
                 self._stopped = (f"I can see {block_label(block)} but there "
                                  f"is nowhere next to it I can stand.")
                 return None
+            self._goal_block = block
             return column
 
         if self.destination is None:
@@ -729,6 +766,28 @@ class NavigateTo:
                              f"could stand.")
             return None
         return column
+
+    def _how_close(self) -> str:
+        """For a walk to a block: how far from it this ended, and, when that
+        is not beside it, that it is as close as the ground allows.
+
+        A real run answered "walk to the nearest tree" with "arrived, 0
+        steps" -- it was already three blocks off, the nearest place it
+        could stand, and nothing said so."""
+        block = self._goal_block
+        if block is None or self._seen_at is None:
+            return ""
+        try:
+            gap = math.dist((self._seen_at[0], self._seen_at[2]),
+                            (block.x + 0.5, block.z + 0.5))
+        except (TypeError, IndexError, AttributeError):
+            return ""
+        text = f", {gap:.0f} blocks from {block_label(block)} at " \
+               f"{block.position}"
+        if gap > 2.0:
+            text += (" — as close as I can get: nowhere nearer to it has "
+                     "room to stand, or I cannot reach it")
+        return text
 
     def _at_destination(self, state) -> bool:
         try:

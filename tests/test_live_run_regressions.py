@@ -28,6 +28,7 @@ import dataclasses
 import math
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -416,6 +417,224 @@ class StatusLineTests(unittest.TestCase):
             "session_active": True,
             "session": {"unlimited": False, "remaining_seconds": 312.4}})
         self.assertIn("312s left", line)
+
+
+# ── The third run ────────────────────────────────────────────────────────────
+
+class BreakBlockHonestyTests(unittest.TestCase):
+    """From the third run: "Can you break another log?" ran break_block with
+    the crosshair on nothing. It held attack at the air for four seconds,
+    the swing's own check said "there was no block under the crosshair to
+    begin with" -- and the task reported "completed: the block is gone",
+    which the assistant repeated to the user."""
+
+    @staticmethod
+    def looking_at(name, x=None):
+        from minecraft.state import BlockRef, EXACT, WorldState
+        return WorldState(target_block=BlockRef(name=name, x=x, y=64, z=0),
+                          source="bridge", confidence=EXACT)
+
+    def test_nothing_under_the_crosshair_is_not_swung_at_or_called_gone(self):
+        from minecraft.task_runner import INCOMPLETE
+        from tests.test_minecraft_tasks import (
+            FakeController, StaticSource, runner)
+        controller = FakeController()
+        result = runner(controller, StaticSource(self.looking_at("air"))).run(
+            skills.create("break_block"))
+        self.assertEqual(controller.calls, [], "it swung at the air")
+        self.assertEqual(result.status, INCOMPLETE)
+        self.assertNotIn("gone", result.reason)
+        self.assertIn("nothing to break", result.reason)
+        self.assertIn("collect_logs", result.reason)
+
+    def test_an_unseen_swing_followed_by_air_is_not_called_gone(self):
+        """The crosshair could not be read before the swing and reads air
+        after it. That is not evidence anything broke."""
+        from minecraft.state import WorldState
+        from minecraft.task_runner import INCOMPLETE
+        from tests.test_minecraft_tasks import FakeController, runner
+
+        class Source:
+            def __init__(inner):
+                inner.reads = 0
+
+            def read(inner):
+                inner.reads += 1
+                if inner.reads <= 2:
+                    return WorldState(source="bridge")      # unreadable
+                return self.looking_at("air")
+
+        result = runner(FakeController(), Source()).run(
+            skills.create("break_block"))
+        self.assertEqual(result.status, INCOMPLETE)
+        self.assertNotIn("is gone", result.reason)
+        self.assertIn("cannot say", result.reason)
+
+    def test_a_block_that_really_broke_is_still_reported(self):
+        from minecraft.task_runner import COMPLETED
+        from tests.test_minecraft_tasks import FakeController, runner
+
+        class Source:
+            def __init__(inner):
+                inner.reads = 0
+
+            def read(inner):
+                inner.reads += 1
+                return self.looking_at("oak_log" if inner.reads <= 2
+                                       else "air", x=1)
+
+        result = runner(FakeController(), Source()).run(
+            skills.create("break_block"))
+        self.assertEqual(result.status, COMPLETED)
+        self.assertIn("gone", result.reason)
+
+
+class RacyBridge:
+    """SimWorld behind a bridge that publishes on its own 200ms clock and
+    dates each snapshot in wall-clock milliseconds -- and, as in the third
+    run, happens to take one DURING a look, before the game has applied the
+    mouse movement. Built as a mixin factory so the world underneath is the
+    ordinary SimWorld."""
+
+    @staticmethod
+    def make(surface, **kwargs):
+        from tests.test_minecraft_navigation import SimWorld
+
+        class World(SimWorld):
+            stamp_units = "epoch_ms"
+            PUBLISH_MS = 200.0
+
+            def __init__(self):
+                super().__init__(surface, **kwargs)
+                self.now_ms = 1_700_000_000_000.0
+                self.snapshot = SimWorld.read(self)
+                self.written = self.now_ms
+
+            def wall(self):
+                return self.now_ms / 1000.0
+
+            def _publish(self, state, at):
+                self.snapshot, self.written = state, at
+
+            def look(self, params):
+                before = SimWorld.read(self)
+                result = SimWorld.look(self, params)
+                self.now_ms += 13.0
+                # Taken 5ms after the input went out, before the game
+                # applied it: newer than before the action, and stale.
+                self._publish(before, self.now_ms - 5.0)
+                return result
+
+            def stamp(self):
+                self.now_ms += 20.0             # one poll of the runner
+                if self.now_ms - self.written >= self.PUBLISH_MS:
+                    self._publish(SimWorld.read(self), self.now_ms)
+                return self.written
+
+            def read(self):
+                return self.snapshot
+
+        return World()
+
+
+class StaleSnapshotTests(unittest.TestCase):
+
+    def test_a_snapshot_taken_during_the_look_is_not_its_result(self):
+        from minecraft import navigation as nav
+        from minecraft.task_runner import TaskRunner
+        world = RacyBridge.make(flat(), yaw=90.0)      # facing away
+        nav.reset_calibration()
+        runner = TaskRunner(world, world, sleeper=lambda _s: None,
+                            wall_clock=world.wall)
+        result = runner.run(skills.create("navigate_to", destination=(6, 0)))
+        looks = [r for r in result.records if r.step["action"] == "look"]
+        self.assertTrue(looks)
+        stale = [r.step["note"] for r in looks
+                 if r.verification.get("status") == verify_mod.FAILED]
+        self.assertEqual(stale, [], "a turn was judged on a snapshot taken "
+                                    "before it landed")
+
+
+class ArrivalMessageTests(unittest.TestCase):
+
+    def test_arriving_short_of_the_tree_says_so(self):
+        """"Walk to the nearest tree" answered "arrived, 0 steps" three
+        blocks away, the nearest place it could stand, without saying so."""
+        from tests.test_minecraft_navigation import SimWorld
+        aiming_mod.SHARED.reset()
+        log = NearbyBlock(3, 64, 0, "oak_log", True)
+        surface = [NearbyBlock(b.x, b.y, b.z, "water", False)
+                   if 1 <= max(abs(b.x - 3), abs(b.z)) <= 2 else b
+                   for b in flat()]
+        world = SimWorld(surface)             # standing at (0, 0): ring 3
+        world.notable = (log,)
+        skill = skills.create("navigate_to", target="log")
+        result = run(world, skill)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertFalse(result.records, "it should not have moved")
+        self.assertIn("3 blocks from an oak log at (3, 64, 0)",
+                      skill.done_reason)
+        self.assertIn("as close as I can get", skill.done_reason)
+
+    def test_arriving_beside_it_does_not_apologise(self):
+        from tests.test_minecraft_navigation import SimWorld
+        world = SimWorld(flat())
+        world.notable = (NearbyBlock(5, 64, 0, "oak_log", True),)
+        skill = skills.create("navigate_to", target="log")
+        run(world, skill)
+        self.assertIn("blocks from an oak log", skill.done_reason)
+        self.assertNotIn("as close as I can get", skill.done_reason)
+
+
+class OutdatedModExplanationTests(unittest.TestCase):
+    """The third run still had the old mod loaded after the update. The two
+    usual reasons need different fixes, and bridge_check can tell them
+    apart by looking in the folder the running game loads mods from."""
+
+    def explain(self, installed_bytes):
+        import contextlib
+        import io
+        import tempfile
+        from tools import bridge_check
+        with tempfile.TemporaryDirectory() as root:
+            game_dir = Path(root) / "game"
+            (game_dir / "mods").mkdir(parents=True)
+            bundled = Path(root) / "markliv-bridge-1.0.0.jar"
+            bundled.write_bytes(b"new jar")
+            if installed_bytes is not None:
+                (game_dir / "mods" / "markliv-bridge-1.0.0.jar") \
+                    .write_bytes(installed_bytes)
+
+            class Source:
+                def schema(self):
+                    return "markliv.minecraft.state/3"
+
+            game = {"found": True, "pid": 1, "game_dir": str(game_dir),
+                    "fabric": True, "version": None, "cmdline_readable": True}
+            out = io.StringIO()
+            with unittest.mock.patch.object(bridge_check,
+                                            "inspect_running_game",
+                                            return_value=game), \
+                    unittest.mock.patch.object(bridge_check, "bundled_jar",
+                                               return_value=bundled), \
+                    contextlib.redirect_stdout(out):
+                bridge_check.explain_outdated(Source())
+            return out.getvalue(), str(game_dir)
+
+    def test_new_jar_in_place_means_restart_the_game(self):
+        text, _ = self.explain(b"new jar")
+        self.assertIn("has not been restarted", text)
+        self.assertNotIn("--into", text)
+
+    def test_old_jar_in_place_means_the_copy_failed(self):
+        text, game_dir = self.explain(b"old jar")
+        self.assertIn("the copy did not happen", text)
+        self.assertIn(f'--into "{game_dir}"', text)
+
+    def test_no_jar_means_it_loads_from_elsewhere(self):
+        text, game_dir = self.explain(None)
+        self.assertIn("somewhere else", text)
+        self.assertIn(f'--into "{game_dir}"', text)
 
 
 if __name__ == "__main__":
