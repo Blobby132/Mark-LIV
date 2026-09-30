@@ -7,6 +7,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
@@ -20,6 +21,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -337,11 +339,32 @@ public class MarkLivBridge implements ClientModInitializer {
      * headroom -- a route straight through the water, which the planner
      * cannot walk.
      */
-    private static boolean passable(net.minecraft.world.level.Level level,
-                                    BlockPos pos, BlockState state) {
-        return state.isAir()
-                || (state.getCollisionShape(level, pos).isEmpty()
-                    && state.getFluidState().isEmpty());
+    /**
+     * Can a player's body occupy this block? Air, or no collision and no
+     * fluid. Takes the collision already computed: the scan used to
+     * compute every block's collision shape twice.
+     */
+    private static boolean passable(boolean air, boolean noCollision,
+                                    BlockState state) {
+        return air || (noCollision && state.getFluidState().isEmpty());
+    }
+
+    /**
+     * Per block TYPE, its registry name and notable kind: {name, kind}.
+     *
+     * <p>The scan reads some 6,000 blocks five times a second and used to
+     * build each one's name as a fresh string, then match it against the
+     * notable kinds -- for the few dozen types a scan actually sees. Only
+     * ever touched on the client thread, from the scan.
+     */
+    private final IdentityHashMap<Block, String[]> blockInfo =
+            new IdentityHashMap<>();
+
+    private String[] infoOf(BlockState state) {
+        return blockInfo.computeIfAbsent(state.getBlock(), block -> {
+            String name = BuiltInRegistries.BLOCK.getKey(block).toString();
+            return new String[] {name, Kinds.notable(name)};
+        });
     }
 
     /**
@@ -390,6 +413,7 @@ public class MarkLivBridge implements ClientModInitializer {
         int last = length - 1;              // index of dy = -SCAN_DOWN
         int feetIndex = top;                // index of dy = 0
         String[] names = new String[length];
+        String[] kinds = new String[length];
         boolean[] air = new boolean[length];
         boolean[] collides = new boolean[length];
         boolean[] open = new boolean[length];
@@ -403,13 +427,15 @@ public class MarkLivBridge implements ClientModInitializer {
                     cursor.set(x, originY + top - i, z);
                     BlockState state = level.getBlockState(cursor);
                     air[i] = state.isAir();
-                    collides[i] = !air[i] && !state
+                    boolean noCollision = air[i] || state
                             .getCollisionShape(level, cursor).isEmpty();
-                    open[i] = passable(level, cursor, state);
-                    names[i] = air[i] ? null : BuiltInRegistries.BLOCK
-                            .getKey(state.getBlock()).toString();
+                    collides[i] = !noCollision;
+                    open[i] = passable(air[i], noCollision, state);
+                    String[] info = air[i] ? null : infoOf(state);
+                    names[i] = info == null ? null : info[0];
+                    kinds[i] = info == null ? null : info[1];
 
-                    String kind = air[i] ? null : Kinds.notable(names[i]);
+                    String kind = kinds[i];
                     if (i < first && !ColumnScan.reportedAbove(kind)) {
                         kind = null;            // headroom rows: logs only
                     }
@@ -428,17 +454,16 @@ public class MarkLivBridge implements ClientModInitializer {
 
                 // A trunk that reaches the top of the rows read: follow it.
                 String[] trunk = new String[TREE_UP + 1];
-                int[] above = ColumnScan.logsAbove(
-                        air[0] ? null : Kinds.notable(names[0]), up -> {
-                            cursor.set(x, originY + up, z);
-                            BlockState state = level.getBlockState(cursor);
-                            if (state.isAir()) {
-                                return null;
-                            }
-                            trunk[up] = BuiltInRegistries.BLOCK
-                                    .getKey(state.getBlock()).toString();
-                            return Kinds.notable(trunk[up]);
-                        }, top + 1, TREE_UP);
+                int[] above = ColumnScan.logsAbove(kinds[0], up -> {
+                    cursor.set(x, originY + up, z);
+                    BlockState state = level.getBlockState(cursor);
+                    if (state.isAir()) {
+                        return null;
+                    }
+                    String[] info = infoOf(state);
+                    trunk[up] = info[0];
+                    return info[1];
+                }, top + 1, TREE_UP);
                 for (int dy : above) {
                     double distance = dx * dx + dy * dy + dz * dz;
                     if (notable.wants("log", distance)) {
