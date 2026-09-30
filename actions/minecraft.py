@@ -24,6 +24,8 @@ WHAT THIS FILE DELIBERATELY DOES NOT DO
 
 from __future__ import annotations
 
+import time
+
 from core import capabilities
 from core import interrupts
 from core import ocr as core_ocr
@@ -55,6 +57,16 @@ _controller: MinecraftController | None = None
 _observer: Observer | None = None
 _state_source = None
 _state_source_pinned = False
+
+# The one bridge reader, kept for the life of the process so what it caches
+# -- the last parse, the last good read -- survives between calls, and when
+# it last answered. A bridge that answered within BRIDGE_STICKY_SECONDS is
+# kept through a failed check: that is a read racing the mod's rename, not
+# the game closing, and the task runner keeps whatever source it is handed
+# for the whole task.
+_bridge = None
+_bridge_ok_at = None
+BRIDGE_STICKY_SECONDS = 3.0
 
 # The one background task, if any. See minecraft/task_slot.py: run_task starts
 # a task here and returns at once, so the conversation -- including "stop" --
@@ -195,16 +207,20 @@ def _get_state_source():
     Everything above this function is written against `StateSource` and never
     learns which one it got; that seam is why the bridge could be added
     without touching the planner, the task runner or verification."""
-    global _state_source
+    global _state_source, _bridge, _bridge_ok_at
     if _state_source_pinned:
         return _state_source
 
-    bridge = ModBridgeStateSource()
+    if _bridge is None:
+        _bridge = ModBridgeStateSource()
+    bridge = _bridge
+    now = time.monotonic()
     if bridge.available():
-        # Reuse the existing instance when it is already the bridge, so
-        # nothing it has cached internally is thrown away each call.
-        if not isinstance(_state_source, ModBridgeStateSource):
-            _state_source = bridge
+        _bridge_ok_at = now
+        _state_source = bridge
+        return _state_source
+    if _state_source is bridge and _bridge_ok_at is not None \
+            and now - _bridge_ok_at <= BRIDGE_STICKY_SECONDS:
         return _state_source
 
     if isinstance(_state_source, DebugOverlayStateSource) \
@@ -228,9 +244,12 @@ def _reset_for_tests(controller=None, observer=None, state_source=None) -> None:
     """Swap in fakes. Only the tests call this; it exists so they can exercise
     the real adapter rather than a copy of its logic."""
     global _controller, _observer, _state_source, _state_source_pinned, _slot
+    global _bridge, _bridge_ok_at
     _controller = controller
     _observer = observer
     _state_source = state_source
+    _bridge = None
+    _bridge_ok_at = None
     _slot = TaskSlot()
     # A fake handed in here is used exactly as given; the real resolution
     # order would otherwise replace it with whatever this machine has.

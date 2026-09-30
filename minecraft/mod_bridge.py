@@ -55,6 +55,10 @@ from __future__ import annotations
 import json
 import os
 import time
+# Imported by name: `dataclasses.replace(...)` reads, to the boundary test, as
+# `.replace()` -- which it cannot tell from Path.replace, a file rename -- and
+# it is right not to guess. This one copies a frozen dataclass; nothing more.
+from dataclasses import replace as _copy_with
 
 from minecraft.state import (
     BlockRef, EXACT, EntityRef, ItemStack, NearbyBlock, WorldState,
@@ -85,6 +89,18 @@ ENV_OVERRIDE = "MARKLIV_STATE_FILE"
 """Point this at the state file to override the default location."""
 
 _MAX_BYTES = 512 * 1024
+
+READ_ATTEMPTS = 3
+"""Reads of the file before a failure counts. The mod replaces the file with
+an atomic rename five times a second, and on Windows a read can land in the
+instant of the swap -- not found, or half a file."""
+
+RETRY_PAUSE_S = 0.005
+
+LAST_GOOD_SECONDS = 1.0
+"""A failed read within this long of a good one returns the good one. The
+snapshot's own age is still checked against MAX_AGE_SECONDS, so this only
+bridges a hiccup; it cannot make a closed game look open."""
 """Refuse to read anything larger. The real payload is a few kilobytes; a huge
 file means something other than the mod wrote here, and parsing it is not this
 module's job."""
@@ -121,12 +137,23 @@ class ModBridgeStateSource:
     confidence = EXACT
 
     def __init__(self, path: str | None = None, reader=None,
-                 clock=None, max_age_s: float = MAX_AGE_SECONDS):
+                 clock=None, max_age_s: float = MAX_AGE_SECONDS,
+                 sleeper=None):
         self._path = path or state_file_path()
         # Injectable so tests never touch a real file.
         self._reader = reader if reader is not None else self._read_file
         self._clock = clock if clock is not None else time.time
+        self._sleep = sleeper if sleeper is not None else time.sleep
         self._max_age = float(max_age_s)
+        # The last text read and what it parsed to, the last good payload and
+        # when it was read, and the state built from the last snapshot. The
+        # probe asks five times per published snapshot; each only re-reads.
+        self._last_raw = None
+        self._last_parsed = None
+        self._good = None
+        self._good_at = None
+        self._built_for = None
+        self._built = None
 
     @property
     def path(self) -> str:
@@ -222,24 +249,63 @@ class ModBridgeStateSource:
                 "Minecraft is running but you are not in a world — the mod "
                 "reports no player, so there is nothing to read yet")
 
-        return self._build(payload, age)
+        # One build per published snapshot; a reuse only updates its age.
+        stamp = payload.get("written_at_ms")
+        if self._built is not None and self._built_for == stamp \
+                and stamp is not None:
+            return _copy_with(
+                self._built,
+                notes=f"read from the bridge mod, {age * 1000:.0f}ms old")
+        state = self._build(payload, age)
+        self._built_for, self._built = stamp, state
+        return state
 
     def _payload(self):
-        try:
-            raw = self._reader()
-        except Exception:
-            return None
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        if payload.get("schema") not in SUPPORTED_SCHEMAS:
-            # An unknown schema is an unknown contract. Guessing at it would
-            # be exactly the fabrication this subsystem refuses elsewhere.
-            return None
-        return payload
+        """The mod's latest payload, or None.
+
+        A read that fails -- missing mid-rename, or torn -- is tried again a
+        few milliseconds later, and a failure shortly after a good read
+        returns that good read. Text identical to the last read is not
+        parsed again."""
+        for attempt in range(READ_ATTEMPTS):
+            if attempt:
+                self._sleep(RETRY_PAUSE_S)
+            try:
+                raw = self._reader()
+            except FileNotFoundError:
+                # Mid-rename on some systems -- but also simply "the mod is
+                # not installed", which must not cost a pause on every check.
+                # Only worth another try if the mod was seen recently.
+                if not self._seen_recently():
+                    break
+                continue
+            except Exception:
+                continue
+            if raw == self._last_raw and self._last_parsed is not None:
+                payload = self._last_parsed
+            else:
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                self._last_raw, self._last_parsed = raw, payload
+            if payload.get("schema") not in SUPPORTED_SCHEMAS:
+                # An unknown schema is an unknown contract. Guessing at it
+                # would be exactly the fabrication this subsystem refuses
+                # elsewhere -- and it is not a hiccup, so not retried.
+                return None
+            self._good, self._good_at = payload, self._clock()
+            return payload
+        if self._good is not None and self._good_at is not None \
+                and self._clock() - self._good_at <= LAST_GOOD_SECONDS:
+            return self._good
+        return None
+
+    def _seen_recently(self) -> bool:
+        return self._good_at is not None \
+            and self._clock() - self._good_at <= self._max_age
 
     def _age_of(self, payload: dict) -> float:
         try:
