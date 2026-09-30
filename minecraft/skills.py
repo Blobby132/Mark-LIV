@@ -619,6 +619,12 @@ class NavigateTo:
 
     name = "navigate_to"
     verifiable_with = ("position", "surface")
+    # Walking is how you get away from a mob, or past one on the way home at
+    # night: stopping it for danger -- or refusing to start -- would take
+    # away the one thing that helps. It says what is close when it ends.
+    # A task that walks as PART of its job (collect_logs) still stops.
+    watch_health = False
+    watch_hostiles = False
 
     _destination: tuple | None = None
     _path: object = None

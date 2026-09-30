@@ -171,5 +171,34 @@ class TasksStopInDangerTests(unittest.TestCase):
         self.assertFalse(skill.failed, skill.done_reason)
 
 
+class WalkingAwayTests(unittest.TestCase):
+    """Walking is how you get away from a mob. Refusing to walk because one
+    is close -- or stopping halfway -- would take away the one thing that
+    helps, so navigate_to keeps going and says what is near when it ends."""
+
+    def test_navigate_to_walks_away_from_a_zombie(self):
+        from tests.test_minecraft_navigation import SimWorld
+
+        class Chased(SimWorld):
+            def read(self):
+                return dataclasses.replace(
+                    SimWorld.read(self), health=20.0,
+                    nearby_entities=(mob("minecraft:zombie", 3.0),))
+
+        world = Chased(flat())
+        skill = skills.create("navigate_to", destination=(-6, 0))
+        result = run(world, skill)
+        self.assertNotEqual(result.status, STOPPED, result.reason)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertLess(world.distance_to((-6, 0)), 2.0)
+        self.assertIn("Note: a zombie is 3 blocks away", result.reason)
+
+    def test_a_task_that_walks_as_part_of_its_job_still_stops(self):
+        world = Ambush(flat(), [NearbyBlock(6, 64, 0, "oak_log", True)],
+                       inventory={"oak_log": 0}, arrives_after=1)
+        result = run(world, skills.create("collect_logs", count=1))
+        self.assertEqual(result.status, STOPPED)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

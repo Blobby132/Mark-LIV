@@ -360,7 +360,8 @@ class TaskRunner:
         # to be hurt while it runs -- eating while starving -- opts out of
         # the health half, never the mob half.
         watch = danger_mod.DangerWatch(
-            watch_health=getattr(skill, "watch_health", True))
+            watch_health=getattr(skill, "watch_health", True),
+            watch_hostiles=getattr(skill, "watch_hostiles", True))
         danger = watch.check(state)
         if danger:
             return self._result(STOPPED, goal,
@@ -670,6 +671,12 @@ class TaskRunner:
         return ""
 
     def _result(self, status, goal, reason, records, state) -> TaskResult:
+        # A task that does not stop for danger -- walking, which is how you
+        # get AWAY from it -- still says what is close when it ends.
+        if not reason.startswith(DANGER):
+            nearby = danger_mod.DangerWatch(watch_health=False).check(state)
+            if nearby:
+                reason = f"{reason.rstrip('.')}. Note: {nearby}"
         return TaskResult(
             status=status, goal=goal, reason=reason,
             steps_taken=len(records), max_steps=MAX_TASK_STEPS,

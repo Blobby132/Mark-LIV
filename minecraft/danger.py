@@ -70,14 +70,16 @@ class DangerWatch:
     One per task: a new task starts with no memory of damage taken during
     the last one."""
 
-    def __init__(self, watch_health: bool = True):
+    def __init__(self, watch_health: bool = True,
+                 watch_hostiles: bool = True):
         self.watch_health = watch_health
+        self.watch_hostiles = watch_hostiles
         self.peak = None
 
     def check(self, state) -> str | None:
         """A reason to stop now, or None."""
         hurt = self._hurt(state)
-        mob = nearest_hostile(state)
+        mob = nearest_hostile(state) if self.watch_hostiles else None
         close = mob if mob is not None and mob.distance <= HOSTILE_RADIUS \
             else None
         if hurt and close:
