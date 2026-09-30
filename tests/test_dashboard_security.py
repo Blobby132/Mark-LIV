@@ -56,5 +56,107 @@ class FirewallTests(unittest.TestCase):
         self.assertEqual(server._windows_firewall_plan(8000, done), [])
 
 
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+class ThrottleTests(unittest.TestCase):
+    """POST /login, GET /auto-login and the device login had no limit on
+    how fast a wrong key could be tried, and the key was six characters."""
+
+    def test_five_failures_lock_an_address_out(self):
+        clock = Clock()
+        throttle = server.LoginThrottle(clock=clock)
+        for _ in range(4):
+            throttle.failed("10.0.0.9")
+            self.assertEqual(throttle.retry_after("10.0.0.9"), 0)
+        throttle.failed("10.0.0.9")
+        self.assertGreater(throttle.retry_after("10.0.0.9"), 0)
+        self.assertEqual(throttle.retry_after("10.0.0.7"), 0,
+                         "one address locked out another")
+        clock.t += 301
+        self.assertEqual(throttle.retry_after("10.0.0.9"), 0)
+
+    def test_guessing_spread_over_many_addresses_is_capped(self):
+        throttle = server.LoginThrottle(clock=Clock())
+        for i in range(50):
+            throttle.failed(f"10.0.1.{i}")
+        self.assertGreater(throttle.retry_after("10.0.2.1"), 0)
+
+    def test_a_success_clears_the_count(self):
+        throttle = server.LoginThrottle(clock=Clock())
+        for _ in range(4):
+            throttle.failed("10.0.0.9")
+        throttle.succeeded("10.0.0.9")
+        throttle.failed("10.0.0.9")
+        self.assertEqual(throttle.retry_after("10.0.0.9"), 0)
+
+    def test_old_failures_age_out(self):
+        clock = Clock()
+        throttle = server.LoginThrottle(clock=clock)
+        for _ in range(4):
+            throttle.failed("10.0.0.9")
+        clock.t += 301
+        throttle.failed("10.0.0.9")
+        self.assertEqual(throttle.retry_after("10.0.0.9"), 0)
+
+    def test_keys_are_longer(self):
+        self.assertGreaterEqual(server.KEY_LENGTH, 8)
+
+
+def _app_available():
+    return getattr(server, "_DEPS_OK", False)
+
+
+@unittest.skipUnless(_app_available(), "needs fastapi to exercise the routes")
+class LoginRouteTests(unittest.TestCase):
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.clock = Clock()
+        self.srv = server.DashboardServer()
+        self.srv._throttle = server.LoginThrottle(clock=self.clock)
+        self.client = TestClient(self.srv.app)
+
+    def test_the_real_key_is_refused_while_locked_out(self):
+        key = self.srv.new_key()
+        self.assertEqual(len(key), server.KEY_LENGTH)
+        for _ in range(5):
+            r = self.client.post("/login", json={"pin": "WRONGKEY"})
+            self.assertEqual(r.status_code, 401)
+        r = self.client.post("/login", json={"pin": key})
+        self.assertEqual(r.status_code, 429, "guessing was not slowed down")
+        self.assertIn("Too many", r.json()["error"])
+        self.clock.t += 301
+        r = self.client.post("/login", json={"pin": key})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+
+    def test_the_qr_link_is_throttled_too(self):
+        for _ in range(5):
+            self.client.get("/auto-login", params={"key": "WRONGKEY"})
+        r = self.client.get("/auto-login", params={"key": self.srv.new_key()})
+        self.assertEqual(r.status_code, 429)
+
+    def test_device_login_is_throttled_too(self):
+        for _ in range(5):
+            self.client.post("/api/device-login",
+                             json={"device_token": "nope"})
+        r = self.client.post("/api/device-login",
+                             json={"device_token": "nope"})
+        self.assertEqual(r.status_code, 429)
+
+    def test_the_login_page_asks_for_the_right_length(self):
+        page = self.client.get("/login").text
+        self.assertIn(f'maxlength="{server.KEY_LENGTH}"', page)
+        self.assertIn(f"const KEY_LENGTH = {server.KEY_LENGTH};", page)
+        self.assertNotIn("__KEY_LENGTH__", page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

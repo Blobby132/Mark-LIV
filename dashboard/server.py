@@ -69,6 +69,74 @@ def _get_gemini_key() -> str | None:
 _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
 
+KEY_LENGTH = 8
+"""Characters in a pairing key. Eight from 31 is about 8.5e11 keys; six was
+8.9e8, which a script can walk through in the ten minutes a key lives when
+nothing limits how fast it guesses."""
+
+
+class LoginThrottle:
+    """Failed pairing attempts, per client address and overall.
+
+    Five failures from one address within five minutes lock that address out
+    for five minutes. A ceiling across ALL addresses stops the same guessing
+    being spread over many -- on a home network an attacker can take as many
+    addresses as they like. A success clears that address's count."""
+
+    def __init__(self, per_address: int = 5, overall: int = 50,
+                 window_s: float = 300.0, lockout_s: float = 300.0,
+                 clock=None):
+        self.per_address, self.overall = per_address, overall
+        self.window_s, self.lockout_s = window_s, lockout_s
+        self._clock = clock or time.monotonic
+        self._failures: dict = {}          # address -> [times]
+        self._all: list = []
+        self._locked_until: dict = {}      # address (or "*") -> time
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_s
+        self._all = [t for t in self._all if t > cutoff]
+        for address in list(self._failures):
+            kept = [t for t in self._failures[address] if t > cutoff]
+            if kept:
+                self._failures[address] = kept
+            else:
+                del self._failures[address]
+        self._locked_until = {a: t for a, t in self._locked_until.items()
+                              if t > now}
+
+    def retry_after(self, address: str) -> float:
+        """Seconds until this address may try again; 0 if it may now."""
+        now = self._clock()
+        self._prune(now)
+        until = max(self._locked_until.get(address, 0.0),
+                    self._locked_until.get("*", 0.0))
+        return max(0.0, until - now)
+
+    def failed(self, address: str) -> None:
+        now = self._clock()
+        self._prune(now)
+        self._failures.setdefault(address, []).append(now)
+        self._all.append(now)
+        if len(self._failures[address]) >= self.per_address:
+            self._locked_until[address] = now + self.lockout_s
+        if len(self._all) >= self.overall:
+            self._locked_until["*"] = now + self.lockout_s
+
+    def succeeded(self, address: str) -> None:
+        self._failures.pop(address, None)
+
+
+def _client_address(req) -> str:
+    client = getattr(req, "client", None)
+    return getattr(client, "host", None) or "unknown"
+
+
+def _too_many(retry_after: float) -> str:
+    minutes = max(1, int(retry_after // 60) + (1 if retry_after % 60 else 0))
+    return (f"Too many wrong keys. Try again in {minutes} minute"
+            f"{'s' if minutes != 1 else ''}.")
+
 # ── AES-256-CBC ───────────────────────────────────────────────────────────────
 _AES_SALT = b'JARVIS-DASHBOARD-v1'
 
@@ -486,6 +554,7 @@ class DashboardServer:
         self._connect_callback            = None
         self._pending_keys: dict[str, float] = {}
         self._device_sessions: dict[str, dict] = {}  # device_token → {session_key}
+        self._throttle                    = LoginThrottle()
         self._phone_audio_queue: asyncio.Queue    = asyncio.Queue(maxsize=200)
         self._uploads_dir                 = UPLOADS_DIR
         self._login_html                  = _read("login.html")
@@ -497,7 +566,7 @@ class DashboardServer:
     def new_key(self, expiry_secs: int = 600) -> str:
         now = time.time()
         self._pending_keys = {k: v for k, v in self._pending_keys.items() if v > now}
-        key = ''.join(secrets.choice(_KEY_CHARS) for _ in range(6))
+        key = ''.join(secrets.choice(_KEY_CHARS) for _ in range(KEY_LENGTH))
         self._pending_keys[key] = now + expiry_secs
         return key
 
@@ -572,7 +641,8 @@ class DashboardServer:
 
         @app.get("/login", response_class=HTMLResponse)
         async def login_page():
-            return HTMLResponse(self._login_html)
+            return HTMLResponse(self._login_html.replace(
+                "__KEY_LENGTH__", str(KEY_LENGTH)))
 
         @app.get("/", response_class=HTMLResponse)
         async def index():
@@ -586,10 +656,20 @@ class DashboardServer:
 
         @app.post("/login")
         async def login(req: Request):
-            body    = await req.json()
+            address = _client_address(req)
+            wait = self._throttle.retry_after(address)
+            if wait:
+                return JSONResponse({"ok": False, "error": _too_many(wait)},
+                                    status_code=429,
+                                    headers={"Retry-After": str(int(wait) + 1)})
+            try:
+                body = await req.json()
+            except Exception:
+                body = {}
             entered = str(body.get("pin", "")).strip().upper()
             now     = time.time()
             if entered in self._pending_keys and self._pending_keys[entered] > now:
+                self._throttle.succeeded(address)
                 del self._pending_keys[entered]          # one-time use
                 tok = secrets.token_urlsafe(32)
                 self._tokens.add(tok)
@@ -602,14 +682,20 @@ class DashboardServer:
                 ))
                 # Bearer token in response body — no cookies needed (works on any browser/HTTP)
                 return JSONResponse({"ok": True, "token": tok})
+            self._throttle.failed(address)
             return JSONResponse({"ok": False, "error": "Invalid or expired key"},
                                 status_code=401)
 
         @app.get("/auto-login")
-        async def auto_login(key: str = ""):
+        async def auto_login(req: Request, key: str = ""):
             """QR code target — validates one-time key, creates session, redirects phone."""
+            address = _client_address(req)
+            wait = self._throttle.retry_after(address)
+            if wait:
+                return HTMLResponse(f"<p>{_too_many(wait)}</p>", status_code=429)
             now = time.time()
             if not key or key not in self._pending_keys or self._pending_keys[key] <= now:
+                self._throttle.failed(address)
                 return HTMLResponse("""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width">
 <style>
@@ -622,6 +708,7 @@ class DashboardServer:
 </div></body></html>""")
 
             del self._pending_keys[key]
+            self._throttle.succeeded(address)
             tok     = secrets.token_urlsafe(32)
             dev_tok = secrets.token_urlsafe(32)
             self._tokens.add(tok)
@@ -655,12 +742,18 @@ class DashboardServer:
         @app.post("/api/device-login")
         async def device_login_ep(req: Request):
             """Return a fresh auth token for a previously paired device token."""
+            address = _client_address(req)
+            wait = self._throttle.retry_after(address)
+            if wait:
+                return JSONResponse({"ok": False, "error": _too_many(wait)},
+                                    status_code=429)
             try:
                 body = await req.json()
             except Exception:
                 return JSONResponse({"ok": False}, status_code=400)
             dev_tok = (body.get("device_token") or "").strip()
             if not dev_tok or dev_tok not in self._device_sessions:
+                self._throttle.failed(address)
                 return JSONResponse({"ok": False}, status_code=401)
             session_key = self._device_sessions[dev_tok]["session_key"]
             tok = secrets.token_urlsafe(32)
