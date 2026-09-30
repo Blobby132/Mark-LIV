@@ -243,5 +243,93 @@ class TokenLifetimeTests(unittest.TestCase):
         self.assertIn("/api/revoke-devices", page)
 
 
+
+@unittest.skipUnless(_app_available(), "needs fastapi to exercise the routes")
+class TokensStayOutOfUrlsTests(unittest.TestCase):
+    """/ws, /ws/phone-audio and /uploads took the login token as ?token=,
+    which puts it in every access log and browser history entry."""
+
+    def setUp(self):
+        import tempfile
+        from fastapi.testclient import TestClient
+        self.srv = server.DashboardServer()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.srv._uploads_dir = Path(self.tmp.name)
+        (Path(self.tmp.name) / "notes.txt").write_text("hello")
+        self.client = TestClient(self.srv.app)
+        key = self.srv.new_key()
+        self.token = self.client.post("/login", json={"pin": key}).json()["token"]
+
+    def closed_with(self, ws, code):
+        from starlette.websockets import WebSocketDisconnect
+        with self.assertRaises(WebSocketDisconnect) as caught:
+            ws.receive_text()
+        self.assertEqual(caught.exception.code, code)
+
+    def test_the_socket_takes_its_token_as_the_first_message(self):
+        with self.client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "auth", "token": self.token})
+            ws.send_json({"type": "command", "text": "hello jarvis"})
+            import time as _time
+            deadline = _time.time() + 2
+            while self.srv._command_queue.empty() and _time.time() < deadline:
+                _time.sleep(0.01)
+        self.assertEqual(self.srv._command_queue.get_nowait(), "hello jarvis")
+
+    def test_a_token_in_the_url_is_no_longer_accepted(self):
+        with self.client.websocket_connect(f"/ws?token={self.token}") as ws:
+            ws.send_json({"type": "command", "text": "sneaky"})
+            self.closed_with(ws, 4001)
+        self.assertTrue(self.srv._command_queue.empty())
+
+    def test_a_wrong_first_message_closes_the_socket(self):
+        with self.client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "auth", "token": "not-a-token"})
+            self.closed_with(ws, 4001)
+
+    def test_phone_audio_takes_its_token_as_the_first_message(self):
+        with self.client.websocket_connect("/ws/phone-audio") as ws:
+            ws.send_text('{"type": "auth", "token": "%s"}' % self.token)
+            ws.send_bytes(b"\x00\x01" * 8)
+            import time as _time
+            deadline = _time.time() + 2
+            while self.srv._phone_audio_queue.empty() and \
+                    _time.time() < deadline:
+                _time.sleep(0.01)
+        self.assertFalse(self.srv._phone_audio_queue.empty())
+
+    def test_downloads_use_one_time_tickets_not_the_token(self):
+        auth = {"Authorization": f"Bearer {self.token}"}
+        r = self.client.get("/uploads/notes.txt", params={"token": self.token})
+        self.assertEqual(r.status_code, 401, "the token still works in a URL")
+        ticket = self.client.post("/api/download-ticket", headers=auth,
+                                  json={"name": "notes.txt"}).json()["ticket"]
+        r = self.client.get("/uploads/notes.txt", params={"ticket": ticket})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.text, "hello")
+        again = self.client.get("/uploads/notes.txt", params={"ticket": ticket})
+        self.assertEqual(again.status_code, 401, "a ticket worked twice")
+
+    def test_a_ticket_is_for_one_file_and_one_minute(self):
+        auth = {"Authorization": f"Bearer {self.token}"}
+        ticket = self.client.post("/api/download-ticket", headers=auth,
+                                  json={"name": "other.txt"}).json()["ticket"]
+        r = self.client.get("/uploads/notes.txt", params={"ticket": ticket})
+        self.assertEqual(r.status_code, 401)
+        clock = Clock()
+        self.srv._now = clock
+        ticket = self.client.post("/api/download-ticket", headers=auth,
+                                  json={"name": "notes.txt"}).json()["ticket"]
+        clock.t += server.TICKET_TTL_S + 1
+        r = self.client.get("/uploads/notes.txt", params={"ticket": ticket})
+        self.assertEqual(r.status_code, 401)
+
+    def test_the_page_never_puts_the_token_in_a_url(self):
+        page = (ROOT / "dashboard" / "static" / "app.html").read_text(
+            encoding="utf-8")
+        self.assertNotIn("token=", page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

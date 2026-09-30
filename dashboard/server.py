@@ -135,6 +135,17 @@ DEVICE_TTL_S = 30 * 24 * 3600
 """How long a paired phone stays paired without scanning the QR code again."""
 
 
+WS_AUTH_TIMEOUT_S = 5.0
+"""How long a WebSocket may stay open before sending its token. Browsers
+cannot set headers on a WebSocket, so the token is the first message rather
+than a ?token= in the URL, where it ends up in every access log."""
+
+TICKET_TTL_S = 60.0
+"""A download ticket's life. A link the browser follows cannot carry a
+header either; a one-time ticket that expires in a minute is harmless in a
+log, where the login token was not."""
+
+
 def _client_address(req) -> str:
     client = getattr(req, "client", None)
     return getattr(client, "host", None) or "unknown"
@@ -554,6 +565,7 @@ class DashboardServer:
         self._ip                          = _local_ip()
         self._tokens: dict[str, float]    = {}   # auth_token → expires at
         self._now                         = time.time
+        self._tickets: dict[str, tuple]   = {}   # ticket → (filename, expires)
         self._token_keys: dict[str, str]  = {}   # auth_token → session_key
         self._aes_cache:  dict[str, bytes]= {}   # session_key → AES bytes
         self._clients: set[WebSocket]     = set()
@@ -854,13 +866,31 @@ class DashboardServer:
 
         # ── Phone mic real-time audio → Gemini Live ──────────────────────────
 
-        @app.websocket("/ws/phone-audio")
-        async def phone_audio_ws(websocket: WebSocket, token: str = ""):
-            tok = token.strip()
-            if not self._token_ok(tok):
-                await websocket.close(code=4001)
-                return
+        async def _authenticate(websocket: WebSocket) -> str | None:
+            """Accept, then require {"type": "auth", "token": ...} first.
+            Returns the token, or closes the socket and returns None."""
             await websocket.accept()
+            try:
+                first = await asyncio.wait_for(websocket.receive_text(),
+                                               WS_AUTH_TIMEOUT_S)
+                import json as _json
+                msg = _json.loads(first)
+                tok = str(msg.get("token", "")).strip() \
+                    if msg.get("type") == "auth" else ""
+            except Exception:
+                tok = ""
+            if not self._token_ok(tok):
+                try:
+                    await websocket.close(code=4001)
+                except Exception:
+                    pass
+                return None
+            return tok
+
+        @app.websocket("/ws/phone-audio")
+        async def phone_audio_ws(websocket: WebSocket):
+            if await _authenticate(websocket) is None:
+                return
             asyncio.create_task(self.broadcast(
                 {"type": "sys", "text": "Phone microphone live."}
             ))
@@ -956,25 +986,45 @@ class DashboardServer:
                 pass
             return JSONResponse({"files": files})
 
-        @app.get("/uploads/{filename}")
-        async def download_file(filename: str, token: str = ""):
-            # Auth via query param — browser <a download> can't send custom headers
-            tok = token.strip()
-            if not self._token_ok(tok):
+        @app.post("/api/download-ticket")
+        async def download_ticket(req: Request):
+            """A one-time, one-file, one-minute ticket for GET /uploads/.
+            Asked for with the Authorization header, so the login token
+            never appears in a URL."""
+            if not _auth(req):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                body = {}
+            name = re.sub(r'[/\\]', '', str(body.get("name", "")))
+            if not name:
+                return JSONResponse({"error": "Which file?"}, status_code=400)
+            now = self._now()
+            self._tickets = {t: v for t, v in self._tickets.items()
+                             if v[1] > now}
+            ticket = secrets.token_urlsafe(24)
+            self._tickets[ticket] = (name, now + TICKET_TTL_S)
+            return JSONResponse({"ok": True, "ticket": ticket})
+
+        @app.get("/uploads/{filename}")
+        async def download_file(filename: str, ticket: str = ""):
+            # A browser <a download> cannot send a header, so this takes a
+            # one-time ticket from /api/download-ticket -- never the token.
             safe = re.sub(r'[/\\]', '', filename)
+            entry = self._tickets.pop(ticket.strip(), None)
+            if entry is None or entry[1] <= self._now() or entry[0] != safe:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
             path = self._uploads_dir / safe
             if not path.exists() or not path.is_file():
                 return JSONResponse({"error": "Not found"}, status_code=404)
             return FileResponse(str(path), filename=safe)
 
         @app.websocket("/ws")
-        async def ws_ep(websocket: WebSocket, token: str = ""):
-            tok = token.strip()
-            if not self._token_ok(tok):
-                await websocket.close(code=4001)
+        async def ws_ep(websocket: WebSocket):
+            tok = await _authenticate(websocket)
+            if tok is None:
                 return
-            await websocket.accept()
             self._clients.add(websocket)
             for entry in self._history[-50:]:
                 try:
