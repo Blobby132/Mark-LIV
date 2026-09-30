@@ -153,6 +153,29 @@ class TestOneConfirmationCoversGameplay(unittest.TestCase):
         finally:
             controller.stop("test")
 
+    def test_the_f3_toggle_is_gated_like_every_other_key(self):
+        """toggle_debug_overlay pressed F3 without asking the session: the one
+        input action that skipped _require_authorized."""
+        controller, backend = self._controller()
+        try:
+            controller.sessions.start(duration_s=60, authorized=False)
+            result = controller.toggle_debug_overlay()
+            self.assertFalse(result.ok)
+            self.assertEqual(result.stopped_reason, "not_authorized")
+            self.assertEqual(backend.downs(), [], "F3 was pressed anyway")
+        finally:
+            controller.stop("test")
+
+    def test_an_authorized_session_can_toggle_f3(self):
+        controller, backend = self._controller()
+        try:
+            controller.start_session(duration_s=120)
+            result = controller.toggle_debug_overlay()
+            self.assertTrue(result.ok, result.error)
+            self.assertIn("f3", backend.downs())
+        finally:
+            controller.stop("test")
+
     def test_the_gate_answers_before_parameters_are_validated(self):
         """An unauthorised caller gets one answer, whatever it passes.
 

@@ -1012,7 +1012,13 @@ class MinecraftController:
         Needed because reading state requires the overlay to be open, and
         asking the user to press it themselves every time makes the whole
         state pipeline feel broken. It is an input action like any other, so
-        it needs a live session and passes the same guard."""
+        it needs a live, authorised session and passes the same guard. The
+        grant it needs is the inventory's -- it toggles a game screen, as
+        opening the inventory does."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_INVENTORY,
+                                           "toggle_debug_overlay")
+        if refusal is not None:
+            return refusal
         return self._hold_inputs(("f3",), (), action_spec.JUMP_TAP_S,
                                  "toggle_debug_overlay", {}, False)
 
