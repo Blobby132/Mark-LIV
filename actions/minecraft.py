@@ -936,7 +936,7 @@ TOOL = {
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
         "break_block, place_block, collect_logs, fell_tree, navigate_to, "
-        "aim_at_block, "
+        "eat_food, aim_at_block, "
         "mine_block. A task RUNS IN THE BACKGROUND: run_task answers "
         "'started' at once, and when the task ends a message beginning "
         "[Minecraft task] reports what actually happened — relay that, and "
@@ -977,6 +977,12 @@ TOOL = {
         "say you do not know rather than guess. break_block only breaks "
         "whatever the crosshair is on right now — it does not aim or walk — "
         "so for 'break a log' use collect_logs.\n"
+        "eat_food eats from the HOTBAR until not hungry (count: how many "
+        "items at most): it picks food that will not make you ill and does "
+        "not waste golden apples, looks up first if a chest or door is "
+        "under the crosshair, and puts the held slot back afterwards. Food "
+        "only in the main inventory it cannot reach — it says so; ask the "
+        "user to move it to the hotbar.\n"
         "REPORTING RESULTS HONESTLY — this matters most:\n"
         "  * Holding attack is not breaking a block. Never say a block broke, "
         "a tree was chopped or wood was collected unless "
@@ -1056,7 +1062,7 @@ TOOL = {
                 "description": ("For run_task: walk_forward | survey | "
                                 "find_block | break_block | place_block | "
                                 "collect_logs | fell_tree | navigate_to | "
-                                "aim_at_block | mine_block."),
+                                "eat_food | aim_at_block | mine_block."),
             },
             "x": {
                 "type": "INTEGER",

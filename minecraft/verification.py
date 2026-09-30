@@ -292,10 +292,8 @@ def target_changed() -> Expectation:
 def holding_slot(slot: int) -> Expectation:
     """The selected hotbar slot.
 
-    Honest about its own impossibility today: `selected_slot` is not on the F3
-    overlay, so with the current sources this always returns UNVERIFIABLE. It
-    exists so that hotbar selection is verifiable the moment the mod bridge
-    lands, without the task runner changing at all."""
+    Readable only with the bridge mod: `selected_slot` is not on the F3
+    overlay, so without it this returns UNVERIFIABLE."""
     def predicate(before, after):
         # WorldState.selected_slot is 0-8; the player-facing hotbar is 1-9.
         if after.selected_slot == slot - 1:
@@ -346,6 +344,27 @@ def _count_of(state: WorldState, names) -> int:
         if getattr(stack, "name", None) in names:
             total += int(getattr(stack, "count", 0) or 0)
     return total
+
+
+def ate(item: str) -> Expectation:
+    """One `item` fewer in the inventory: it was eaten.
+
+    Judged on the count rather than on hunger, because hunger is capped --
+    a steak eaten at 18 of 20 raises it by two, not eight -- and because
+    the count is the thing a failed attempt leaves unchanged."""
+    def predicate(before, after):
+        was = _count_of(before, item)
+        now = _count_of(after, item)
+        hunger = ""
+        if isinstance(before.hunger, (int, float)) \
+                and isinstance(after.hunger, (int, float)):
+            hunger = f"; hunger {before.hunger:.0f} to {after.hunger:.0f}"
+        if now < was:
+            return True, f"ate a {item} ({was} to {now}{hunger})."
+        return False, f"the {item} was not eaten ({now} still held{hunger})."
+
+    return Expectation(name="ate", goal=f"eat a {item}",
+                       fields=("inventory",), predicate=predicate)
 
 
 def closer_to(goal, min_gain: float = 0.4) -> Expectation:

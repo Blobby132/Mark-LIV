@@ -1971,6 +1971,235 @@ def _log_total(state) -> int:
     return total
 
 
+# ── Eating ───────────────────────────────────────────────────────────────────
+
+FOODS = {
+    "apple": 4, "baked_potato": 5, "beetroot": 1, "beetroot_soup": 6,
+    "bread": 5, "carrot": 3, "cooked_beef": 8, "cooked_chicken": 6,
+    "cooked_cod": 5, "cooked_mutton": 6, "cooked_porkchop": 8,
+    "cooked_rabbit": 5, "cooked_salmon": 6, "cookie": 2, "dried_kelp": 1,
+    "glow_berries": 2, "golden_carrot": 6, "honey_bottle": 6,
+    "melon_slice": 2, "mushroom_stew": 6, "potato": 1, "pumpkin_pie": 8,
+    "rabbit_stew": 10, "sweet_berries": 2, "beef": 3, "porkchop": 3,
+    "mutton": 2, "cod": 2, "salmon": 2, "rabbit": 3, "tropical_fish": 1,
+}
+"""What eat_food will choose, with the hunger each restores.
+
+Left out on purpose: anything that harms or surprises -- rotten flesh,
+spider eyes, poisonous potatoes, pufferfish and raw chicken make you ill,
+chorus fruit teleports you, suspicious stew is a lottery -- and golden
+apples, which are worth too much to eat just because you were peckish."""
+
+UNSAFE_FOODS = {
+    "rotten_flesh": "it gives Hunger", "spider_eye": "it poisons you",
+    "poisonous_potato": "it can poison you", "pufferfish": "it poisons you",
+    "chicken": "raw chicken can give Hunger",
+    "chorus_fruit": "it teleports you", "suspicious_stew": "its effect is "
+    "random", "golden_apple": "golden apples are too valuable to eat just "
+    "for hunger", "enchanted_golden_apple": "it is far too valuable to eat "
+    "just for hunger",
+}
+"""Edible, and never chosen: the reason is what the user is told."""
+
+MAX_HUNGER = 20
+
+INTERACTIVE_SUFFIXES = (
+    "chest", "barrel", "crafting_table", "furnace", "smoker", "_door",
+    "_trapdoor", "_fence_gate", "_bed", "lever", "_button", "anvil",
+    "enchanting_table", "brewing_stand", "loom", "stonecutter", "grindstone",
+    "cartography_table", "smithing_table", "fletching_table", "lectern",
+    "note_block", "jukebox", "repeater", "comparator", "bell",
+    "shulker_box", "hopper", "dispenser", "dropper", "beacon",
+    "respawn_anchor", "composter", "cauldron", "flower_pot", "_sign",
+    "crafter", "decorated_pot", "chiseled_bookshelf", "campfire", "cake",
+    "daylight_detector", "trial_spawner", "vault",
+)
+"""Blocks that do something when right-clicked. Eating is holding right
+click, and with one of these under the crosshair the click opens, toggles
+or uses IT instead -- a chest opened, a door swung, food put on a campfire."""
+
+
+def _interactive(name) -> bool:
+    name = str(name or "")
+    return any(name.endswith(suffix) for suffix in INTERACTIVE_SUFFIXES)
+
+
+@dataclass
+class EatFood:
+    """Eat from the hotbar until not hungry, or `count` items.
+
+    THE HOTBAR IS ALL IT CAN REACH
+        Choosing a hotbar slot is a key press. Anything in the rest of the
+        inventory needs the inventory screen and mouse clicks on it, which
+        this does not do; it says so and names the food it saw there.
+
+    RIGHT CLICK IS NOT ONLY EATING
+        With a chest, door or furnace under the crosshair, holding right
+        click uses that instead. It looks up at the sky first, and will not
+        eat while something that reacts to a click is still in front of it.
+
+    Health is not watched while it runs: a starving player loses health,
+    which is the reason to eat, not a reason to stop. Hostile mobs still
+    stop it. The slot that was selected before is selected again after."""
+
+    count: int = 1
+
+    name = "eat_food"
+    verifiable_with = ("hunger", "inventory", "selected_slot")
+    watch_health = False
+
+    _previous_slot: int | None = None
+    _eaten: int = 0
+    _failed_bites: int = 0
+    _looks: int = 0
+    _restoring: bool = False
+    _reason: str = ""
+    _blind: bool = False
+
+    MAX_LOOKS = 3
+
+    @property
+    def goal(self) -> str:
+        return "eat something" if self.count == 1 \
+            else f"eat up to {self.count} things"
+
+    @property
+    def failed(self) -> bool:
+        return self._blind or (self._eaten == 0 and not self._full)
+
+    @property
+    def done_reason(self) -> str:
+        return self._reason
+
+    _full: bool = False
+
+    def plan(self, state, step_index: int, history: tuple):
+        if state.confidence_of("inventory") == UNKNOWN \
+                or not isinstance(state.hunger, (int, float)) \
+                or state.selected_slot is None:
+            self._blind = True
+            self._reason = ("eating needs the bridge mod: without it I "
+                            "cannot see hunger or what is on the hotbar")
+            return None
+
+        eats = [r for r in history if r.step.get("action") == "eat"]
+        self._eaten = sum(1 for r in eats if r.verification.get("status")
+                          == verify_mod.SUCCESS)
+        self._failed_bites = len(eats) - self._eaten
+        if self._previous_slot is None:
+            self._previous_slot = state.selected_slot
+
+        hunger = state.hunger
+        finished = (self._eaten >= self.count or hunger >= MAX_HUNGER
+                    or self._failed_bites >= 2)
+        food = None if finished else self._choose(state)
+        if food is None:
+            if not finished:
+                self._reason = self._no_food(state)
+            elif hunger >= MAX_HUNGER and self._eaten == 0:
+                self._full = True
+                self._reason = (f"not hungry ({hunger:.0f}/20) — Minecraft "
+                                f"does not let you eat when full")
+            elif self._failed_bites >= 2 and self._eaten == 0:
+                self._reason = ("I held the food but it was not eaten, "
+                                "twice — something may be in the way of "
+                                "the right click")
+            else:
+                self._reason = (f"ate {self._eaten}; hunger is now "
+                                f"{hunger:.0f}/20")
+            return self._restore(state)
+
+        slot, name = food
+        if state.selected_slot != slot:
+            return Step(action="hotbar_select", params={"slot": slot + 1},
+                        expectation=verify_mod.holding_slot(slot + 1),
+                        note=f"hold the {name} (hotbar slot {slot + 1})")
+
+        blocker = self._in_front(state)
+        if blocker:
+            if self._looks >= self.MAX_LOOKS:
+                self._reason = (f"{blocker} is in front of me even looking "
+                                f"up, and right-clicking would use it "
+                                f"instead of eating")
+                return self._restore(state)
+            self._looks += 1
+            return self._look_up(state, blocker)
+
+        return Step(action="eat",
+                    params={"duration": action_spec.MAX_EAT_DURATION_S},
+                    expectation=verify_mod.ate(name),
+                    note=(f"eat the {name} (hunger {hunger:.0f}/20)"))
+
+    def _choose(self, state):
+        """(slot 0-8, name) of the food to eat, or None.
+
+        The most filling one that does not overshoot what is missing, or if
+        every one would, the smallest -- a steak at 18 of 20 is mostly
+        wasted, a cookie is not."""
+        hotbar = [(s.slot, s.name) for s in (state.inventory or ())
+                  if s.slot is not None and 0 <= s.slot <= 8
+                  and s.name in FOODS and (s.count or 0) > 0]
+        if not hotbar:
+            return None
+        missing = MAX_HUNGER - state.hunger
+        fits = [f for f in hotbar if FOODS[f[1]] <= missing]
+        if fits:
+            return max(fits, key=lambda f: (FOODS[f[1]], -f[0]))
+        return min(hotbar, key=lambda f: (FOODS[f[1]], f[0]))
+
+    def _no_food(self, state) -> str:
+        elsewhere = sorted({s.name for s in (state.inventory or ())
+                            if s.name in FOODS and s.slot is not None
+                            and s.slot > 8})
+        risky = sorted({s.name for s in (state.inventory or ())
+                        if s.slot is not None and 0 <= s.slot <= 8
+                        and s.name in UNSAFE_FOODS})
+        if risky and not elsewhere:
+            return (f"the only food on the hotbar is "
+                    f"{', '.join(' '.join(n.split('_')) for n in risky)}, "
+                    f"which I will not eat on my own — "
+                    f"{UNSAFE_FOODS[risky[0]]}")
+        if elsewhere:
+            return (f"there is no food on the hotbar. There is "
+                    f"{', '.join(' '.join(n.split('_')) for n in elsewhere)} "
+                    f"in the rest of the inventory — move it to the hotbar "
+                    f"and I can eat it; I cannot click in the inventory "
+                    f"screen")
+        return "there is no food anywhere in the inventory"
+
+    def _in_front(self, state) -> str:
+        """What a right click would use instead of eating, or ""."""
+        if getattr(state, "target_entity", None) is not None:
+            name = getattr(state.target_entity, "name", None) or "a mob"
+            return f"the {str(name).split(':')[-1]}"
+        block = getattr(state, "target_block", None)
+        name = getattr(block, "name", None)
+        if name and _interactive(name):
+            return f"a {' '.join(str(name).split('_'))}"
+        return ""
+
+    def _look_up(self, state, blocker):
+        pitch = (state.rotation or (0.0, 0.0))[1] or 0.0
+        wanted = -60.0                              # up at the sky
+        dy = int(round((wanted - pitch) * nav.pixels_per_degree()))
+        dy = max(-action_spec.MAX_LOOK_DELTA_PX, min(-40, dy))
+        return Step(action="look", params={"dx": 0, "dy": dy},
+                    expectation=verify_mod.turned(min_degrees=2.0),
+                    note=(f"look up — {blocker} is under the crosshair and "
+                          f"right-clicking it would not eat"))
+
+    def _restore(self, state):
+        """Put the slot back the way it was, once, then finish."""
+        if self._restoring or self._previous_slot is None \
+                or state.selected_slot == self._previous_slot:
+            return None
+        self._restoring = True
+        slot = self._previous_slot + 1
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot),
+                    note=f"back to hotbar slot {slot}")
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -2148,6 +2377,7 @@ BUILTIN_SKILLS = {
     "place_block": PlaceBlock,
     "collect_logs": CollectLogs,
     "fell_tree": lambda **kwargs: CollectLogs(whole_tree=True, **kwargs),
+    "eat_food": EatFood,
     "navigate_to": NavigateTo,
     "aim_at_block": AimAtBlock,
     "mine_block": _mine_block,
@@ -2184,9 +2414,6 @@ NOT_YET_POSSIBLE = {
                  "What is missing is getting to iron that is NOT exposed, "
                  "which means digging a shaft, lighting it, and not falling "
                  "into lava — none of which is built.",
-    "eat_food": "hunger and the inventory are readable now; what is missing "
-                "is choosing the right slot, which needs the hotbar mapped to "
-                "what is in it.",
     "build_structure": "needs a plan and a placement order, not just the "
                        "ability to place one block.",
     "return_to_base": "navigation exists now, but only within the scan "
