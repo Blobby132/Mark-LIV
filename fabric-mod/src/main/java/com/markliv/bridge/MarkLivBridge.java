@@ -22,6 +22,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -98,13 +99,16 @@ public class MarkLivBridge implements ClientModInitializer {
     private static final int SCAN_DOWN = 5;
 
     /**
-     * Cap on individually reported blocks of interest.
+     * How many blocks of interest to report, per kind, nearest first.
      *
-     * <p>A jungle fills the scan volume with logs; reporting every one would
-     * be a large file describing a decision nobody needs it to make. The
-     * nearest few dozen are enough to pick a target.
+     * <p>Per kind so that a lake cannot crowd out the logs and a forest
+     * cannot crowd out the lava. The first version kept the first 64 found
+     * in scan order, west to east -- in a forest, all of them six or more
+     * blocks west, and not the tree the player was standing at. At about 45
+     * bytes an entry, the full quota is some 12KB of a 256KB payload.
      */
-    private static final int MAX_NOTABLE = 64;
+    private static final Map<String, Integer> NOTABLE_QUOTAS = Map.of(
+            "log", 160, "ore", 48, "lava", 24, "water", 24, "station", 16);
 
     /** How far above a surface block to bother measuring empty space. */
     private static final int MAX_CLEARANCE = 4;
@@ -350,7 +354,7 @@ public class MarkLivBridge implements ClientModInitializer {
     private Terrain scanTerrain(net.minecraft.world.level.Level level,
                                 BlockPos feet) {
         List<String> surface = new ArrayList<>();
-        List<String> notable = new ArrayList<>();
+        Nearest notable = new Nearest(NOTABLE_QUOTAS);
 
         int originX = feet.getX();
         int originY = feet.getY();
@@ -385,13 +389,18 @@ public class MarkLivBridge implements ClientModInitializer {
                     names[i] = air[i] ? null : BuiltInRegistries.BLOCK
                             .getKey(state.getBlock()).toString();
 
-                    if (i >= first && !air[i]
-                            && notable.size() < MAX_NOTABLE
-                            && isNotable(names[i])) {
-                        notable.add(Json.array(
-                                Integer.toString(x),
-                                Integer.toString(originY + top - i),
-                                Integer.toString(z), Json.quote(names[i])));
+                    String kind = i >= first && !air[i]
+                            ? Kinds.notable(names[i]) : null;
+                    if (kind != null) {
+                        int dy = top - i;
+                        double distance = dx * dx + dy * dy + dz * dz;
+                        if (notable.wants(kind, distance)) {
+                            notable.offer(kind, distance, Json.array(
+                                    Integer.toString(x),
+                                    Integer.toString(originY + dy),
+                                    Integer.toString(z),
+                                    Json.quote(names[i])));
+                        }
                     }
                 }
 
@@ -416,22 +425,8 @@ public class MarkLivBridge implements ClientModInitializer {
         }
 
         return new Terrain(Json.array(surface.toArray(new String[0])),
-                           Json.array(notable.toArray(new String[0])));
-    }
-
-    /**
-     * Is this block worth reporting individually?
-     *
-     * <p>Matched on the name rather than on a tag or class, so a modded log
-     * called {@code biomesoplenty:fir_log} is picked up without this mod
-     * knowing anything about that mod. The cost is the occasional false
-     * positive, which costs a wasted walk rather than a wrong belief.
-     */
-    private static boolean isNotable(String name) {
-        return name.endsWith("_log") || name.endsWith("_wood")
-                || name.endsWith("_ore") || name.contains("water")
-                || name.contains("lava") || name.endsWith("crafting_table")
-                || name.endsWith("furnace") || name.endsWith("chest");
+                           Json.array(notable.select(List.of())
+                                   .toArray(new String[0])));
     }
 
     private String targetBlockJson(Minecraft client) {
