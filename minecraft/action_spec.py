@@ -79,8 +79,12 @@ MAX_INTERACT_DURATION_S = 1.0
 """Right-click on a door, chest or crafting table. Short: these are taps, and
 a held right-click on a stack of blocks places a wall of them."""
 
-MAX_EAT_DURATION_S = 2.0
-"""Eating holds right-click for about 1.6 seconds in modern versions."""
+MAX_EAT_DURATION_S = 3.0
+"""The longest right-click hold for eating or drinking. Most food takes 32
+ticks (1.6 s) and a honey bottle 40 (2.0 s) -- on a server keeping up. At
+2.0 the honey bottle had no margin at all for input latency or a server
+running slow. The eat skill sizes each hold to the food (skills.eat_ticks);
+this is only the ceiling."""
 
 PLACE_TAP_S = 0.08
 """Placing is a tap. A hold places repeatedly as the crosshair drifts, which

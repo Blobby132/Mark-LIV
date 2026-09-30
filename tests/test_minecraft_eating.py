@@ -258,3 +258,44 @@ class DangerWhileEating(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class HowLongItHolds(unittest.TestCase):
+    """C8: every eat held right-click for MAX_EAT_DURATION_S, 2.0 seconds.
+    A honey bottle takes 40 ticks -- exactly 2.0 seconds -- so it had no
+    room at all for input latency or a server running slow, and dried kelp
+    (16 ticks) was eaten twice per step. The hold is now sized to the food
+    and the cap raised to 3 seconds."""
+
+    SLOW_TPS = 16.0            # a busy server; 20 is the game's own rate
+    LATENCY_S = 0.1            # the press reaching the game, the first tick
+
+    def planned_hold(self, food):
+        kitchen = Kitchen({0: (food, 5)}, hunger=4)
+        skill = skills.create("eat_food")
+        step = skill.plan(kitchen.read(), 0, ())
+        self.assertEqual(step.action, "eat", step.note)
+        return float(step.params["duration"])
+
+    def test_every_food_is_finished_even_on_a_slow_server(self):
+        for food in skills.FOODS:
+            with self.subTest(food=food):
+                use = skills.eat_ticks(food) / self.SLOW_TPS
+                self.assertGreaterEqual(self.planned_hold(food),
+                                        use + self.LATENCY_S)
+
+    def test_no_food_is_eaten_twice_in_one_hold(self):
+        for food in skills.FOODS:
+            with self.subTest(food=food):
+                twice = 2 * skills.eat_ticks(food) / 20.0
+                self.assertLess(self.planned_hold(food), twice)
+
+    def test_the_use_times_are_the_games(self):
+        self.assertEqual(skills.eat_ticks("honey_bottle"), 40)
+        self.assertEqual(skills.eat_ticks("dried_kelp"), 16)
+        self.assertEqual(skills.eat_ticks("bread"), 32)
+
+    def test_the_cap_is_about_three_seconds(self):
+        from minecraft import action_spec
+        self.assertEqual(action_spec.MAX_EAT_DURATION_S, 3.0)
+        self.assertEqual(action_spec.parse_eat({"duration": 9}).duration, 3.0)

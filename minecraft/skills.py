@@ -2128,6 +2128,29 @@ def _log_total(state) -> int:
 
 # ── Eating ───────────────────────────────────────────────────────────────────
 
+EAT_TICKS = {"dried_kelp": 16, "honey_bottle": 40}
+"""How long the game takes to eat or drink these, in ticks. Every other food
+takes 32."""
+
+EAT_SLOW_SERVER = 1.25
+"""Allowance for a server running behind: 16 ticks a second instead of 20."""
+
+EAT_LATENCY_S = 0.25
+"""The press reaching the game, and the tick the eating starts on."""
+
+
+def eat_ticks(food) -> int:
+    return EAT_TICKS.get(food, 32)
+
+
+def eat_seconds(food) -> float:
+    """How long to hold right-click to eat ONE `food`: its use time, with
+    room for a slow server and the press arriving -- and short of a second
+    one, which a flat 2 seconds ate of dried kelp."""
+    wanted = eat_ticks(food) / 20.0 * EAT_SLOW_SERVER + EAT_LATENCY_S
+    return min(action_spec.MAX_EAT_DURATION_S, wanted)
+
+
 FOODS = {
     "apple": 4, "baked_potato": 5, "beetroot": 1, "beetroot_soup": 6,
     "bread": 5, "carrot": 3, "cooked_beef": 8, "cooked_chicken": 6,
@@ -2281,7 +2304,7 @@ class EatFood:
             return self._look_up(state, blocker)
 
         return Step(action="eat",
-                    params={"duration": action_spec.MAX_EAT_DURATION_S},
+                    params={"duration": eat_seconds(name)},
                     expectation=verify_mod.ate(name),
                     note=(f"eat the {name} (hunger {hunger:.0f}/20)"))
 
