@@ -96,6 +96,39 @@ _CRYPTOJS_CDN  = ("https://cdnjs.cloudflare.com/ajax/libs/"
 _CRYPTOJS_FILE = STATIC_DIR / "crypto-js.min.js"
 
 
+def _port_rule_name(port: int) -> str:
+    return f"JARVIS Dashboard Port {port} (private LAN)"
+
+
+def _legacy_rule_names(port: int) -> tuple:
+    """Rules earlier versions created, which are broader than they should be:
+    an unscoped port rule, and a program rule that let ANY inbound traffic
+    reach python.exe on every network profile -- every Python program on the
+    machine, not just this dashboard."""
+    return (f"JARVIS Dashboard Port {port}", "JARVIS Dashboard Python")
+
+
+def _windows_firewall_plan(port: int, existing: set) -> list:
+    """The netsh commands to run, given which rule names already exist.
+
+    One inbound rule: this TCP port, private networks only, from the local
+    subnet only -- a phone on the same Wi-Fi, nothing else. The old broad
+    rules are removed if present. What this never does any more is change a
+    network's profile: flipping a Public network to Private weakens the
+    firewall for everything on it, and is the user's decision to make."""
+    lines = []
+    for name in _legacy_rule_names(port):
+        if name in existing:
+            lines.append(f'netsh advfirewall firewall delete rule name="{name}"')
+    rule = _port_rule_name(port)
+    if rule not in existing:
+        lines.append(
+            f'netsh advfirewall firewall add rule name="{rule}" '
+            f'protocol=TCP dir=in localport={port} action=allow '
+            f'profile=private remoteip=localsubnet')
+    return lines
+
+
 def _ensure_network_access(port: int) -> None:
     """Cross-platform, best-effort: open port in the OS firewall for LAN access.
 
@@ -111,10 +144,6 @@ def _ensure_network_access(port: int) -> None:
     # ── Windows ──────────────────────────────────────────────────────────────
     if sys.platform == "win32":
         import ctypes, time
-
-        port_rule = f"JARVIS Dashboard Port {port}"
-        prog_rule  = "JARVIS Dashboard Python"
-        py_exe     = sys.executable
 
         def _netsh_rule_exists(name: str) -> bool:
             try:
@@ -139,34 +168,24 @@ def _ensure_network_access(port: int) -> None:
             except Exception:
                 return False
 
-        need_port    = not _netsh_rule_exists(port_rule)
-        need_prog    = not _netsh_rule_exists(prog_rule)
-        need_private = _network_is_public()
+        if _network_is_public():
+            # Not changed for you: a Public profile keeps the firewall
+            # strict for everything on this network, and the rule below
+            # only applies to Private ones.
+            print("[Dashboard] This network is set to Public, so phones on "
+                  "it cannot reach the dashboard.")
+            print("[Dashboard] If it is your home network, set it to Private "
+                  "in Windows Settings > Network & internet.")
 
-        if not need_port and not need_prog and not need_private:
-            return  # already fully configured
+        existing = {name for name in
+                    (_port_rule_name(port),) + _legacy_rule_names(port)
+                    if _netsh_rule_exists(name)}
+        commands = _windows_firewall_plan(port, existing)
+        if not commands:
+            return  # already configured, and nothing broad left behind
 
-        # Build a .bat file — netsh + powershell, runs fast when elevated
-        bat_lines = ["@echo off"]
-        if need_private:
-            bat_lines.append(
-                'powershell -NoProfile -NonInteractive -Command "'
-                'Get-NetConnectionProfile | '
-                "Where-Object {$_.NetworkCategory -eq 'Public'} | "
-                'Set-NetConnectionProfile -NetworkCategory Private"'
-            )
-        if need_port:
-            bat_lines.append(
-                f'netsh advfirewall firewall add rule '
-                f'name="{port_rule}" protocol=TCP dir=in '
-                f'localport={port} action=allow'
-            )
-        if need_prog:
-            bat_lines.append(
-                f'netsh advfirewall firewall add rule '
-                f'name="{prog_rule}" dir=in action=allow '
-                f'program="{py_exe}" enable=yes'
-            )
+        # Build a .bat file — netsh only, runs fast when elevated
+        bat_lines = ["@echo off"] + commands
 
         bat_body = "\r\n".join(bat_lines) + "\r\n"
         fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="jarvis_fw_")
