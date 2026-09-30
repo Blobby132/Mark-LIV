@@ -570,6 +570,13 @@ Bounded because a re-route that keeps finding the same blocked way is a loop,
 and because the honest answer after three is "I cannot get there", which is
 more use than twenty more steps of trying."""
 
+REROUTE_REFILL_BLOCKS = 3.0
+"""Blocks of real progress -- closer to the destination, not merely moved --
+after which the reroute budget is full again. The budget is for one
+obstacle that keeps winning, not for a whole walk: a long walk past four
+cows gave up at the fourth. Measured towards the goal so that a detour
+which wanders away and back cannot buy itself another try."""
+
 AVOID_FOR_REPLANS = 3
 """How many replans a column avoided because a MOB stood in it stays avoided.
 Mobs move: a cow in a doorway was avoided for the rest of the walk, and when
@@ -644,6 +651,8 @@ class NavigateTo:
     _history: tuple = ()
     _avoid: dict = field(default_factory=dict)   # column -> replans left
     _blocker_name: str = ""
+    _rerouted_left: float | None = None   # distance to go at the last reroute
+    _diagnosed_at: int = -1               # len(history) of the last diagnosis
     _blocked_by: str = ""
     _aiming_at: float | None = None
     _skip_to: int = 0
@@ -850,6 +859,11 @@ class NavigateTo:
         if last.verification.get("status") == verify_mod.SUCCESS:
             self._stalls = 0
             self._hopped = False
+            if self._rerouted_left is not None and \
+                    self._rerouted_left - self._left_to_go \
+                    >= REROUTE_REFILL_BLOCKS:
+                self._reroutes = 0
+                self._rerouted_left = None
         else:
             self._stalls += 1
 
@@ -950,7 +964,12 @@ class NavigateTo:
                       f"({waypoint[0]:.0f}, {waypoint[2]:.0f})"),
             )
 
-        if self._stalls >= STALLS_BEFORE_OBSTACLE_CHECK:
+        if self._stalls >= STALLS_BEFORE_OBSTACLE_CHECK \
+                and self._diagnosed_at != len(self._history):
+            # Once per stall. A free re-plan leaves the stall counted and
+            # comes straight back here; diagnosing the same stall again
+            # would re-plan again, forever.
+            self._diagnosed_at = len(self._history)
             blocked = self._handle_obstacle(state, waypoint, self._history)
             if blocked is not None:
                 return blocked
@@ -1091,7 +1110,16 @@ class NavigateTo:
 
         The stall counter resets, because a new route is a genuinely new
         attempt rather than the same failing action offered again — which is
-        the distinction the old replan got wrong and spun on."""
+        the distinction the old replan got wrong and spun on.
+
+        A re-plan that avoids nothing -- look again, the route is stale --
+        is free: it goes round nothing, so it is not a try at getting past
+        anything. It does not forgive the stall either, so MAX_STALLS still
+        ends a loop of them."""
+        if avoid is None:
+            self._path = None
+            self._walked = 0
+            return None
         if self._reroutes >= MAX_REROUTES:
             if self._blocked_by:
                 self._stopped = (
@@ -1103,8 +1131,8 @@ class NavigateTo:
                     f"to go another way did not get past it.")
             return None
         self._reroutes += 1
-        if avoid is not None:
-            self._avoid_for(avoid, for_replans)
+        self._rerouted_left = self._left_to_go
+        self._avoid_for(avoid, for_replans)
         self._path = None
         self._walked = 0
         self._stalls = 0

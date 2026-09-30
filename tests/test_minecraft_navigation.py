@@ -2127,3 +2127,70 @@ class GoRoundTheCowTests(unittest.TestCase):
         crossed = {column for column, _ in local.body_columns(
             (0.5, 0.5), (far[0] + 0.5, far[2] + 0.5))}
         self.assertNotIn((2, 0), crossed)
+
+
+class RerouteBudgetTests(unittest.TestCase):
+    """N4: every recovery spent one of MAX_REROUTES, for the whole task --
+    including a plain re-plan that avoids nothing, and however far the
+    player got between detours. A long walk past four cows gave up at the
+    fourth."""
+
+    def test_the_budget_refills_after_real_progress(self):
+        world = CowWorld([(-6, 0), (-2, -1), (2, 0), (6, -1)],
+                         position=(-10.5, 64.0, 0.5), yaw=-90.0)
+        skill = skills.create("navigate_to", destination=(10, 0))
+        result = run(world, skill, max_steps=60)
+        self.assertLess(world.distance_to((10, 0)), 2.0,
+                        f"ended at x={world.x:.1f}: {skill.done_reason}")
+        self.assertFalse(skill.failed, result.reason)
+
+    def test_a_replan_that_avoids_nothing_is_free(self):
+        from minecraft import stuck as stuck_mod
+        skill = skills.NavigateTo(destination=(6, 0))
+        look_again = stuck_mod.Diagnosis(stuck_mod.UNKNOWN_TERRAIN,
+                                         stuck_mod.OBSERVE)
+        for _ in range(skills.MAX_REROUTES + 1):
+            skill._reroute(look_again, avoid=None)
+        self.assertFalse(skill._stopped, skill._stopped)
+        self.assertEqual(skill._reroutes, 0)
+
+    def test_free_replans_still_end_on_stalls(self):
+        """Free, but not a way round the stall limit: a loop of re-plans
+        that never moves still stops."""
+        from minecraft import stuck as stuck_mod
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill._stalls = 2
+        skill._reroute(stuck_mod.Diagnosis(stuck_mod.PATH_STALE,
+                                           stuck_mod.REPLAN), avoid=None)
+        self.assertEqual(skill._stalls, 2)
+
+    def test_a_free_replan_is_not_diagnosed_again_at_once(self):
+        """The re-plan happens inside the same plan() call; with the stall
+        still counted, it must not diagnose the same stall again, forever."""
+        from unittest import mock
+        from minecraft import stuck as stuck_mod
+        state = state_from(flat_with_room(4), position=(1.5, 64.0, 0.5),
+                           rotation=(270.0, 0.0))
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill.plan(state, 0, ())
+        look_again = stuck_mod.Diagnosis(stuck_mod.UNKNOWN_TERRAIN,
+                                         stuck_mod.OBSERVE)
+        with mock.patch.object(stuck_mod, "diagnose_movement",
+                               lambda *a, **k: look_again) as _:
+            step = skill.plan(state, 1, (_record("move", (1.5, 64.0, 0.5)),))
+        self.assertIsNotNone(step)
+
+    def test_going_back_and_forth_does_not_refill_it(self):
+        """Progress means closer to the goal, not merely moved: a detour
+        that walks three blocks away and back must not buy another try."""
+        skill = skills.NavigateTo(destination=(10, 0))
+        skill._left_to_go = 10.0
+        skill._reroute(stuck_diagnosis(), avoid=(3, 0))
+        skill._left_to_go = 13.0                     # three blocks AWAY
+        skill._note_progress((_record("move", (0.5, 64.0, 0.5),
+                                      after=(-2.5, 64.0, 0.5)),))
+        self.assertEqual(skill._reroutes, 1)
+        skill._left_to_go = 6.5                      # three and a half closer
+        skill._note_progress((_record("move", (0.5, 64.0, 0.5),
+                                      after=(3.5, 64.0, 0.5)),))
+        self.assertEqual(skill._reroutes, 0)
