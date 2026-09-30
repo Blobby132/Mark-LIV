@@ -57,7 +57,8 @@ OBSERVATION IS PACED, AND EACH ONE IS USED TWICE
 
     `MIN_OBSERVATION_INTERVAL_S` is the floor between steps, and it is a floor
     rather than a target: a slow step does not get to "catch up" by observing
-    faster.
+    faster. It is measured from the end of one action to the start of the
+    next, so the wait for a fresh observation counts towards it.
 """
 
 from __future__ import annotations
@@ -305,6 +306,7 @@ class TaskRunner:
         # Injectable so tests do not spend real seconds waiting.
         self._sleep = sleeper if sleeper is not None else time.sleep
         self._clock = clock if clock is not None else time.monotonic
+        self._acted_at = self._clock()
         # Wall time, for comparing with a source that dates its snapshots.
         self._wall = wall_clock if wall_clock is not None else time.time
         self._max_seconds = max(1.0, min(float(max_seconds), MAX_TASK_SECONDS))
@@ -430,7 +432,14 @@ class TaskRunner:
                 replans += 1
                 self.progress.reset()
 
-            self._sleep(self._interval)
+            # The interval is a floor between one action ending and the next
+            # starting, and the wait for a fresh snapshot is already part of
+            # that gap. Sleeping the whole interval on top of it made every
+            # step ~150ms longer than its floor (N6). Only the action's own
+            # duration is excluded, so a slow step still cannot catch up.
+            waited = self._clock() - self._acted_at
+            if waited < self._interval:
+                self._sleep(self._interval - waited)
 
         # Out of steps. Give the skill one last look at the record before it
         # is asked what happened: it counts its progress at the START of each
@@ -546,6 +555,7 @@ class TaskRunner:
             delivered = False
             result_dict = {"ok": False, "action": step.action,
                            "error_class": type(e).__name__, "error": str(e)}
+        self._acted_at = self._clock()
 
         after = self._observe_after(stamp_before, self._wall() * 1000.0)
 
