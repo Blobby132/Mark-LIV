@@ -1457,20 +1457,7 @@ class JarvisLive:
 
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
-                async def _do_shutdown():
-                    await self._save_session_summary()
-                    if self.session:
-                        try:
-                            await self.session.send_client_content(
-                                turns={"role": "user", "parts": [{"text": "Say a brief natural goodbye to the user."}]},
-                                turn_complete=True,
-                            )
-                        except Exception:
-                            pass
-                    await asyncio.sleep(1.5)
-                    import os as _os
-                    _os._exit(0)
-                asyncio.create_task(_do_shutdown())
+                asyncio.create_task(self._shutdown())
 
             elif self._action_registry.has(name):
                 # file_processor: fall back to the currently-uploaded file when none is given
@@ -2444,6 +2431,35 @@ class JarvisLive:
         asyncio.create_task(_deliver_news())
 
     # ── Session memory ──────────────────────────────────────────────────────────
+
+    async def _shutdown(self, exit_process=None):
+        """Say goodbye and exit -- with nothing left held in Minecraft.
+
+        The exit is os._exit, which skips atexit, and the Minecraft
+        controller releases its held keys from an atexit handler. So running
+        tasks are stopped the moment shutdown is asked for, and every
+        registered cancel -- each of which releases what it holds -- is
+        called again right before exiting, whether or not it says anything
+        is running. `exit_process` is for tests."""
+        _interrupts.cancel_active("JARVIS is shutting down")
+        await self._save_session_summary()
+        if self.session:
+            try:
+                await self.session.send_client_content(
+                    turns={"role": "user", "parts": [{"text": "Say a brief natural goodbye to the user."}]},
+                    turn_complete=True,
+                )
+            except Exception:
+                pass
+        await asyncio.sleep(1.5)
+        try:
+            _interrupts.cancel_all("JARVIS is shutting down")
+        except Exception:
+            pass
+        if exit_process is None:
+            import os as _os
+            exit_process = _os._exit
+        exit_process(0)
 
     async def _save_session_summary(self) -> None:
         """Summarise the current session in 1-2 sentences and save to long_term.json."""

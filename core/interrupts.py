@@ -101,6 +101,23 @@ def cancel_active(reason: str) -> list:
     return cancelled
 
 
+def cancel_all(reason: str) -> list:
+    """Cancel every registered thing, whether or not it says it is active.
+
+    For shutdown. "Nothing is running" is not proof that nothing is HELD,
+    and the process is about to exit without running its atexit handlers,
+    so every cancel -- each of which releases what it holds -- is called
+    regardless."""
+    cancelled = []
+    for key, (_is_active, cancel, _tools) in _snapshot():
+        try:
+            cancel(reason)
+            cancelled.append(key)
+        except Exception:
+            pass
+    return cancelled
+
+
 def cancel_for_tool(tool_name: str, reason: str) -> list:
     """Cancel whatever belongs to `tool_name`, active or not -- the server
     withdrawing a call is reason enough to make sure nothing is held."""
@@ -117,4 +134,4 @@ def cancel_for_tool(tool_name: str, reason: str) -> list:
 
 
 __all__ = ["STOP_WORDS", "register", "unregister", "is_stop_request",
-           "any_active", "active_keys", "cancel_active", "cancel_for_tool"]
+           "any_active", "active_keys", "cancel_active", "cancel_for_tool", "cancel_all"]
