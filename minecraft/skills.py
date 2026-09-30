@@ -1370,6 +1370,8 @@ class CollectLogs:
     _skip: set = field(default_factory=set)
     _last_estimate: object = None
     _walker: object = None
+    _walker_for: tuple | None = None      # the log the walker is walking to
+    _fetching_at: tuple | None = None     # where the drop being fetched was
     _walk_failed: str = ""
     _broken_at: list = field(default_factory=list)
     _pickup_walker: object = None
@@ -1827,7 +1829,18 @@ class CollectLogs:
         second set of stuck rules, a second idea of what counts as progress,
         and a second thing to get wrong. NavigateTo already refuses routes it
         cannot see and gives up honestly, and those are exactly the properties
-        this needs."""
+        this needs.
+
+        One walker per target. _next_log re-picks the nearest log every
+        step, and a walker kept from an earlier pick walked to THAT log's
+        column -- then "arrived", and the new log was written off as out of
+        reach from anywhere I could stand. A new pick whose standing column
+        is the same keeps the walk, and the stall count in it."""
+        if self._walker is not None and self._walker_for != target.position \
+                and nav.approach_column(state, target) \
+                != self._walker.destination:
+            self._walker = None
+        self._walker_for = target.position
         if self._walker is None:
             column = nav.approach_column(state, target)
             if column is None:
@@ -1879,6 +1892,13 @@ class CollectLogs:
             return None
 
         walker = self._pickup_walker
+        if walker is not None and not _still_there(drops, self._fetching_at):
+            # Gone before we got there: picked up on the way, merged into
+            # another stack, or carried off. Walking on to where it was
+            # fetches nothing and spends a walk; go for what is left.
+            self._pickup_walker = None
+            self._fetching_at = None
+            return self._pick_up(state, local, history)
         if walker is None:
             if self._pickup_walks >= MAX_PICKUP_WALKS:
                 self._pickup_note = (
@@ -1908,6 +1928,7 @@ class CollectLogs:
             self._pickup_walker = walker
             self._fetch_baseline = _log_total(state)
             self._fetching = where
+            self._fetching_at = drop.position
 
         step = walker.plan(state, 0, history)
         if step is not None:
@@ -2072,6 +2093,20 @@ def _tree_label(label) -> str:
     if kind.endswith(" log"):
         kind = kind[:-4]
     return f"the {kind} tree at ({x}, {z})"
+
+
+FETCHED_DROP_DRIFT = 1.5
+"""How far a dropped item may move and still be the one being fetched.
+Items slide a little after they fall; further than this, the walk to where
+it was would no longer pick it up anyway."""
+
+
+def _still_there(drops, where) -> bool:
+    """Is the drop a pickup walk set out for still (about) where it was?"""
+    if where is None:
+        return True
+    return any(math.hypot(d.position[0] - where[0], d.position[2] - where[2])
+               <= FETCHED_DROP_DRIFT for d in drops)
 
 
 def _drop_text(entity) -> str:
