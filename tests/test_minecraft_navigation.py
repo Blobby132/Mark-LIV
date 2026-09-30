@@ -2066,3 +2066,64 @@ class HopProgressTests(unittest.TestCase):
         skill._note_progress((_record("move_and_jump", (0.5, 64.0, 0.5),
                                       after=(1.5, 65.0, 0.5)),))
         self.assertEqual(skill._stalls, 0)
+
+
+class CowWorld(SimWorld):
+    """SimWorld with cows standing still in it: solid to walk into, and
+    reported by the bridge as passive mobs -- not in the surface scan,
+    which is why the skill has to route round them by name."""
+
+    RADIUS = 12
+
+    def __init__(self, cows, **kwargs):
+        r = self.RADIUS
+        super().__init__([NearbyBlock(x, 63, z, "grass_block", True, 4)
+                          for x in range(-r, r + 1)
+                          for z in range(-r, r + 1)], **kwargs)
+        self.cows = list(cows)
+        for column in self.cows:
+            self.ground[column] = NearbyBlock(column[0], 70, column[1],
+                                              "cow", True, 4)
+
+    def read(self):
+        self.reads += 1
+        cows = tuple(EntityRef(
+            name="minecraft:cow", category="passive", hostile=False,
+            position=(c[0] + 0.5, 64.0, c[1] + 0.5),
+            distance=math.dist((self.x, self.z), (c[0] + 0.5, c[1] + 0.5)))
+            for c in self.cows)
+        return state_from(self.surface, position=(self.x, self.y, self.z),
+                          rotation=(self.yaw, self.pitch), entities=cows,
+                          radius=self.RADIUS)
+
+
+class GoRoundTheCowTests(unittest.TestCase):
+    """N1, found reproducing N4: the pathfinder routed round the cow's
+    column, and then path smoothing collapsed that route back into a
+    straight line through it -- furthest_clear did not know about avoided
+    columns. Going round never went round."""
+
+    def test_it_walks_round_a_cow_in_the_way(self):
+        world = CowWorld([(-6, 0)], position=(-10.5, 64.0, 0.5), yaw=-90.0)
+        skill = skills.create("navigate_to", destination=(0, 0))
+        result = run(world, skill, max_steps=40)
+        self.assertLess(world.distance_to((0, 0)), 2.0,
+                        f"ended at x={world.x:.1f}: {skill.done_reason}")
+        self.assertFalse(skill.failed, result.reason)
+
+    def test_no_diagonal_past_an_avoided_column(self):
+        path = nav.find_path(state_from(flat_with_room(4)), (1, 1),
+                             avoid={(1, 0)})
+        first = path.waypoints[0]
+        self.assertNotEqual((first[0], first[-1]), (1, 1),
+                            "the diagonal clipped the avoided column")
+
+    def test_smoothing_does_not_cut_through_an_avoided_column(self):
+        local = nav.LocalMap.from_state(state_from(flat_with_room(4)))
+        path = nav.find_path(state_from(flat_with_room(4)), (5, 0),
+                             avoid={(2, 0)})
+        far, _index = nav.furthest_clear(local, (0.5, 0.5), path.waypoints,
+                                         0, avoid={(2, 0)})
+        crossed = {column for column, _ in local.body_columns(
+            (0.5, 0.5), (far[0] + 0.5, far[2] + 0.5))}
+        self.assertNotIn((2, 0), crossed)

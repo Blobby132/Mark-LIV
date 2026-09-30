@@ -551,6 +551,9 @@ def find_path(state, goal, max_nodes: int = MAX_NODES, avoid=None) -> Path:
         for neighbour, step in local.neighbours(current):
             if neighbour in blocked:
                 continue
+            if blocked and (neighbour[0], current[1]) in blocked \
+                    or blocked and (current[0], neighbour[1]) in blocked:
+                continue    # a diagonal past an avoided column clips it
             new_cost = cost_so_far[current] + step
             if new_cost < cost_so_far.get(neighbour, float("inf")):
                 cost_so_far[neighbour] = new_cost
@@ -601,7 +604,7 @@ def _centre_of(point):
 
 
 def furthest_clear(local: "LocalMap", here: tuple, waypoints, start: int = 0,
-                   look_ahead: int = MAX_SMOOTHING):
+                   look_ahead: int = MAX_SMOOTHING, avoid=()):
     """The furthest waypoint reachable from `here` in a straight line.
 
     This is what turns "a route of 14 one-block hops" into "walk that way for
@@ -609,9 +612,14 @@ def furthest_clear(local: "LocalMap", here: tuple, waypoints, start: int = 0,
     refused: every column on the line is checked with the same rules the
     search used, so smoothing can only ever collapse steps, never relax them.
 
+    `avoid` is the columns the search was told to route round -- a mob
+    standing in one. They are not in the map, so without them here the line
+    that collapses the detour walks straight back through the mob.
+
     Returns (waypoint, index) or (None, start) when nothing is walkable --
     including the next one, which means the world changed and the caller
     should path again."""
+    avoid = frozenset(avoid or ())
     best = None
     best_index = start
     limit = min(len(waypoints), start + max(1, look_ahead))
@@ -619,6 +627,10 @@ def furthest_clear(local: "LocalMap", here: tuple, waypoints, start: int = 0,
         candidate = waypoints[index]
         column = (int(candidate[0]), int(candidate[2]))
         if not local.line_is_walkable(here, column):
+            break
+        if avoid and any(
+                crossed in avoid for crossed, _ in local.body_columns(
+                    _centre_of(here), _centre_of(column))):
             break
         best, best_index = candidate, index
     return best, best_index

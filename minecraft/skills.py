@@ -1189,7 +1189,8 @@ class NavigateTo:
             return self._path.waypoints[index]
 
         far, far_index = nav.furthest_clear(local, here,
-                                            self._path.waypoints, index)
+                                            self._path.waypoints, index,
+                                            avoid=set(self._avoid))
         if far is None:
             return self._path.waypoints[index]
         # Remember how many waypoints this move consumes, so the next call
