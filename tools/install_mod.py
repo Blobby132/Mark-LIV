@@ -11,6 +11,7 @@ this looks, copies, and says what it did.
     python tools/install_mod.py --list       look, change nothing
     python tools/install_mod.py --all        every folder found (rarely right)
     python tools/install_mod.py --uninstall  remove it everywhere
+    python tools/install_mod.py --anyway     even with Minecraft running
 
 ONE INSTANCE, NOT ALL OF THEM
     The first version of this copied into every mods folder it found. On a
@@ -193,6 +194,38 @@ def uninstall_from(mods: Path) -> int:
     return removed
 
 
+def running_minecraft() -> int | None:
+    """The process id of a running Minecraft, or None.
+
+    Why it matters: while the game runs, the jar it loaded is open, Windows
+    may refuse to overwrite it -- and even when the copy works, the OLD mod
+    stays loaded until the game restarts. A real update was lost exactly
+    like that, and the only symptom was JARVIS still reporting the old
+    version afterwards."""
+    try:
+        import psutil
+    except Exception:
+        return None
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            if name not in ("javaw.exe", "java.exe", "java", "javaw"):
+                continue
+            joined = " ".join(proc.info.get("cmdline") or []).lower()
+            if "minecraft" in joined:
+                return proc.info.get("pid")
+        except Exception:
+            continue
+    return None
+
+
+def _same_bytes(a: Path, b: Path) -> bool:
+    try:
+        return a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
 def install_into(mods: Path, jar: Path) -> bool:
     try:
         mods.mkdir(parents=True, exist_ok=True)
@@ -210,13 +243,18 @@ def install_into(mods: Path, jar: Path) -> bool:
                 pass
 
     target = mods / jar.name
+    if target.is_file() and _same_bytes(target, jar):
+        print(f"  Already up to date: {target}")
+        return True
     try:
         shutil.copy2(jar, target)
     except Exception as exc:
         print(f"  Could not copy into {mods}: {exc}")
         return False
 
-    ok = target.is_file() and target.stat().st_size == jar.stat().st_size
+    # Compared by content, not size: two builds of this mod can be the same
+    # size, and "installed" must mean the new one is there.
+    ok = target.is_file() and _same_bytes(target, jar)
     print(f"  {'Installed' if ok else 'FAILED'}: {target}")
     return ok
 
@@ -237,6 +275,15 @@ def main() -> int:
             explicit = Path(raw_argv[index + 1].strip('"'))
 
     print(f"{RULE}\n  MARK LIV — the Minecraft bridge mod\n{RULE}")
+
+    if not listing and "--anyway" not in argv:
+        pid = running_minecraft()
+        if pid is not None:
+            print(f"\n  Minecraft is running (process {pid}).")
+            print("  Quit it completely first -- the game keeps its mods open,")
+            print("  so the copy can fail, and even when it works the OLD mod")
+            print("  stays loaded until Minecraft restarts. Then run this again.")
+            return 1
 
     jar = bundled_jar()
     if jar is None and not removing:
