@@ -59,6 +59,22 @@ class DangerWatchTests(unittest.TestCase):
         unknown = EntityRef(name="modded_thing", distance=1.0, hostile=None)
         self.assertIsNone(DangerWatch().check(seen(entities=[unknown])))
 
+    def test_a_mob_in_a_cave_below_is_not(self):
+        cave = EntityRef(name="zombie", distance=4.5, hostile=True,
+                         position=(0.5, 60.0, 2.5))
+        state = WorldState(position=(0.5, 64.0, 0.5),
+                           nearby_entities=(cave,), source="test",
+                           confidence=EXACT)
+        self.assertIsNone(DangerWatch().check(state))
+
+    def test_a_mob_on_the_same_level_is(self):
+        level = EntityRef(name="zombie", distance=3.0, hostile=True,
+                          position=(0.5, 65.0, 3.5))
+        state = WorldState(position=(0.5, 64.0, 0.5),
+                           nearby_entities=(level,), source="test",
+                           confidence=EXACT)
+        self.assertIsNotNone(DangerWatch().check(state))
+
     def test_losing_a_heart_is_danger(self):
         watch = DangerWatch()
         self.assertIsNone(watch.check(seen(health=20.0)))

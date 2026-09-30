@@ -27,6 +27,11 @@ HOSTILE_RADIUS = 5.0
 about two seconds -- less than one mining step -- and a creeper starts its
 fuse at three."""
 
+LEVEL_BAND = 3.0
+"""Vertical distance within which a close mob counts. A zombie in a cave four
+blocks under the player is five blocks away in a straight line and harmless;
+treating it as a threat would stop every task above an occupied cave."""
+
 HURT_BY = 2.0
 """Health lost since the best point in the task that counts as being hurt:
 one heart. Anything less is noise such as a single cactus prick."""
@@ -36,11 +41,22 @@ def nearest_hostile(state):
     """The closest mob the bridge calls hostile, or None.
 
     An entity whose category the bridge could not say is not treated as
-    hostile -- and not as safe either; it is simply not evidence."""
+    hostile -- and not as safe either; it is simply not evidence. One well
+    above or below the player (see LEVEL_BAND) is not counted, when both
+    heights are known."""
+    feet = getattr(state, "position", None)
     near = [e for e in (getattr(state, "nearby_entities", None) or ())
             if getattr(e, "hostile", None) is True
-            and getattr(e, "distance", None) is not None]
+            and getattr(e, "distance", None) is not None
+            and _level_with(feet, getattr(e, "position", None))]
     return min(near, key=lambda e: e.distance) if near else None
+
+
+def _level_with(feet, where) -> bool:
+    try:
+        return abs(float(where[1]) - float(feet[1])) <= LEVEL_BAND
+    except (TypeError, IndexError, ValueError):
+        return True            # heights unknown: judge by distance alone
 
 
 def _mob_name(entity) -> str:
@@ -86,4 +102,5 @@ class DangerWatch:
         return ""
 
 
-__all__ = ["DangerWatch", "HOSTILE_RADIUS", "HURT_BY", "nearest_hostile"]
+__all__ = ["DangerWatch", "HOSTILE_RADIUS", "HURT_BY", "LEVEL_BAND",
+           "nearest_hostile"]

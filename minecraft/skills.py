@@ -750,6 +750,11 @@ class NavigateTo:
                                  f"is nowhere next to it I can stand.")
                 return None
             self._goal_block = block
+            if block.name in LOG_BLOCKS:
+                # A tree is where its trunk stands, not wherever the nearest
+                # log happens to be -- that was a branch at y 69.
+                logs = nav.tree_logs(state, {block.position}) or (block,)
+                self._goal_block = min(logs, key=lambda b: b.y)
             return column
 
         if self.destination is None:
@@ -787,8 +792,12 @@ class NavigateTo:
                             (block.x + 0.5, block.z + 0.5))
         except (TypeError, IndexError, AttributeError):
             return ""
-        text = f", {gap:.0f} blocks from {block_label(block)} at " \
-               f"{block.position}"
+        if block.name in LOG_BLOCKS:
+            text = (f", {gap:.0f} blocks from "
+                    f"{_tree_label((block.name, (block.x, block.z)))}")
+        else:
+            text = f", {gap:.0f} blocks from {block_label(block)} at " \
+                   f"{block.position}"
         if gap > 2.0:
             text += (" — as close as I can get: nowhere nearer to it has "
                      "room to stand, or I cannot reach it")

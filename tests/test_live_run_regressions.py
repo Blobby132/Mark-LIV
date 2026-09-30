@@ -592,9 +592,28 @@ class ArrivalMessageTests(unittest.TestCase):
         result = run(world, skill)
         self.assertFalse(skill.failed, skill.done_reason)
         self.assertFalse(result.records, "it should not have moved")
-        self.assertIn("3 blocks from an oak log at (3, 64, 0)",
+        self.assertIn("3 blocks from the oak tree at (3, 0)",
                       skill.done_reason)
         self.assertIn("as close as I can get", skill.done_reason)
+
+    def test_a_tree_is_named_by_its_trunk_not_its_nearest_branch(self):
+        """The fifth run said "2 blocks from an oak log at (-47, 69, -202)"
+        -- a log five blocks up. Where a tree is, is where its trunk is."""
+        from tests.test_minecraft_navigation import SimWorld
+        # Standing up on higher ground, as in the run, so the nearest log
+        # is the branch, not the foot of the trunk.
+        world = SimWorld(flat(), position=(0.5, 68.0, 0.5))
+        world.notable = tuple(NearbyBlock(5, y, 0, "oak_log", True)
+                              for y in range(64, 70)) \
+            + (NearbyBlock(4, 69, 0, "oak_log", True),)   # a branch
+        from minecraft import navigation as nav
+        nearest = nav.nearest_block(world.read(), "log")
+        self.assertEqual(nearest.position, (4, 69, 0),
+                         "the test no longer starts nearest the branch")
+        skill = skills.create("navigate_to", target="log")
+        run(world, skill)
+        self.assertIn("the oak tree at (5, 0)", skill.done_reason)
+        self.assertNotIn("69", skill.done_reason)
 
     def test_arriving_beside_it_does_not_apologise(self):
         from tests.test_minecraft_navigation import SimWorld
@@ -602,7 +621,7 @@ class ArrivalMessageTests(unittest.TestCase):
         world.notable = (NearbyBlock(5, 64, 0, "oak_log", True),)
         skill = skills.create("navigate_to", target="log")
         run(world, skill)
-        self.assertIn("blocks from an oak log", skill.done_reason)
+        self.assertIn("blocks from the oak tree", skill.done_reason)
         self.assertNotIn("as close as I can get", skill.done_reason)
 
 
