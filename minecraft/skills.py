@@ -841,8 +841,11 @@ class NavigateTo:
 
         # A hop that achieves nothing is as stuck as a walk that achieves
         # nothing. Counting only walks let the skill alternate walk-hop-walk
-        # forever with the stall count pinned one below the limit.
-        if action not in ("move", "jump"):
+        # forever with the stall count pinned one below the limit. The same
+        # goes for move_and_jump, the step a route takes up a block: failed
+        # hops were never counted, and a hop that could not get up was
+        # offered forever.
+        if action not in ("move", "jump", "move_and_jump"):
             return
         if last.verification.get("status") == verify_mod.SUCCESS:
             self._stalls = 0

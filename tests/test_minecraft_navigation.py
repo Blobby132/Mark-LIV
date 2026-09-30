@@ -2033,3 +2033,36 @@ class DiagonalCornerTests(unittest.TestCase):
         self.assertIn((1, 1), self.neighbours_of(surface))
         down = _raised(flat_with_room(4), {(0, 0), (1, 0)})
         self.assertIn((1, 1), self.neighbours_of(down))
+
+
+class HopProgressTests(unittest.TestCase):
+    """N3: _note_progress counted move and jump, but not move_and_jump --
+    the step the route itself takes up a block. Failed hops were never
+    stalls, so a hop that could not get up was offered forever."""
+
+    def test_failed_hops_count_as_stalls(self):
+        class NoHopWorld(SimWorld):
+            """Something the scan cannot see stops every hop."""
+            def move_and_jump(inner, params):
+                inner.hops = getattr(inner, "hops", 0) + 1
+                return inner._result("move_and_jump", params)
+
+        world = NoHopWorld(step_up(from_x=1), yaw=-90.0)      # facing +X
+        skill = skills.create("navigate_to", destination=(4, 0))
+        result = run(world, skill, max_steps=40)
+        self.assertGreater(getattr(world, "hops", 0), 0)
+        self.assertTrue(skill.failed)
+        # Before, the skill never saw a stall and offered the next hop
+        # along the route each time; only the runner's own limit on
+        # failures in a row stopped it -- saying "The route was fine".
+        self.assertNotIn("route was fine", skill.done_reason)
+        self.assertIn("step", skill.done_reason)
+        self.assertLess(result.steps_taken, 40)
+        self.assertLessEqual(world.hops, 2 * (skills.MAX_REROUTES + 1))
+
+    def test_a_hop_that_gets_up_resets_the_count(self):
+        skill = skills.NavigateTo(destination=(4, 0))
+        skill._stalls = 2
+        skill._note_progress((_record("move_and_jump", (0.5, 64.0, 0.5),
+                                      after=(1.5, 65.0, 0.5)),))
+        self.assertEqual(skill._stalls, 0)
