@@ -201,6 +201,90 @@ class PickupCheckTests(unittest.TestCase):
         self.assertEqual(check.check(before, after).status, verify_mod.SUCCESS)
 
 
+class GivingUpTests(unittest.TestCase):
+
+    def setUp(self):
+        aiming_mod.SHARED.reset()
+
+    def test_what_was_broken_is_picked_up_before_giving_up(self):
+        """Two logs broken, the third out of reach: it used to report the
+        third and walk away from the first two lying on the ground."""
+        logs = [NearbyBlock(5, 64, 0, "oak_log", True),
+                NearbyBlock(5, 65, 0, "oak_log", True),
+                NearbyBlock(5, 72, 0, "oak_log", True)]
+        world = DropWorld(flat(), logs, inventory={"oak_log": 0})
+        world.x, world.z = 2.5, 0.5
+        skill = skills.create("collect_logs", count=3)
+        run(world, skill, max_steps=45)
+        self.assertEqual(len(world.broken), 2)
+        self.assertEqual(world.inventory["oak_log"], 2, skill.done_reason)
+        self.assertEqual(world.drops, [])
+        self.assertTrue(skill.failed, "two of three is not done")
+        self.assertIn("out of reach", skill.done_reason)
+
+    def test_a_tree_that_comes_into_view_is_still_worth_going_for(self):
+        """Out of reach on the first tree, it walks to pick up a drop -- and
+        from there another tree is visible. Picking up is not giving up."""
+        class Horizon(DropWorld):
+            def read(self):
+                if self.broken and not getattr(self, "shown", False) \
+                        and self.x > 3.5:
+                    self.shown = True
+                    self.logs.extend(trunk(6, 4, top=65))
+                return DropWorld.read(self)
+
+        logs = [NearbyBlock(5, 64, 0, "oak_log", True),
+                NearbyBlock(5, 72, 0, "oak_log", True)]
+        world = Horizon(flat(), logs, inventory={"oak_log": 0})
+        world.x, world.z = 2.5, 0.5
+        skill = skills.create("collect_logs", count=2)
+        run(world, skill, max_steps=45)
+        self.assertTrue(getattr(world, "shown", False),
+                        "the test never revealed the second tree")
+        self.assertEqual(world.inventory["oak_log"], 2, skill.done_reason)
+        self.assertFalse(skill.failed, skill.done_reason)
+
+    def test_one_drop_out_of_reach_does_not_strand_the_others(self):
+        """The nearest drop fell where nobody can stand; the other is easy.
+        It used to give up on both."""
+        class Split(DropWorld):
+            # The first lands on open grass; the second in a pond, nearer.
+            SPOTS = [(4.5, 64.0, 4.0), (4.5, 64.0, -1.5)]
+
+            def mine(self, params):
+                broke = len(self.broken)
+                result = DropWorld.mine(self, params)
+                if len(self.broken) > broke and self.drops:
+                    self.drops[-1] = self.SPOTS[len(self.broken) - 1]
+                return result
+
+        pond = {(4, -2), (3, -2), (5, -2), (4, -1), (4, -3)}
+        surface = [NearbyBlock(b.x, b.y, b.z, "water", False)
+                   if (b.x, b.z) in pond else b for b in flat()]
+        world = Split(surface, trunk(5, 0, top=65), inventory={"oak_log": 0})
+        world.x, world.z = 2.5, 0.5
+        skill = skills.create("collect_logs", count=2)
+        run(world, skill, max_steps=45)
+        self.assertEqual(len(world.broken), 2)
+        self.assertEqual(world.inventory["oak_log"], 1,
+                         f"the reachable drop was left: {skill.done_reason}")
+        self.assertIn("nowhere I can stand", skill.done_reason)
+
+    def test_both_reasons_survive_when_the_pickup_fails_too(self):
+        class LostDrops(DropWorld):
+            def read(self):
+                self.drops.clear()
+                return DropWorld.read(self)
+
+        logs = [NearbyBlock(5, 64, 0, "oak_log", True),
+                NearbyBlock(5, 72, 0, "oak_log", True)]
+        world = LostDrops(flat(), logs, inventory={"oak_log": 0})
+        skill = skills.create("collect_logs", count=2)
+        run(world, skill, max_steps=45)
+        self.assertIn("out of reach", skill.done_reason)
+        self.assertIn("cannot see the rest", skill.done_reason)
+
+
 class ToolTextTests(unittest.TestCase):
 
     def test_every_task_is_listed_for_the_assistant(self):

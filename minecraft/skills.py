@@ -1320,8 +1320,10 @@ class CollectLogs:
             return CANNOT_SEE_TARGET
         how = (" (found by the terrain scan)" if self._used_the_map
                else " (found by sweeping the crosshair)")
-        trouble = (self._pickup_note or self._walk_failed
-                   or self._aim_gave_up)
+        # Why it stopped breaking, and why drops were left, are different
+        # facts; the second used to hide the first.
+        trouble = " ".join(t for t in (self._walk_failed or self._aim_gave_up,
+                                       self._pickup_note) if t)
         # Later logs skipped for reach overwrite the reason, and the first
         # one -- the log it pointed straight at and could not hit -- is the
         # one that explains the rest.
@@ -1400,7 +1402,7 @@ class CollectLogs:
                                      "tree's logs from the next.")
                 return None
             if self._tree_done or self._broken >= MAX_TREE_LOGS:
-                return self._after_the_tree(state, local, history)
+                return self._wind_up(state, local, history)
         else:
             if self._done >= self.count:
                 return None
@@ -1421,10 +1423,11 @@ class CollectLogs:
                                            history)
             if step is not None:
                 return step
-            if self._tree_done:
-                return self._after_the_tree(state, local, history)
-            if self._walk_failed:
-                return None
+            if self._tree_done or self._walk_failed:
+                # Finished, or giving up on the rest -- either way what has
+                # been broken is picked up first. Giving up used to walk away
+                # from logs lying on the ground a few blocks off.
+                return self._wind_up(state, local, history)
             # The map had nothing useful to add; fall through to the sweep,
             # which at least checks what is right in front of us.
 
@@ -1625,8 +1628,12 @@ class CollectLogs:
             return f"{self._broken} broken from this tree so far"
         return f"{self._done}/{self.count}"
 
-    def _after_the_tree(self, state, local, history):
-        """Felled as far as it can be: pick up what fell, then stop."""
+    def _wind_up(self, state, local, history):
+        """Nothing more to break for now: pick up what fell, then stop.
+
+        Not a one-way door. A tree that comes into view on the walk to a
+        drop is still worth going for; only when there is nothing left to
+        break does picking up become the last thing it does."""
         if self._can_count and self._collected < self._broken:
             return self._pick_up(state, local, history)
         return None
@@ -1763,7 +1770,8 @@ class CollectLogs:
         reports item entities with positions, so the drop can be walked to.
         Bounded: MAX_PICKUP_WALKS walks, then an honest account of where the
         rest are."""
-        drop = self._nearest_drop(state)
+        drops = self._drops(state)
+        drop = drops[0] if drops else None
         if drop is None:
             self._pickup_walker = None
             self._pickup_note = (
@@ -1787,7 +1795,14 @@ class CollectLogs:
                     f"and I could not get to it after {self._pickup_walks} "
                     f"tries.")
                 return None
-            target = _pickup_column(state, local, drop)
+            # Nearest first, but one that cannot be reached is no reason to
+            # leave the others lying there.
+            target = None
+            for candidate in drops:
+                target = _pickup_column(state, local, candidate)
+                if target is not None:
+                    drop, where = candidate, _drop_text(candidate)
+                    break
             if target is None:
                 self._pickup_note = (
                     f"I broke {self._broken} log(s) and picked up "
@@ -1831,13 +1846,13 @@ class CollectLogs:
                     note=(f"standing where the dropped log is "
                           f"({self._fetching or where})"))
 
-    def _nearest_drop(self, state):
-        """The closest item on the ground near a block this task broke."""
+    def _drops(self, state):
+        """Items on the ground near blocks this task broke, nearest first."""
         items = [e for e in (getattr(state, "nearby_entities", None) or ())
                  if getattr(e, "category", None) == "item"
                  and getattr(e, "position", None) is not None]
         if not items or state.position is None:
-            return None
+            return []
         anchors = self._broken_at or [tuple(state.position)]
 
         def near_a_break(entity):
@@ -1845,12 +1860,10 @@ class CollectLogs:
             return any(math.hypot(ex - (a[0] + 0.5), ez - (a[2] + 0.5))
                        <= DROP_RADIUS for a in anchors)
 
-        ours = [e for e in items if near_a_break(e)]
-        if not ours:
-            return None
-        return min(ours, key=lambda e: math.hypot(
-            e.position[0] - state.position[0],
-            e.position[2] - state.position[2]))
+        return sorted((e for e in items if near_a_break(e)),
+                      key=lambda e: math.hypot(
+                          e.position[0] - state.position[0],
+                          e.position[2] - state.position[2]))
 
     def _work_from_the_crosshair(self, state):
         """The old behaviour, kept for when the mod is not running."""
