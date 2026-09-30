@@ -1995,3 +1995,41 @@ class NotAMobTests(unittest.TestCase):
         diagnosis = stuck_mod.diagnose_movement(_gap_world(_cow()), (6, 0),
                                                 moved_by=0.0)
         self.assertEqual(diagnosis.recovery, stuck_mod.GO_ROUND)
+
+
+def _raised(surface, columns, by=1):
+    """Lift the ground of `columns` by `by` blocks, keeping the room above."""
+    return [NearbyBlock(b.x, b.y + by, b.z, b.name, b.solid, b.clearance)
+            if (b.x, b.z) in columns else b for b in surface]
+
+
+class DiagonalCornerTests(unittest.TestCase):
+    """N2: a diagonal step between two level columns was allowed past an
+    orthogonal neighbour a block HIGHER -- passable, as a step up, but the
+    body walking the diagonal at the lower level clips its corner."""
+
+    def neighbours_of(self, surface, column=(0, 0)):
+        local = nav.LocalMap.from_state(state_from(surface))
+        return {target for target, _cost in local.neighbours(column)}
+
+    def test_a_raised_corner_blocks_the_level_diagonal(self):
+        for corner in ((1, 0), (0, 1)):
+            with self.subTest(corner=corner):
+                surface = _raised(flat_with_room(4), {corner})
+                self.assertNotIn((1, 1), self.neighbours_of(surface))
+
+    def test_the_route_does_not_cut_the_raised_corner(self):
+        surface = _raised(flat_with_room(4), {(1, 0)})
+        path = nav.find_path(state_from(surface), (1, 1))
+        self.assertTrue(path.found, path.reason)
+        first = path.waypoints[0]
+        self.assertNotEqual((first[0], first[-1]), (1, 1),
+                            "went straight across the raised corner")
+
+    def test_a_corner_no_higher_than_the_step_is_fine(self):
+        """Onto a raised column past a corner at the same height: the body
+        rises to that height anyway, so nothing is clipped."""
+        surface = _raised(flat_with_room(4), {(1, 0), (1, 1)})
+        self.assertIn((1, 1), self.neighbours_of(surface))
+        down = _raised(flat_with_room(4), {(0, 0), (1, 0)})
+        self.assertIn((1, 1), self.neighbours_of(down))

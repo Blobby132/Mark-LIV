@@ -421,7 +421,10 @@ class LocalMap:
 
     def neighbours(self, column: tuple):
         """Passable neighbours, with costs. Diagonals need both orthogonals
-        passable — otherwise the route clips a corner you cannot walk through."""
+        passable — otherwise the route clips a corner you cannot walk through
+        — and neither orthogonal's ground may be higher than both ends. A
+        corner a block up is passable as a step, but a body walking the
+        diagonal at the lower level walks into it."""
         x, z = column
         straight = {}
         for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
@@ -438,8 +441,13 @@ class LocalMap:
                 continue
             target = (x + dx, z + dz)
             cost = self.step_cost(column, target)
-            if cost is not None:
-                yield target, cost
+            if cost is None:
+                continue
+            top = max(self.ground_at(*column), self.ground_at(*target))
+            if self.ground_at(x + dx, z) > top \
+                    or self.ground_at(x, z + dz) > top:
+                continue
+            yield target, cost
 
 
 # ── The plan ─────────────────────────────────────────────────────────────────
