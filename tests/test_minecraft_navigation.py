@@ -30,6 +30,7 @@ WHAT THEY DO NOT PROVE
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 import unittest
@@ -1227,6 +1228,39 @@ class TheModelsViewOfTheWorldTests(unittest.TestCase):
         self.assertIn("oak_log", answer)
         self.assertIn("(5, 64, 5)", answer)
         self.assertIn("creeper", answer)
+
+    def test_look_around_counts_trees_by_their_trunks(self):
+        """Seven logs in two trees is two trees. The nearest log alone
+        cannot say that, and is as often a branch as a trunk."""
+        logs = tuple(NearbyBlock(5, y, 0, "oak_log", True)
+                     for y in range(64, 69)) \
+            + (NearbyBlock(-3, 64, 4, "birch_log", True),
+               NearbyBlock(-3, 65, 4, "birch_log", True))
+        self._source(state_from(flat(), notable=logs))
+        answer = self.adapter.minecraft_control({"action": "look_around"})
+        self.assertIn("2 tree(s) in view", answer)
+        self.assertIn("the oak tree at (5, 0)", answer)
+        self.assertIn("5 log(s) visible", answer)
+
+    def test_look_around_says_health_hunger_food_and_night(self):
+        state = dataclasses.replace(
+            state_from(flat()), health=13.0, hunger=9.0, time_of_day=15000,
+            inventory=(ItemStack(slot=2, name="bread", count=4),
+                       ItemStack(slot=20, name="apple", count=3)))
+        self._source(state)
+        answer = self.adapter.minecraft_control({"action": "look_around"})
+        self.assertIn("health 13/20", answer)
+        self.assertIn("hunger 9/20; food on the hotbar: bread x4", answer)
+        self.assertNotIn("apple", answer.split("\n")[0],
+                         "the apple is not on the hotbar")
+        self.assertIn("it is night", answer)
+
+    def test_look_around_notices_no_food_when_hungry(self):
+        state = dataclasses.replace(state_from(flat()), hunger=6.0,
+                                    inventory=())
+        self._source(state)
+        answer = self.adapter.minecraft_control({"action": "look_around"})
+        self.assertIn("no food on the hotbar", answer)
 
     def test_look_around_says_unknown_rather_than_empty(self):
         """An empty scan and a bare plain read the same in the numbers. They

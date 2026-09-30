@@ -1142,6 +1142,31 @@ def reachable(state, goal) -> bool:
     return find_path(state, goal).found
 
 
+def trees(state) -> tuple:
+    """Every tree in the scan, nearest trunk first: (kind, trunk column,
+    logs seen, distance to the trunk). Trees as tree_logs groups them."""
+    logs = [b for b in (getattr(state, "notable_blocks", None) or ())
+            if b.name in LOG_BLOCKS]
+    position = getattr(state, "position", None)
+    seen, out = set(), []
+    for log in logs:
+        if log.position in seen:
+            continue
+        group = tree_logs(state, {log.position})
+        seen.update(b.position for b in group)
+        foot = min(group, key=lambda b: b.y)
+        distance = None
+        if position is not None:
+            distance = math.hypot(position[0] - (foot.x + 0.5),
+                                  position[2] - (foot.z + 0.5))
+        out.append((foot.name, (foot.x, foot.z), len(group), distance))
+    out.sort(key=lambda t: float("inf") if t[3] is None else t[3])
+    return tuple(out)
+
+
+MAX_TREES_LISTED = 5
+
+
 def summarise(state) -> dict:
     """What is around, in the terms a planner and a person both use.
 
@@ -1174,6 +1199,16 @@ def summarise(state) -> dict:
                 "position": list(entity.position) if entity.position else None,
             }
 
+    found_trees = trees(state)
+    if found_trees:
+        out["trees_seen"] = len(found_trees)
+        out["trees"] = [
+            {"kind": " ".join(name.split("_")[:-1]) or name,
+             "trunk": list(trunk), "logs_seen": count,
+             "distance": None if distance is None else round(distance, 1)}
+            for name, trunk, count, distance
+            in found_trees[:MAX_TREES_LISTED]]
+
     found_ores = ores(state)
     if found_ores:
         out["ores_seen"] = sorted({b.name for b in found_ores})
@@ -1183,7 +1218,7 @@ def summarise(state) -> dict:
 __all__ += [
     "blocks_matching", "blocks_in_category", "ores", "nearest_block",
     "nearest_entity", "approach_column", "reachable_columns",
-    "nearest_of", "tree_logs",
+    "nearest_of", "tree_logs", "trees",
     "is_walkable", "is_known",
     "reachable", "summarise",
 ]

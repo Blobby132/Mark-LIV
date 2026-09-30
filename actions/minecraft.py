@@ -863,6 +863,17 @@ def _around_line(state, summary: dict) -> str:
                 "the crosshair.")
     bits = [f"I can see {summary['columns_seen']} columns of ground within "
             f"{summary.get('scan_radius', '?')} blocks"]
+    trees = summary.get("trees") or []
+    if trees:
+        # Trees as well as the nearest log: the log is often a branch five
+        # blocks up and says nothing about how many trees there are, but its
+        # exact coordinates are what aim_at_block and mine_block need.
+        tree = trees[0]
+        bits.append(f"{summary.get('trees_seen', len(trees))} tree(s) in "
+                    f"view; nearest: the {tree['kind']} tree at "
+                    f"({tree['trunk'][0]}, {tree['trunk'][1]}), "
+                    f"{tree['distance']} away, {tree['logs_seen']} log(s) "
+                    f"visible")
     for label in ("log", "stone", "water"):
         found = summary.get(f"nearest_{label}")
         if found:
@@ -875,7 +886,35 @@ def _around_line(state, summary: dict) -> str:
                         f"{found['distance']} away")
     if summary.get("ores_seen"):
         bits.append(f"ores in view: {', '.join(summary['ores_seen'])}")
+    bits.extend(_player_bits(state))
     return ". ".join(bits) + "."
+
+
+def _player_bits(state) -> list:
+    """Health, hunger, food to hand and whether it is night -- each only
+    when the bridge actually reported it."""
+    bits = []
+    health, hunger = state.health, state.hunger
+    if isinstance(health, (int, float)):
+        bits.append(f"health {health:.0f}/20")
+    if isinstance(hunger, (int, float)):
+        food = [f"{' '.join(str(s.name).split('_'))} x{s.count}"
+                for s in (state.inventory or ())
+                if s.slot is not None and 0 <= s.slot <= 8
+                and s.name in mc_skills.FOODS]
+        text = f"hunger {hunger:.0f}/20"
+        if food:
+            text += f"; food on the hotbar: {', '.join(food)}"
+        elif hunger < 14:
+            text += "; no food on the hotbar"
+        bits.append(text)
+    ticks = state.time_of_day
+    if isinstance(ticks, int):
+        if 13000 <= ticks < 23000:
+            bits.append("it is night — hostile mobs spawn in the dark")
+        elif 12000 <= ticks < 13000:
+            bits.append("it is getting dark")
+    return bits
 
 
 def _status_line(status: dict) -> str:
