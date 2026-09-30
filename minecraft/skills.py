@@ -570,6 +570,13 @@ Bounded because a re-route that keeps finding the same blocked way is a loop,
 and because the honest answer after three is "I cannot get there", which is
 more use than twenty more steps of trying."""
 
+AVOID_FOR_REPLANS = 3
+"""How many replans a column avoided because a MOB stood in it stays avoided.
+Mobs move: a cow in a doorway was avoided for the rest of the walk, and when
+the doorway was the only way the destination became "unreachable". Columns
+avoided for something that does not move -- a fence post the scan cannot see
+-- stay avoided for the whole task."""
+
 CAUTIOUS_STEP_S = 0.3
 """The longest single move when the swept path shows something ahead.
 
@@ -635,7 +642,9 @@ class NavigateTo:
     _obstacle: object = None
     _diagnosis: object = None
     _history: tuple = ()
-    _avoid: set = field(default_factory=set)
+    _avoid: dict = field(default_factory=dict)   # column -> replans left
+    _blocker_name: str = ""
+    _blocked_by: str = ""
     _aiming_at: float | None = None
     _skip_to: int = 0
     _seen_at: tuple | None = None
@@ -889,7 +898,18 @@ class NavigateTo:
     def _follow_path(self, state, local):
         if self._needs_new_path(state, local):
             self._path = nav.find_path(state, self._destination,
-                                       avoid=self._avoid)
+                                       avoid=set(self._avoid))
+            if not self._path.found and self._avoid:
+                # Avoiding the mob's column leaves no way at all: the mob is
+                # standing in the only way. Take it anyway -- it may move --
+                # and if it does not, say that rather than "impassable".
+                direct = nav.find_path(state, self._destination)
+                if direct.found:
+                    self._blocked_by = self._blocker_name or "mob"
+                    self._path = direct
+            elif self._path.found:
+                self._blocked_by = ""       # there is a way round it now
+            self._age_avoids()
             self._walked = 0
             if not self._path.found:
                 self._stopped = self._path.reason
@@ -1033,14 +1053,18 @@ class NavigateTo:
             # like. Treat it as a wall and go round.
             return self._reroute(diagnosis, avoid=diagnosis.obstacle.column)
 
-        if diagnosis.recovery in (stuck_mod.REROUTE, stuck_mod.WAIT):
-            avoid = getattr(diagnosis.obstacle, "column", None)
-            if diagnosis.recovery == stuck_mod.WAIT:
-                # Mobs move. Routing round the column it is standing in is
-                # both a sensible detour and, often, simply a pause while it
-                # wanders off.
-                avoid = heading
-            return self._reroute(diagnosis, avoid=avoid)
+        if diagnosis.recovery == stuck_mod.GO_ROUND:
+            # Round the MOB'S column -- never the heading, which is the
+            # smoothed far waypoint and can be the destination itself.
+            blocker = diagnosis.blocker
+            avoid = getattr(blocker, "column", None)
+            self._blocker_name = getattr(blocker, "name", "") or "mob"
+            return self._reroute(diagnosis, avoid=avoid,
+                                 for_replans=AVOID_FOR_REPLANS)
+
+        if diagnosis.recovery == stuck_mod.REROUTE:
+            return self._reroute(
+                diagnosis, avoid=getattr(diagnosis.obstacle, "column", None))
 
         if diagnosis.recovery in (stuck_mod.OBSERVE, stuck_mod.REPLAN):
             # Unknown ground is not empty ground, and a route over changed
@@ -1059,28 +1083,48 @@ class NavigateTo:
             return None
         return None
 
-    def _reroute(self, diagnosis, avoid=None):
+    def _reroute(self, diagnosis, avoid=None, for_replans=None):
         """Throw the route away and plan another, within a bound.
 
         The stall counter resets, because a new route is a genuinely new
         attempt rather than the same failing action offered again — which is
         the distinction the old replan got wrong and spun on."""
         if self._reroutes >= MAX_REROUTES:
-            self._stopped = (
-                f"{diagnosis.describe()} — and {MAX_REROUTES} attempts to go "
-                f"another way did not get past it.")
+            if self._blocked_by:
+                self._stopped = (
+                    f"a {self._blocked_by} is blocking the only way, and it "
+                    f"has not moved after {MAX_REROUTES} tries.")
+            else:
+                self._stopped = (
+                    f"{diagnosis.describe()} — and {MAX_REROUTES} attempts "
+                    f"to go another way did not get past it.")
             return None
         self._reroutes += 1
         if avoid is not None:
-            try:
-                self._avoid.add((int(avoid[0]), int(avoid[-1])))
-            except (TypeError, IndexError, ValueError):
-                pass
+            self._avoid_for(avoid, for_replans)
         self._path = None
         self._walked = 0
         self._stalls = 0
         self._hopped = False
         return None
+
+    def _avoid_for(self, column, for_replans=None) -> None:
+        """Route round `column`: for the next `for_replans` replans, or for
+        the rest of the task when None."""
+        try:
+            key = (int(column[0]), int(column[-1]))
+        except (TypeError, IndexError, ValueError):
+            return
+        self._avoid[key] = for_replans
+
+    def _age_avoids(self) -> None:
+        """One replan has used the avoided columns; forget expired ones."""
+        for column in list(self._avoid):
+            if self._avoid[column] is None:
+                continue                    # not a mob: avoided for good
+            self._avoid[column] -= 1
+            if self._avoid[column] <= 0:
+                del self._avoid[column]
 
     def _needs_new_path(self, state, local) -> bool:
         """Re-plan when the plan is old, gone, or no longer true."""

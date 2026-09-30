@@ -1863,3 +1863,135 @@ class InventoryCollectionTests(unittest.TestCase):
         self.assertEqual(len(world.broken), 1, "it did break the log")
         self.assertTrue(skill.failed, "but it must not claim it collected it")
         self.assertIn("0 of 1", skill.done_reason)
+
+
+# ── Review findings N1-N5 ────────────────────────────────────────────────────
+
+def _record(action, before, after=None, status=None, rotation=(270.0, 0.0),
+            index=0, params=None):
+    """One step as the runner records it: `before`/`after` positions, and a
+    verdict. A failed move with no `after` did not move at all."""
+    from minecraft.task_runner import StepRecord
+    after = before if after is None else after
+    if status is None:
+        status = verify_mod.FAILED if after == before else verify_mod.SUCCESS
+    return StepRecord(
+        index=index, step={"action": action, "params": dict(params or {}),
+                           "note": ""},
+        delivered=True, action_result={}, verification={"status": status},
+        state_before={"position": list(before), "rotation": list(rotation)},
+        state_after={"position": list(after), "rotation": list(rotation)})
+
+
+def _gap_world(entity=None):
+    """Flat ground with room overhead, a wall at x=2 with one gap at z=0,
+    the player just west of the gap facing east -- the N1 repro."""
+    surface = wall_at(flat_with_room(4), x=2, gap_z=0)
+    entities = (entity,) if entity is not None else ()
+    return state_from(surface, position=(1.5, 64.0, 0.5),
+                      rotation=(270.0, 0.0), entities=entities)
+
+
+def _cow(x=2.5, z=0.5, name="minecraft:cow", category="passive"):
+    return EntityRef(name=name, distance=1.0, position=(x, 64.0, z),
+                     category=category, hostile=False)
+
+
+class MobInTheWayTests(unittest.TestCase):
+    """N1: the mob-in-the-way recovery avoided the smoothed FAR waypoint --
+    which can be the destination itself -- instead of the mob's column, and
+    then reported the destination as unreachable."""
+
+    def test_a_cow_in_the_gap_does_not_poison_the_destination(self):
+        state = _gap_world(_cow())
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill.plan(state, 0, ())
+        skill.plan(state, 1, (_record("move", (1.5, 64.0, 0.5)),))
+        self.assertNotIn((6, 0), skill._avoid,
+                         "the destination itself was avoided")
+        self.assertNotIn("impassable", skill.done_reason)
+        self.assertFalse(skill._stopped, skill._stopped)
+
+    def test_it_avoids_the_mobs_column(self):
+        state = _gap_world(_cow(x=2.5, z=0.5))          # in the gap
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill.plan(state, 0, ())
+        skill.plan(state, 1, (_record("move", (1.5, 64.0, 0.5)),))
+        self.assertEqual(set(skill._avoid), {(2, 0)})
+
+    def test_a_mob_blocking_the_only_way_is_named(self):
+        state = _gap_world(_cow())
+        skill = skills.NavigateTo(destination=(6, 0))
+        history = []
+        for index in range(12):
+            if skill.plan(state, index, tuple(history)) is None:
+                break
+            history.append(_record("move", (1.5, 64.0, 0.5), index=index))
+        self.assertTrue(skill.failed)
+        self.assertIn("cow is blocking the only way", skill.done_reason)
+        self.assertNotIn("impassable", skill.done_reason)
+
+    def test_an_avoided_column_is_forgotten_after_a_few_replans(self):
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill._avoid_for((3, 0), skills.AVOID_FOR_REPLANS)
+        for _ in range(skills.AVOID_FOR_REPLANS):
+            self.assertIn((3, 0), skill._avoid)
+            skill._age_avoids()
+        self.assertNotIn((3, 0), skill._avoid)
+
+    def test_the_mobs_column_expires(self):
+        skill = skills.NavigateTo(destination=(6, 0))
+        state = _gap_world(_cow())
+        skill.plan(state, 0, ())
+        skill.plan(state, 1, (_record("move", (1.5, 64.0, 0.5)),))
+        self.assertIn((2, 0), skill._avoid)
+        for _ in range(skills.AVOID_FOR_REPLANS):
+            skill._age_avoids()
+        self.assertNotIn((2, 0), skill._avoid, "a moving mob avoided for good")
+
+    def test_a_mob_that_moved_is_not_blamed_later(self):
+        skill = skills.NavigateTo(destination=(6, 0))
+        state = _gap_world(_cow())
+        history = []
+        for index in range(3):
+            skill.plan(state, index, tuple(history))
+            history.append(_record("move", (1.5, 64.0, 0.5), index=index))
+        self.assertEqual(skill._blocked_by, "cow")
+        # The cow wanders off; the way is open and planned again.
+        skill._avoid.clear()
+        skill._path = None
+        skill.plan(_gap_world(), 3, ())
+        skill._reroutes = skills.MAX_REROUTES
+        skill._reroute(stuck_diagnosis())
+        self.assertNotIn("cow", skill._stopped)
+
+    def test_a_column_avoided_for_something_that_does_not_move_stays(self):
+        """Only a mob's column expires: a fence post stays a fence post."""
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill._reroute(stuck_diagnosis(), avoid=(3, 0))
+        for _ in range(skills.AVOID_FOR_REPLANS + 2):
+            skill._age_avoids()
+        self.assertIn((3, 0), skill._avoid)
+
+
+def stuck_diagnosis():
+    from minecraft import stuck as stuck_mod
+    return stuck_mod.Diagnosis(stuck_mod.COLLISION_STUCK, stuck_mod.REROUTE)
+
+
+class NotAMobTests(unittest.TestCase):
+
+    def test_an_xp_orb_is_not_standing_in_the_way(self):
+        from minecraft import stuck as stuck_mod
+        orb = _cow(name="minecraft:experience_orb", category="misc")
+        state = _gap_world(orb)
+        diagnosis = stuck_mod.diagnose_movement(state, (6, 0), moved_by=0.0)
+        self.assertNotEqual(diagnosis.kind, stuck_mod.ENTITY_INTERFERENCE)
+
+    def test_the_recovery_is_named_for_what_it_does(self):
+        """WAIT never waited: it re-routed round the mob."""
+        from minecraft import stuck as stuck_mod
+        self.assertFalse(hasattr(stuck_mod, "WAIT"))
+        diagnosis = stuck_mod.diagnose_movement(_gap_world(_cow()), (6, 0),
+                                                moved_by=0.0)
+        self.assertEqual(diagnosis.recovery, stuck_mod.GO_ROUND)

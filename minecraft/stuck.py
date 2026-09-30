@@ -21,7 +21,7 @@ A DIAGNOSIS, NOT A DECISION
 THE KINDS
     VERTICAL_BLOCK       one block up, room to land          -> hop up
     COLLISION_STUCK      a wall, low ceiling, or hazard       -> re-route
-    ENTITY_INTERFERENCE  a mob or player is in the way        -> wait, re-route
+    ENTITY_INTERFERENCE  a mob or player is in the way        -> go round it
     UNKNOWN_TERRAIN      the next step was never scanned      -> observe again
     PATH_STALE           the route runs over changed ground   -> re-plan
     NO_ROUTE             nothing walkable reaches the goal    -> stop, say so
@@ -53,7 +53,10 @@ AIM_STUCK = "aim_stuck"
 
 HOP = "hop"
 REROUTE = "reroute"
-WAIT = "wait"
+GO_ROUND = "go_round"
+"""Route round the mob's own column. Named for what happens: it was called
+WAIT, and nothing ever waited. The column is avoided for a few replans only,
+because mobs move."""
 OBSERVE = "observe"
 REPLAN = "replan"
 STOP = "stop"
@@ -61,7 +64,7 @@ STOP = "stop"
 RECOVERY = {
     VERTICAL_BLOCK: HOP,
     COLLISION_STUCK: REROUTE,
-    ENTITY_INTERFERENCE: WAIT,
+    ENTITY_INTERFERENCE: GO_ROUND,
     UNKNOWN_TERRAIN: OBSERVE,
     PATH_STALE: REPLAN,
     NO_ROUTE: STOP,
@@ -88,6 +91,7 @@ class Diagnosis:
     recovery: str
     detail: str = ""
     obstacle: object = None
+    blocker: object = None      # ENTITY_INTERFERENCE: .name, .column
 
     def describe(self) -> str:
         return {
@@ -114,9 +118,10 @@ def diagnose_movement(state, heading_to=None, moved_by: float | None = None,
     # reads as "nothing in the way" to the scan and is the actual cause.
     blocker = entity_in_the_way(state, heading_to)
     if blocker is not None:
-        return Diagnosis(ENTITY_INTERFERENCE, WAIT,
+        return Diagnosis(ENTITY_INTERFERENCE, GO_ROUND,
                          detail=f"{blocker.name}, "
-                                f"{blocker.distance:.1f} blocks away")
+                                f"{blocker.distance:.1f} blocks away",
+                         blocker=blocker)
 
     seen = nav.obstacle_ahead(state, heading_to)
 
@@ -167,8 +172,10 @@ def entity_in_the_way(state, heading_to=None):
         where = getattr(entity, "position", None)
         if where is None:
             continue
-        if getattr(entity, "category", None) == "item":
-            continue                # dropped items do not block anything
+        if getattr(entity, "category", None) in ("item", "misc"):
+            # Dropped items, xp orbs, arrows, item frames, paintings: none of
+            # them stops a player walking.
+            continue
         try:
             dx = where[0] - position[0]
             dz = where[2] - position[2]
@@ -187,10 +194,13 @@ def entity_in_the_way(state, heading_to=None):
         return None
 
     entity = best[1]
+    where = entity.position
 
     class _Seen:
-        name = getattr(entity, "name", "something")
+        name = " ".join(str(getattr(entity, "name", None) or "something")
+                        .split(":")[-1].split("_"))
         distance = best[0]
+        column = (math.floor(where[0]), math.floor(where[2]))
     return _Seen()
 
 
@@ -238,5 +248,5 @@ __all__ = [
     "Diagnosis", "diagnose_movement", "diagnose_aim", "entity_in_the_way",
     "VERTICAL_BLOCK", "COLLISION_STUCK", "ENTITY_INTERFERENCE",
     "UNKNOWN_TERRAIN", "PATH_STALE", "NO_ROUTE", "INPUT_STUCK", "AIM_STUCK",
-    "HOP", "REROUTE", "WAIT", "OBSERVE", "REPLAN", "STOP", "RECOVERY",
+    "HOP", "REROUTE", "GO_ROUND", "OBSERVE", "REPLAN", "STOP", "RECOVERY",
 ]
