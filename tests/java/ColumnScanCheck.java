@@ -10,7 +10,8 @@ import java.io.InputStreamReader;
  * the blocks top down, each one of air, plant (passable, not air), fluid
  * (neither passable nor solid) or anything else for a solid block. Prints
  * {@code floor top clearance cover} -- block indices, -1 for none, and the
- * clearance over whichever block the mod would report.
+ * clearance over whichever block the mod would report. Lines starting
+ * {@code above} or {@code reported} drive the tall-tree pass instead.
  */
 final class ColumnScanCheck {
 
@@ -20,6 +21,14 @@ final class ColumnScanCheck {
         String line;
         while ((line = in.readLine()) != null) {
             String[] parts = line.trim().split("\\s+");
+            if (parts[0].equals("reported")) {
+                System.out.println(ColumnScan.reportedAbove(kind(parts[1])));
+                continue;
+            }
+            if (parts[0].equals("above")) {
+                above(parts);
+                continue;
+            }
             int feet = Integer.parseInt(parts[0]);
             int first = Integer.parseInt(parts[1]);
             int last = Integer.parseInt(parts[2]);
@@ -46,5 +55,27 @@ final class ColumnScanCheck {
             System.out.println(floor + " " + top + " " + clearance + " "
                     + cover);
         }
+    }
+
+    private static String kind(String word) {
+        return word.equals("null") ? null : word;
+    }
+
+    /** {@code above topKind from to kind...}: the kinds from dy=from up.
+     *  Prints the number of blocks read, then the dy of each log found. */
+    private static void above(String[] parts) {
+        int from = Integer.parseInt(parts[2]);
+        int to = Integer.parseInt(parts[3]);
+        int[] reads = {0};
+        int[] logs = ColumnScan.logsAbove(kind(parts[1]), dy -> {
+            reads[0]++;
+            int at = 4 + dy - from;
+            return at < parts.length ? kind(parts[at]) : null;
+        }, from, to);
+        StringBuilder out = new StringBuilder();
+        for (int dy : logs) {
+            out.append(' ').append(dy);
+        }
+        System.out.println(reads[0] + out.toString());
     }
 }

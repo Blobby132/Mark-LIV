@@ -1,5 +1,8 @@
 package com.markliv.bridge;
 
+import java.util.Arrays;
+import java.util.function.IntFunction;
+
 /**
  * Which block in one column of the terrain scan is the floor.
  *
@@ -95,5 +98,43 @@ final class ColumnScan {
             }
         }
         return -1;
+    }
+
+    /**
+     * Whether a notable block of this kind is reported from the rows read
+     * ABOVE the scan's top -- the headroom rows, read anyway to measure
+     * clearance. Only logs: a trunk rising past the scan's top is the tree
+     * the player is felling, and its upper logs were invisible to it.
+     */
+    static boolean reportedAbove(String kind) {
+        return "log".equals(kind);
+    }
+
+    /**
+     * The tall-tree pass: where the highest block read in a column is a
+     * log, follow the trunk up that one column, from {@code from} to
+     * {@code to} (dy above the feet), and return the dy of each log --
+     * stopping at the first block that is not one.
+     *
+     * <p>Cheap by construction: a column not topped by a log costs nothing,
+     * and one that is costs a read per log of trunk plus one.
+     *
+     * @param topKind the notable kind of the highest block already read
+     * @param kindAt  the notable kind of the block at a dy, or null
+     */
+    static int[] logsAbove(String topKind, IntFunction<String> kindAt,
+                           int from, int to) {
+        if (!"log".equals(topKind) || to < from) {
+            return new int[0];
+        }
+        int[] found = new int[to - from + 1];
+        int n = 0;
+        for (int dy = from; dy <= to; dy++) {
+            if (!"log".equals(kindAt.apply(dy))) {
+                break;
+            }
+            found[n++] = dy;
+        }
+        return Arrays.copyOf(found, n);
     }
 }

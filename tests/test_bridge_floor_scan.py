@@ -184,3 +184,75 @@ class FloorScanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     sys.exit(unittest.main(verbosity=2))
+
+
+TREE_UP = 12
+
+
+@unittest.skipUnless(shutil.which("javac") and shutil.which("java"),
+                     "needs a JDK to compile the mod's column rules")
+class TallTreeTests(unittest.TestCase):
+    """N8: logs were reported only up to SCAN_UP (4) above the feet. An oak
+    is often six logs tall and a spruce ten, so "fell the tree" could not
+    see the top of the tree it was felling. The column is already read
+    MAX_CLEARANCE higher, to measure headroom, and a trunk that reaches the
+    top of that is followed further up -- to TREE_UP -- in its own column
+    only, stopping at the first block that is not a log."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.build = tempfile.TemporaryDirectory()
+        subprocess.run(["javac", "-d", cls.build.name, str(SOURCE),
+                        str(HARNESS)], check=True, capture_output=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.build.cleanup()
+
+    def above(self, top_kind, kinds, start=TOP + 1, stop=TREE_UP):
+        """dy of each log reported above the read column, and how many
+        blocks the pass had to read to find them."""
+        line = f"above {top_kind} {start} {stop} " + " ".join(kinds)
+        out = subprocess.run(
+            ["java", "-cp", self.build.name, "com.markliv.bridge.ColumnScanCheck"],
+            input=line + "\n", capture_output=True, text=True,
+            check=True).stdout.split()
+        return [int(v) for v in out[1:]], int(out[0])
+
+    def test_a_trunk_is_followed_up_to_its_top(self):
+        logs, reads = self.above("log", ["log", "log", "leaves", "log"])
+        self.assertEqual(logs, [TOP + 1, TOP + 2])
+        self.assertEqual(reads, 3, "it read past the top of the trunk")
+
+    def test_it_stops_at_tree_up(self):
+        logs, reads = self.above("log", ["log"] * 10)
+        self.assertEqual(logs, list(range(TOP + 1, TREE_UP + 1)))
+        self.assertEqual(reads, TREE_UP - TOP)
+
+    def test_a_column_not_topped_by_a_log_costs_nothing(self):
+        for top_kind in ("null", "ore", "water"):
+            with self.subTest(top_kind=top_kind):
+                self.assertEqual(self.above(top_kind, ["log"] * 4), ([], 0))
+
+    def test_only_logs_are_reported_from_the_headroom_rows(self):
+        out = subprocess.run(
+            ["java", "-cp", self.build.name, "com.markliv.bridge.ColumnScanCheck"],
+            input="reported log\nreported ore\nreported lava\nreported null\n",
+            capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["true", "false", "false", "false"])
+
+
+class CommittedJarHasTheTallTreePassTests(unittest.TestCase):
+
+    def test_the_jar_follows_trunks(self):
+        import zipfile
+        jar = ROOT / "mods" / "markliv-bridge-1.0.0.jar"
+        with zipfile.ZipFile(jar) as archive:
+            names = archive.namelist()
+            scan = archive.read(next(n for n in names
+                                     if n.endswith("/ColumnScan.class")))
+            bridge = archive.read(next(n for n in names
+                                       if n.endswith("/MarkLivBridge.class")))
+        self.assertIn(b"logsAbove", scan, "the jar predates the tall-tree pass")
+        self.assertIn(b"logsAbove", bridge)
+        self.assertIn(b"tree_up", bridge)

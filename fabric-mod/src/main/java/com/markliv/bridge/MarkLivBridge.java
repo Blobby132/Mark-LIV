@@ -109,6 +109,15 @@ public class MarkLivBridge implements ClientModInitializer {
     private static final int SCAN_DOWN = 5;
 
     /**
+     * How high logs are reported. The rows up to SCAN_UP + MAX_CLEARANCE are
+     * read anyway, for headroom; logs among them are reported, and a trunk
+     * that reaches the top of them is followed up its own column to here.
+     * Four was below the top of most oaks and every spruce, and "fell the
+     * tree" could not see the tree it was felling.
+     */
+    private static final int TREE_UP = 12;
+
+    /**
      * How many blocks of interest to report, per kind, nearest first.
      *
      * <p>Per kind so that a lake cannot crowd out the logs and a forest
@@ -304,7 +313,8 @@ public class MarkLivBridge implements ClientModInitializer {
         out.raw("scan", Json.object(
                 "radius", Integer.toString(SCAN_RADIUS),
                 "up", Integer.toString(SCAN_UP),
-                "down", Integer.toString(SCAN_DOWN)));
+                "down", Integer.toString(SCAN_DOWN),
+                "tree_up", Integer.toString(TREE_UP)));
         Terrain terrain = scanTerrain(level, feet);
         out.raw("surface", terrain.surface);
         out.raw("notable_blocks", terrain.notable);
@@ -399,8 +409,10 @@ public class MarkLivBridge implements ClientModInitializer {
                     names[i] = air[i] ? null : BuiltInRegistries.BLOCK
                             .getKey(state.getBlock()).toString();
 
-                    String kind = i >= first && !air[i]
-                            ? Kinds.notable(names[i]) : null;
+                    String kind = air[i] ? null : Kinds.notable(names[i]);
+                    if (i < first && !ColumnScan.reportedAbove(kind)) {
+                        kind = null;            // headroom rows: logs only
+                    }
                     if (kind != null) {
                         int dy = top - i;
                         double distance = dx * dx + dy * dy + dz * dz;
@@ -411,6 +423,30 @@ public class MarkLivBridge implements ClientModInitializer {
                                     Integer.toString(z),
                                     Json.quote(names[i])));
                         }
+                    }
+                }
+
+                // A trunk that reaches the top of the rows read: follow it.
+                String[] trunk = new String[TREE_UP + 1];
+                int[] above = ColumnScan.logsAbove(
+                        air[0] ? null : Kinds.notable(names[0]), up -> {
+                            cursor.set(x, originY + up, z);
+                            BlockState state = level.getBlockState(cursor);
+                            if (state.isAir()) {
+                                return null;
+                            }
+                            trunk[up] = BuiltInRegistries.BLOCK
+                                    .getKey(state.getBlock()).toString();
+                            return Kinds.notable(trunk[up]);
+                        }, top + 1, TREE_UP);
+                for (int dy : above) {
+                    double distance = dx * dx + dy * dy + dz * dz;
+                    if (notable.wants("log", distance)) {
+                        notable.offer("log", distance, Json.array(
+                                Integer.toString(x),
+                                Integer.toString(originY + dy),
+                                Integer.toString(z),
+                                Json.quote(trunk[dy])));
                     }
                 }
 
