@@ -129,6 +129,31 @@ class NearestTests(unittest.TestCase):
     def test_unknown_kinds_are_dropped(self):
         self.assertEqual(self.select("log=4", [("pumpkin", 1, "p")]), [])
 
+    # ── entities ─────────────────────────────────────────────────────────
+
+    ENTITIES = "hostile=16,player=8,passive=12,item=12,other=8"
+
+    def test_a_zombie_behind_a_pile_of_drops_is_still_reported(self):
+        """After felling a tree: eighteen items and six sheep, and a zombie
+        that the level happened to list last. It used to be the 25th."""
+        offers = [("item", 2.0, f"item{i}") for i in range(18)]
+        offers += [("passive", 6.0, f"sheep{i}") for i in range(6)]
+        offers += [("hostile", 2.5, "zombie")]
+        kept = self.select(self.ENTITIES, offers, first=("hostile",))
+        self.assertEqual(kept[0], "zombie", "hostiles are listed first")
+        self.assertEqual(sum(1 for t in kept if t.startswith("item")), 12)
+
+    def test_the_nearest_hostiles_are_the_ones_kept(self):
+        offers = [("hostile", float(d), f"mob{d}") for d in range(30, 0, -1)]
+        kept = self.select(self.ENTITIES, offers, first=("hostile",))
+        self.assertEqual(kept[:3], ["mob1", "mob2", "mob3"])
+        self.assertEqual(len(kept), 16)
+
+    def test_unforeseen_entity_kinds_share_the_other_quota(self):
+        out = self.drive([f"group {c}" for c in
+                          ("hostile", "item", "misc", "creature")])
+        self.assertEqual(out[:4], ["hostile", "item", "other", "other"])
+
     # ── what counts as notable ───────────────────────────────────────────
 
     def test_kinds(self):

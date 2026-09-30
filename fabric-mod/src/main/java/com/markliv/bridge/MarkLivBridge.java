@@ -80,8 +80,18 @@ public class MarkLivBridge implements ClientModInitializer {
     /** Entities further than this are not reported. */
     private static final double NEARBY_RADIUS = 16.0;
 
-    /** Cap on reported entities, so a mob farm cannot produce a huge file. */
-    private static final int MAX_ENTITIES = 24;
+    /**
+     * How many nearby entities to report, per kind, nearest first; hostile
+     * mobs are listed before everything else.
+     *
+     * <p>Per kind because the first version kept the first 24 in the level's
+     * own order, and after felling a tree -- logs, saplings, sticks and
+     * apples on the ground -- a zombie could be the 25th. The danger check
+     * reads this list; a mob missing from it is a mob that is not there.
+     */
+    private static final Map<String, Integer> ENTITY_QUOTAS = Map.of(
+            "hostile", 16, "player", 8, "passive", 12, "item", 12,
+            "other", 8);
 
     /**
      * Horizontal reach of the terrain scan, in blocks.
@@ -469,21 +479,25 @@ public class MarkLivBridge implements ClientModInitializer {
     }
 
     private String nearbyJson(Minecraft client, Entity self) {
-        List<String> items = new ArrayList<>();
+        Nearest found = new Nearest(ENTITY_QUOTAS);
         var box = self.getBoundingBox().inflate(NEARBY_RADIUS);
         for (Entity entity : client.level.getEntities(self, box)) {
-            if (items.size() >= MAX_ENTITIES) {
-                break;
+            String category = categoryOf(entity);
+            String group = Kinds.entityGroup(category);
+            double distance = self.distanceTo(entity);
+            if (!found.wants(group, distance)) {
+                continue;
             }
-            items.add(Json.object(
+            found.offer(group, distance, Json.object(
                     "name", Json.quote(entityName(entity)),
-                    "distance", Json.number(self.distanceTo(entity)),
+                    "distance", Json.number(distance),
                     "position", Json.array(Json.number(entity.getX()),
                                            Json.number(entity.getY()),
                                            Json.number(entity.getZ())),
-                    "category", Json.quote(categoryOf(entity))));
+                    "category", Json.quote(category)));
         }
-        return Json.array(items.toArray(new String[0]));
+        return Json.array(found.select(List.of("hostile"))
+                .toArray(new String[0]));
     }
 
     /**

@@ -37,4 +37,17 @@ final class Kinds {
         }
         return null;
     }
+
+    /**
+     * Which quota an entity category counts against: its own for the kinds
+     * that matter to a decision, "other" for the rest (xp orbs, arrows,
+     * paintings, boats...), so an unforeseen category is still reported
+     * rather than dropped.
+     */
+    static String entityGroup(String category) {
+        return switch (category == null ? "" : category) {
+            case "hostile", "player", "passive", "item" -> category;
+            default -> "other";
+        };
+    }
 }
