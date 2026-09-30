@@ -2194,3 +2194,30 @@ class RerouteBudgetTests(unittest.TestCase):
         skill._note_progress((_record("move", (0.5, 64.0, 0.5),
                                       after=(3.5, 64.0, 0.5)),))
         self.assertEqual(skill._reroutes, 0)
+
+
+class NewRouteStartsAtItsStartTests(unittest.TestCase):
+    """N5: _walked reset to 0 for every new route, but _skip_to -- how far
+    the LAST route's smoothing had consumed -- did not. When the new route's
+    first waypoint was not a straight walk (a climb), the next step set
+    _walked = _skip_to + 1 from the old route and skipped the new one's
+    first waypoints."""
+
+    def test_a_new_route_does_not_inherit_the_old_skip(self):
+        state = state_from(step_up(from_x=1), position=(0.5, 64.0, 0.5),
+                           rotation=(270.0, 0.0))
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill._skip_to = 5                  # left over from an earlier route
+        step = skill.plan(state, 0, ())
+        self.assertEqual(step.action, "move_and_jump")
+        self.assertEqual(skill._walked, 1,
+                         "the new route's first waypoints were skipped")
+
+    def test_a_reroute_clears_it(self):
+        skill = skills.NavigateTo(destination=(6, 0))
+        skill._skip_to = 5
+        skill._reroute(stuck_diagnosis(), avoid=(3, 0))
+        self.assertEqual(skill._skip_to, 0)
+        skill._skip_to = 5
+        skill._reroute(stuck_diagnosis(), avoid=None)
+        self.assertEqual(skill._skip_to, 0)

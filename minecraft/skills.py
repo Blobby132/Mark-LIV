@@ -928,6 +928,7 @@ class NavigateTo:
                 self._blocked_by = ""       # there is a way round it now
             self._age_avoids()
             self._walked = 0
+            self._skip_to = 0       # it counted the old route's waypoints
             if not self._path.found:
                 self._stopped = self._path.reason
                 return None
@@ -1119,6 +1120,7 @@ class NavigateTo:
         if avoid is None:
             self._path = None
             self._walked = 0
+            self._skip_to = 0       # it counted the old route's waypoints
             return None
         if self._reroutes >= MAX_REROUTES:
             if self._blocked_by:
@@ -1135,6 +1137,7 @@ class NavigateTo:
         self._avoid_for(avoid, for_replans)
         self._path = None
         self._walked = 0
+        self._skip_to = 0       # it counted the old route's waypoints
         self._stalls = 0
         self._hopped = False
         return None
