@@ -158,5 +158,67 @@ class LoginRouteTests(unittest.TestCase):
         self.assertNotIn("__KEY_LENGTH__", page)
 
 
+
+@unittest.skipUnless(_app_available(), "needs fastapi to exercise the routes")
+class TokenLifetimeTests(unittest.TestCase):
+    """Login tokens lived until the process did, and a paired phone stayed
+    paired for ever unless someone called an endpoint with no button."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.clock = Clock()
+        self.srv = server.DashboardServer()
+        self.srv._now = self.clock
+        self.client = TestClient(self.srv.app)
+
+    def login(self):
+        key = self.srv.new_key()
+        r = self.client.post("/login", json={"pin": key})
+        return r.json()["token"]
+
+    def wake(self, token):
+        return self.client.post("/api/wake",
+                                headers={"Authorization": f"Bearer {token}"})
+
+    def test_a_login_token_expires(self):
+        token = self.login()
+        self.assertEqual(self.wake(token).status_code, 200)
+        self.clock.t += server.SESSION_TTL_S + 1
+        self.assertEqual(self.wake(token).status_code, 401)
+        self.assertNotIn(token, self.srv._tokens, "never pruned")
+
+    def test_expired_tokens_are_pruned_with_their_keys(self):
+        self.login()
+        self.clock.t += server.SESSION_TTL_S + 1
+        self.login()
+        self.assertEqual(len(self.srv._tokens), 1)
+        self.assertEqual(len(self.srv._aes_cache), 1)
+
+    def test_a_paired_device_expires(self):
+        key = self.srv.new_key()
+        page = self.client.get("/auto-login", params={"key": key}).text
+        import re
+        dev = re.search(r"jarvis_device_token','([^']+)'", page).group(1)
+        r = self.client.post("/api/device-login", json={"device_token": dev})
+        self.assertTrue(r.json()["ok"])
+        self.clock.t += server.DEVICE_TTL_S + 1
+        r = self.client.post("/api/device-login", json={"device_token": dev})
+        self.assertEqual(r.status_code, 401)
+
+    def test_revoking_signs_out_everyone_else(self):
+        mine, other = self.login(), self.login()
+        r = self.client.post("/api/revoke-devices",
+                             headers={"Authorization": f"Bearer {mine}"})
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(self.wake(mine).status_code, 200)
+        self.assertEqual(self.wake(other).status_code, 401,
+                         "another phone kept its login")
+
+    def test_the_page_has_the_control(self):
+        page = self.client.get("/").text
+        self.assertIn("doSignOutOthers", page)
+        self.assertIn("/api/revoke-devices", page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

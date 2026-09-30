@@ -121,6 +121,14 @@
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
     @keyframes mic-pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.65;transform:scale(0.97)} }
 
+    /* ── SIGN OUT OTHER DEVICES ── */
+    .btn-signout {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      font-size: 13px; line-height: 1; padding: 5px 8px; margin-left: 8px;
+      border-radius: 8px; cursor: pointer;
+    }
+    .btn-signout:hover { border-color: var(--accent); color: var(--accent); }
+
     /* ── TOAST ── */
     #toast {
       position:fixed; top:66px; left:50%; transform:translateX(-50%) translateY(-8px);
@@ -141,6 +149,8 @@
     <div class="enc-badge" id="enc">AES-256</div>
     <div class="spacer"></div>
     <div class="url">__IP__:__PORT__</div>
+    <button class="btn-signout" id="signout-others" onclick="doSignOutOthers()"
+            title="Sign out every other phone and forget paired devices">⏏</button>
   </header>
   <main id="feed"></main>
   <footer>
@@ -398,6 +408,20 @@
 
     // ── Toast ─────────────────────────────────────────────────────────────────
     let _toastTimer;
+    async function doSignOutOthers() {
+      if (!confirm('Sign out every other phone, and forget all paired '
+                   + 'devices? This phone stays connected, but will need '
+                   + 'the QR code next time.')) return;
+      try {
+        const r = await _authFetch('/api/revoke-devices', { method: 'POST' });
+        const d = await r.json();
+        if (d.ok) {
+          localStorage.removeItem('jarvis_device_token');
+          toast('Other devices signed out');
+        }
+      } catch (_) { toast('Could not reach JARVIS'); }
+    }
+
     function toast(msg) {
       const t = document.getElementById('toast');
       t.textContent = msg; t.classList.add('show');

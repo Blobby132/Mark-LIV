@@ -127,6 +127,14 @@ class LoginThrottle:
         self._failures.pop(address, None)
 
 
+SESSION_TTL_S = 12 * 3600
+"""How long a login lasts. A phone past it reconnects by itself through its
+device token; a token copied off it stops working."""
+
+DEVICE_TTL_S = 30 * 24 * 3600
+"""How long a paired phone stays paired without scanning the QR code again."""
+
+
 def _client_address(req) -> str:
     client = getattr(req, "client", None)
     return getattr(client, "host", None) or "unknown"
@@ -544,7 +552,8 @@ class DashboardServer:
 
     def __init__(self):
         self._ip                          = _local_ip()
-        self._tokens: set[str]            = set()
+        self._tokens: dict[str, float]    = {}   # auth_token → expires at
+        self._now                         = time.time
         self._token_keys: dict[str, str]  = {}   # auth_token → session_key
         self._aes_cache:  dict[str, bytes]= {}   # session_key → AES bytes
         self._clients: set[WebSocket]     = set()
@@ -584,6 +593,45 @@ class DashboardServer:
         if self._ssl_enabled():
             return f"{self._ip}:{PORT + 1}"
         return f"{self._ip}:{PORT}"
+
+    # ── tokens ───────────────────────────────────────────────────────────
+
+    def _issue_token(self, session_key: str) -> str:
+        """A new login token, good for SESSION_TTL_S."""
+        self._prune()
+        tok = secrets.token_urlsafe(32)
+        self._tokens[tok] = self._now() + SESSION_TTL_S
+        self._token_keys[tok] = session_key
+        self._aes_key(session_key)
+        return tok
+
+    def _token_ok(self, tok: str) -> bool:
+        expires = self._tokens.get(tok or "")
+        if expires is None:
+            return False
+        if expires <= self._now():
+            self._drop_token(tok)
+            return False
+        return True
+
+    def _drop_token(self, tok: str) -> None:
+        self._tokens.pop(tok, None)
+        self._token_keys.pop(tok, None)
+
+    def _prune(self) -> None:
+        """Forget expired tokens and paired devices, and the keys only they
+        used. Tokens used to live until the process did."""
+        now = self._now()
+        for tok, expires in list(self._tokens.items()):
+            if expires <= now:
+                self._drop_token(tok)
+        for dev, info in list(self._device_sessions.items()):
+            if info.get("expires", 0) <= now:
+                del self._device_sessions[dev]
+        live = set(self._token_keys.values()) | {
+            info["session_key"] for info in self._device_sessions.values()}
+        self._aes_cache = {k: v for k, v in self._aes_cache.items()
+                           if k in live}
 
     def _aes_key(self, session_key: str) -> bytes:
         if session_key not in self._aes_cache:
@@ -628,7 +676,7 @@ class DashboardServer:
 
         def _auth(req: Request) -> bool:
             tok = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
-            return bool(tok) and tok in self._tokens
+            return self._token_ok(tok)
 
         # serve CryptoJS from local cache, fallback to CDN redirect
         @app.get("/static/crypto.js")
@@ -671,10 +719,7 @@ class DashboardServer:
             if entered in self._pending_keys and self._pending_keys[entered] > now:
                 self._throttle.succeeded(address)
                 del self._pending_keys[entered]          # one-time use
-                tok = secrets.token_urlsafe(32)
-                self._tokens.add(tok)
-                self._token_keys[tok] = entered
-                self._aes_key(entered)                   # pre-derive & cache
+                tok = self._issue_token(entered)
                 if self._connect_callback:
                     self._connect_callback()
                 asyncio.create_task(self.broadcast(
@@ -709,12 +754,10 @@ class DashboardServer:
 
             del self._pending_keys[key]
             self._throttle.succeeded(address)
-            tok     = secrets.token_urlsafe(32)
+            tok     = self._issue_token(key)
             dev_tok = secrets.token_urlsafe(32)
-            self._tokens.add(tok)
-            self._token_keys[tok] = key
-            self._aes_key(key)
-            self._device_sessions[dev_tok] = {"session_key": key}
+            self._device_sessions[dev_tok] = {
+                "session_key": key, "expires": self._now() + DEVICE_TTL_S}
 
             if self._connect_callback:
                 self._connect_callback()
@@ -752,14 +795,12 @@ class DashboardServer:
             except Exception:
                 return JSONResponse({"ok": False}, status_code=400)
             dev_tok = (body.get("device_token") or "").strip()
+            self._prune()
             if not dev_tok or dev_tok not in self._device_sessions:
                 self._throttle.failed(address)
                 return JSONResponse({"ok": False}, status_code=401)
             session_key = self._device_sessions[dev_tok]["session_key"]
-            tok = secrets.token_urlsafe(32)
-            self._tokens.add(tok)
-            self._token_keys[tok] = session_key
-            self._aes_key(session_key)
+            tok = self._issue_token(session_key)
             if self._connect_callback:
                 self._connect_callback()
             asyncio.create_task(self.broadcast(
@@ -769,12 +810,20 @@ class DashboardServer:
 
         @app.post("/api/revoke-devices")
         async def revoke_devices(req: Request):
-            """Invalidate all persistent device tokens (admin action)."""
+            """Sign out every other device: all paired-device tokens, and
+            every login except the one asking. A lost phone otherwise kept
+            its login until the token's lifetime ran out."""
             if not _auth(req):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            mine = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
             count = len(self._device_sessions)
             self._device_sessions.clear()
-            return JSONResponse({"ok": True, "revoked": count})
+            others = [t for t in self._tokens if t != mine]
+            for tok in others:
+                self._drop_token(tok)
+            self._prune()
+            return JSONResponse({"ok": True, "revoked": count,
+                                 "signed_out": len(others)})
 
         @app.post("/api/command")
         async def command(req: Request):
@@ -808,7 +857,7 @@ class DashboardServer:
         @app.websocket("/ws/phone-audio")
         async def phone_audio_ws(websocket: WebSocket, token: str = ""):
             tok = token.strip()
-            if not tok or tok not in self._tokens:
+            if not self._token_ok(tok):
                 await websocket.close(code=4001)
                 return
             await websocket.accept()
@@ -911,7 +960,7 @@ class DashboardServer:
         async def download_file(filename: str, token: str = ""):
             # Auth via query param — browser <a download> can't send custom headers
             tok = token.strip()
-            if not tok or tok not in self._tokens:
+            if not self._token_ok(tok):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
             safe = re.sub(r'[/\\]', '', filename)
             path = self._uploads_dir / safe
@@ -922,7 +971,7 @@ class DashboardServer:
         @app.websocket("/ws")
         async def ws_ep(websocket: WebSocket, token: str = ""):
             tok = token.strip()
-            if not tok or tok not in self._tokens:
+            if not self._token_ok(tok):
                 await websocket.close(code=4001)
                 return
             await websocket.accept()
