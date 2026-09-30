@@ -7,16 +7,21 @@ WHY A SESSION AND NOT PER-ACTION CONFIRMATION
     people turn it off, or learn to click through it without reading, which is
     the same thing.
 
-    So the human makes ONE decision — "you may drive Minecraft for the next
-    five minutes" — and that decision is what `minecraft.control_session`
-    (CONFIRM) buys. Inside the session, `minecraft.move` and `minecraft.look`
-    are ALLOW. Outside it they are refused before a key is touched.
+    So the human makes ONE decision — "you may drive Minecraft until I say
+    stop", or for a set time if they ask for one — and that decision is what
+    `minecraft.control_session` (CONFIRM) buys. Inside the session,
+    `minecraft.move` and `minecraft.look` are ALLOW. Outside it they are
+    refused before a key is touched.
 
 WHAT MAKES THE BARGAIN HONEST
     The session is bounded in every direction a person would care about:
 
-      - it expires on the clock, at most 300 seconds
-      - it ends when Minecraft stops being the foreground window
+      - by default it has no timer and lasts until stopped -- the banner
+        says so in those words; see UNLIMITED for why that is still
+        bounded. A timed session, if asked for, expires on the clock, at
+        most MAX_SESSION_SECONDS (300)
+      - Minecraft leaving the foreground while a key is held ends it; with
+        nothing held, nothing is sent until the game is in front again
       - it ends when the game process goes away
       - it ends on F12, or on `stop`, immediately
       - it cannot be extended; asking for more is a new confirmation
@@ -36,7 +41,9 @@ import uuid
 from dataclasses import dataclass, field
 
 MAX_SESSION_SECONDS = 300.0
-"""Five minutes. Not a default that can be raised — `start()` clamps to it."""
+"""Five minutes: the longest TIMED session. Not a default that can be raised
+— `start()` clamps to it. A session with no timer is asked for separately
+(UNLIMITED), and is what the user gets by default."""
 
 DEFAULT_SESSION_SECONDS = 120.0
 """What you get if nobody says. Deliberately well under the maximum: most
