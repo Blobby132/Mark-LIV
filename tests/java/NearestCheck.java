@@ -13,6 +13,7 @@ import java.util.Map;
  * <p>Input, one per line: {@code quotas cat=n,cat=n}, {@code first cat,cat},
  * {@code offer cat distance label}, {@code kind name} (prints the block's
  * notable kind), {@code group category} (prints an entity's quota group),
+ * {@code stack name count} (prints a dropped item's JSON, or null),
  * and {@code select} (prints the kept labels in order, one
  * per line, then {@code end}).
  */
@@ -45,6 +46,8 @@ final class NearestCheck {
                 case "kind" -> System.out.println(Kinds.notable(parts[1]));
                 case "group" -> System.out.println(
                         Kinds.entityGroup(parts[1]));
+                case "stack" -> System.out.println(Kinds.stackJson(
+                        parts[1], Integer.parseInt(parts[2])));
                 case "select" -> {
                     for (String label : nearest.select(first)) {
                         System.out.println(label);

@@ -488,13 +488,26 @@ public class MarkLivBridge implements ClientModInitializer {
             if (!found.wants(group, distance)) {
                 continue;
             }
-            found.offer(group, distance, Json.object(
-                    "name", Json.quote(entityName(entity)),
-                    "distance", Json.number(distance),
-                    "position", Json.array(Json.number(entity.getX()),
-                                           Json.number(entity.getY()),
-                                           Json.number(entity.getZ())),
-                    "category", Json.quote(category)));
+            String name = Json.quote(entityName(entity));
+            String position = Json.array(Json.number(entity.getX()),
+                                         Json.number(entity.getY()),
+                                         Json.number(entity.getZ()));
+            // What a dropped item IS, for item entities only. Additive:
+            // older readers ignore the key, and without it (an older jar)
+            // the reader says it does not know.
+            String stack = entity instanceof
+                    net.minecraft.world.entity.item.ItemEntity dropped
+                    ? stackJson(dropped.getItem()) : null;
+            found.offer(group, distance, stack == null
+                    ? Json.object("name", name,
+                                  "distance", Json.number(distance),
+                                  "position", position,
+                                  "category", Json.quote(category))
+                    : Json.object("name", name,
+                                  "distance", Json.number(distance),
+                                  "position", position,
+                                  "category", Json.quote(category),
+                                  "item", stack));
         }
         return Json.array(found.select(List.of("hostile"))
                 .toArray(new String[0]));
@@ -553,6 +566,15 @@ public class MarkLivBridge implements ClientModInitializer {
                 "slot", Integer.toString(slot),
                 "name", Json.quote(name),
                 "count", Integer.toString(stack.getCount()));
+    }
+
+    private static String stackJson(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return null;
+        }
+        return Kinds.stackJson(
+                BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(),
+                stack.getCount());
     }
 
     private static String entityName(Entity entity) {

@@ -80,11 +80,13 @@ class EntityRef:
     hostile: bool | None = None
     position: tuple | None = None      # (x, y, z)
     category: str | None = None        # hostile / passive / player / item
+    item: "ItemStack | None" = None    # a dropped item: what it is, if said
 
     def as_dict(self) -> dict:
         return {"name": self.name, "distance": self.distance,
                 "hostile": self.hostile, "position": self.position,
-                "category": self.category}
+                "category": self.category,
+                "item": self.item.as_dict() if self.item else None}
 
 
 @dataclass(frozen=True)

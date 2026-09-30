@@ -50,4 +50,31 @@ final class Kinds {
             default -> "other";
         };
     }
+
+    /**
+     * What a dropped item is, as the {@code "item"} of its entity entry:
+     * {@code {"name":"minecraft:oak_log","count":3}}. Without it every drop
+     * was just {@code minecraft:item}, and the pickup could not tell the log
+     * it had broken from a sapling falling out of the leaves.
+     *
+     * <p>Returns null -- no field at all -- for anything that is not a
+     * registry name. Registry names are lower-case letters, digits and
+     * {@code _-./:}, so nothing here ever needs escaping; refusing the rest
+     * keeps it that way rather than trusting a modded name.
+     */
+    static String stackJson(String name, int count) {
+        if (name == null || name.isEmpty()) {
+            return null;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            boolean plain = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                    || c == '_' || c == '-' || c == '.' || c == '/'
+                    || c == ':';
+            if (!plain) {
+                return null;
+            }
+        }
+        return "{\"name\":\"" + name + "\",\"count\":" + count + "}";
+    }
 }

@@ -100,6 +100,13 @@ DROP_RADIUS = 4.0
 treated as its drops and fetched. Further than that, an item on the ground is
 somebody else's business."""
 
+def _could_be_a_log(entity) -> bool:
+    """A dropped item that is a log -- or that might be, when an older jar
+    does not say what the item is."""
+    stack = getattr(entity, "item", None)
+    return stack is None or getattr(stack, "name", None) in LOG_BLOCKS
+
+
 _ARRIVED = object()
 """What _walk_towards returns when the walk is over and nothing is left to
 step: the caller decides what arriving means, instead of a filler step."""
@@ -1932,10 +1939,16 @@ class CollectLogs:
                           f"({self._fetching or where})"))
 
     def _drops(self, state):
-        """Items on the ground near blocks this task broke, nearest first."""
+        """Logs on the ground near blocks this task broke, nearest first.
+
+        Saplings, sticks and apples fall out of the leaves round a felled
+        tree; walking to those collects nothing this task counts. A jar that
+        says what each item is lets them be left; an older one does not, and
+        then every item near a break is still worth a look."""
         items = [e for e in (getattr(state, "nearby_entities", None) or ())
                  if getattr(e, "category", None) == "item"
-                 and getattr(e, "position", None) is not None]
+                 and getattr(e, "position", None) is not None
+                 and _could_be_a_log(e)]
         if not items or state.position is None:
             return []
         anchors = self._broken_at or [tuple(state.position)]

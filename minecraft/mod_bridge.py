@@ -474,7 +474,20 @@ def _entity(value):
         hostile = False
     return EntityRef(name=name, distance=_number(value.get("distance")),
                      position=_triple(value.get("position")),
-                     category=category, hostile=hostile)
+                     category=category, hostile=hostile,
+                     item=_dropped_stack(value.get("item")))
+
+
+def _dropped_stack(value):
+    """What a dropped item is: {"name", "count"}, sent for item entities by
+    jars since the item-stack change, and absent from older ones. Anything
+    not that shape is unknown, not guessed at."""
+    if not isinstance(value, dict):
+        return None
+    name = _short_name(value.get("name"))
+    if name is None:
+        return None
+    return ItemStack(name=name, count=_integer(value.get("count")))
 
 
 def _terrain_block(value):
