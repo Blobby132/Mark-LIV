@@ -159,6 +159,29 @@ class LoginRouteTests(unittest.TestCase):
 
 
 
+class TransportTests(unittest.TestCase):
+    """The review asked for AES-GCM, or HTTPS by default when certs exist.
+    The second is already so -- pinned here so it stays so. serve() makes a
+    self-signed pair on first run (_ensure_certs) whenever `cryptography`
+    is installed, and serves HTTPS whenever a pair exists; the AES layer
+    needs that same package to decrypt at all, so the unauthenticated CBC
+    layer only ever runs inside TLS."""
+
+    def test_serve_makes_certs_before_choosing_the_scheme(self):
+        body = SOURCE[SOURCE.index("async def serve(self)"):]
+        self.assertLess(body.index("_ensure_certs()"),
+                        body.index("use_ssl  = self._ssl_enabled()"))
+
+    def test_urls_are_https_whenever_certs_exist(self):
+        import unittest.mock
+        srv = server.DashboardServer.__new__(server.DashboardServer)
+        srv._ip = "192.168.1.5"
+        with unittest.mock.patch.object(server.DashboardServer,
+                                        "_ssl_enabled",
+                                        staticmethod(lambda: True)):
+            self.assertTrue(srv.get_url().startswith("https://"))
+
+
 @unittest.skipUnless(_app_available(), "needs fastapi to exercise the routes")
 class TokenLifetimeTests(unittest.TestCase):
     """Login tokens lived until the process did, and a paired phone stayed
