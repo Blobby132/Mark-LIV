@@ -181,11 +181,9 @@ def _crosshair_text(state) -> str:
     return f"crosshair on {name} {position}"
 
 
-# Blocks that count as "a tree" for FindBlock's default search.
-LOG_BLOCKS = frozenset({
-    "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
-    "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log",
-})
+# Blocks that count as "a tree" for FindBlock's default search. One
+# definition, in navigation.py: there used to be a copy here too.
+LOG_BLOCKS = nav.LOG_BLOCKS
 
 
 class Skill(Protocol):

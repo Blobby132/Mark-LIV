@@ -19,7 +19,8 @@ final class Kinds {
      * positive, which costs a wasted walk rather than a wrong belief.
      */
     static String notable(String name) {
-        if (name.endsWith("_log") || name.endsWith("_wood")) {
+        if (name.endsWith("_log") || name.endsWith("_wood")
+                || name.endsWith("_hyphae") || woodyStem(name)) {
             return "log";
         }
         if (name.endsWith("_ore")) {
@@ -36,6 +37,17 @@ final class Kinds {
             return "station";
         }
         return null;
+    }
+
+    /**
+     * A Nether fungus's trunk -- crimson_stem, warped_stem, or a modded one
+     * -- and not the other things called stems: a huge mushroom's, or the
+     * stalk a melon or pumpkin grows from.
+     */
+    private static boolean woodyStem(String name) {
+        return name.endsWith("_stem") && !name.endsWith("mushroom_stem")
+                && !name.endsWith("melon_stem")
+                && !name.endsWith("pumpkin_stem");
     }
 
     /**

@@ -88,21 +88,44 @@ HAZARDS = frozenset({
     "lava", "flowing_lava", "fire", "soul_fire", "magma_block", "cactus",
     "sweet_berry_bush", "wither_rose", "powder_snow", "campfire",
     "soul_campfire", "cobweb",
+    # Hurts to land on; a floor of them is no floor.
+    "pointed_dripstone", "lava_cauldron",
+    # Somewhere else entirely, one step in.
+    "nether_portal", "end_portal", "end_gateway",
+    # Wakes the warden, or springs a temple's trap.
+    "sculk_shrieker", "sculk_sensor", "calibrated_sculk_sensor", "tripwire",
 })
 
 LIQUIDS = frozenset({"water", "flowing_water", "lava", "flowing_lava"})
 
-LOG_BLOCKS = frozenset({
-    "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
-    "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log",
-})
+_TREES = ("oak", "birch", "spruce", "jungle", "acacia", "dark_oak",
+          "mangrove", "cherry", "pale_oak")
+_FUNGI = ("crimson", "warped")
+
+LOG_BLOCKS = frozenset({f"{tree}_log" for tree in _TREES}
+                       | {f"{fungus}_stem" for fungus in _FUNGI})
+"""Natural tree trunks: what finding and felling a tree works on. The one
+definition -- skills.py uses this one. The Nether's huge fungi are trees too:
+without their stems, collect_logs in a crimson forest found none."""
+
+WOOD_BLOCKS = LOG_BLOCKS | frozenset(
+    {f"{tree}_wood" for tree in _TREES}
+    | {f"{fungus}_hyphae" for fungus in _FUNGI}
+    | {f"stripped_{tree}_{part}" for tree in _TREES
+       for part in ("log", "wood")}
+    | {f"stripped_{fungus}_{part}" for fungus in _FUNGI
+       for part in ("stem", "hyphae")})
+"""Everything log-like, for the "wood" category: walking to it, finding it.
+Stripped logs and _wood blocks do not grow on trees -- they are what cabins
+are built of -- so they are not LOG_BLOCKS, and "fell the tree" never takes
+one apart."""
 
 ORE_SUFFIX = "_ore"
 
 # Named categories a person might ask for, mapped to what counts.
 CATEGORIES = {
     "log": LOG_BLOCKS,
-    "wood": LOG_BLOCKS,
+    "wood": WOOD_BLOCKS,
     "tree": LOG_BLOCKS,
     "stone": frozenset({"stone", "cobblestone", "andesite", "diorite",
                         "granite", "deepslate", "tuff"}),
@@ -918,7 +941,7 @@ __all__ = [
     "pixels_per_degree_at", "use_sensitivity",
     "line_is_walkable" if False else "furthest_clear", "MAX_SMOOTHING",
     "MAX_STEP_UP", "MAX_DROP", "MAX_NODES", "MAX_PATH_LENGTH",
-    "HAZARDS", "LIQUIDS", "LOG_BLOCKS", "CATEGORIES",
+    "HAZARDS", "LIQUIDS", "LOG_BLOCKS", "WOOD_BLOCKS", "CATEGORIES",
     "Obstacle", "obstacle_ahead", "PLAYER_HEIGHT", "JUMP_CLEARANCE",
     "CLEAR", "STEP_UP", "JUMPABLE", "WALL", "HEAD_BLOCKED", "DROP",
     "CLIFF", "HAZARD", "LIQUID", "UNSEEN",
