@@ -67,6 +67,7 @@ import time
 from dataclasses import dataclass, field
 
 from minecraft import verification as verify_mod
+from minecraft import danger as danger_mod
 from minecraft import action_spec
 from minecraft import navigation as nav
 from minecraft.errors import InvalidAction
@@ -142,6 +143,7 @@ FAILED = "failed"
 STEP_LIMIT = "step_limit"
 TIME_LIMIT = "time_limit"
 STUCK = "stuck"
+DANGER = "danger"
 
 # The complete set of actions a skill may ask for. A name outside this table is
 # not forwarded anywhere — see the module docstring.
@@ -353,6 +355,18 @@ class TaskRunner:
         if sensitivity is not None:
             nav.use_sensitivity(sensitivity)
 
+        # Looking up from the job between steps: a hostile mob close by, or
+        # health going down, ends the task and says so. A skill that expects
+        # to be hurt while it runs -- eating while starving -- opts out of
+        # the health half, never the mob half.
+        watch = danger_mod.DangerWatch(
+            watch_health=getattr(skill, "watch_health", True))
+        danger = watch.check(state)
+        if danger:
+            return self._result(STOPPED, goal,
+                                f"{DANGER}: {danger}, so I did not start",
+                                records, state)
+
         for index in range(limit):
             blocked = self._stop_reason()
             if blocked:
@@ -390,6 +404,15 @@ class TaskRunner:
             records.append(record)
             self._learn_the_mouse(record)
             self.progress.record(step.action, record.verification)
+
+            danger = watch.check(state)
+            if danger:
+                self._account(skill, state, records)
+                so_far = getattr(skill, "done_reason", "")
+                reason = f"{DANGER}: {danger}, so I stopped"
+                if so_far:
+                    reason += f". Before that: {so_far}"
+                return self._result(STOPPED, goal, reason, records, state)
 
             # Stuck: the same action, the same relevant state, over and over.
             # The step limit would catch this eventually; catching it here
