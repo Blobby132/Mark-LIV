@@ -30,6 +30,17 @@ from minecraft.ledger import InputLedger                          # noqa: E402
 from minecraft.session import SessionManager                      # noqa: E402
 
 from tests.test_minecraft_controller import FakeLocator, FakeProcess  # noqa: E402
+from minecraft import controller as controller_mod                # noqa: E402
+
+
+class Clock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
 
 
 # ── The key allowlist ────────────────────────────────────────────────────────
@@ -424,11 +435,11 @@ class TestWindowProbeRobustness(unittest.TestCase):
     the enumeration callback swallowed it, no windows were found, and the
     guard called that a closed game."""
 
-    def _controller(self, locator):
+    def _controller(self, locator, clock=None):
         return MinecraftController(
             backend=FakeInputBackend(), locator=locator,
             sessions=SessionManager(), process_module=FakeProcess(),
-            start_watchers=False, focus_wait_s=0.0)
+            start_watchers=False, focus_wait_s=0.0, clock=clock)
 
     def test_one_missed_probe_does_not_end_anything(self):
         locator = FakeLocator()
@@ -442,26 +453,67 @@ class TestWindowProbeRobustness(unittest.TestCase):
             controller.stop("test")
 
     def test_two_consecutive_misses_do_stop_it(self):
-        """A real close never recovers, so patience must not be unlimited."""
+        """A real close never recovers, so patience must not be unlimited.
+        (Consecutive in TIME since C9: misses at least WINDOW_MISS_SPAN_S
+        apart, which the hold loop's 40ms tick always is.)"""
         locator = FakeLocator()
-        controller = self._controller(locator)
+        clock = Clock()
+        controller = self._controller(locator, clock)
         try:
             controller.start_session(duration_s=60)
             locator.found = False
             controller._guard()
+            clock.t += 0.04
+            self.assertEqual(controller._guard(), "window_gone")
+        finally:
+            controller.stop("test")
+
+    def test_a_blip_seen_twice_in_a_row_is_still_one_blip(self):
+        """C9: the guard is called from several places, some back to back
+        (the runner's check between steps, then the action's own), so one
+        enumeration blip of a few milliseconds could be seen twice -- and
+        the second counted as the game having closed."""
+        locator = FakeLocator()
+        clock = Clock()
+        controller = self._controller(locator, clock)
+        try:
+            controller.start_session(duration_s=60)
+            locator.found = False
+            self.assertEqual(controller._guard(), "")
+            clock.t += 0.002
+            self.assertEqual(controller._guard(), "",
+                             "two looks at one blip ended the session")
+            locator.found = True
+            self.assertEqual(controller._guard(), "")
+        finally:
+            controller.stop("test")
+
+    def test_patience_is_bounded_in_time_not_in_calls(self):
+        locator = FakeLocator()
+        clock = Clock()
+        controller = self._controller(locator, clock)
+        try:
+            controller.start_session(duration_s=60)
+            locator.found = False
+            for _ in range(5):
+                self.assertEqual(controller._guard(), "")
+                clock.t += 0.005
+            clock.t += controller_mod.WINDOW_MISS_SPAN_S
             self.assertEqual(controller._guard(), "window_gone")
         finally:
             controller.stop("test")
 
     def test_the_counter_resets_when_the_window_comes_back(self):
         locator = FakeLocator()
-        controller = self._controller(locator)
+        clock = Clock()
+        controller = self._controller(locator, clock)
         try:
             controller.start_session(duration_s=60)
             locator.found = False
             controller._guard()            # one miss
             locator.found = True
             self.assertEqual(controller._guard(), "")
+            clock.t += 1.0
             locator.found = False
             self.assertEqual(controller._guard(), "",
                              "the earlier miss should not still count")

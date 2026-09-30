@@ -59,6 +59,11 @@ from minecraft.window import Locator
 # of movement happens after focus is lost.
 TICK_SECONDS = 0.04
 
+# How long the window may go unseen before the guard calls it gone: less than
+# one hold tick, so a closed game still stops the very next tick, but longer
+# than the same enumeration blip seen by two guard calls back to back.
+WINDOW_MISS_SPAN_S = 0.03
+
 # How often, during a hold, the injected hazard check is asked. The bridge
 # publishes every 200ms; asking every tick would read the same snapshot five
 # times over.
@@ -153,7 +158,7 @@ class MinecraftController:
     def __init__(self, backend=None, locator=None, sessions=None,
                  process_module=None, emergency=None, start_watchers=True,
                  focus_wait_s: float = FOCUS_WAIT_SECONDS,
-                 progress_probe=None, hazard_probe=None):
+                 progress_probe=None, hazard_probe=None, clock=None):
         self._backend = backend if backend is not None else create_backend()
         self._locator = locator if locator is not None else Locator()
         self._sessions = sessions if sessions is not None else SessionManager()
@@ -162,9 +167,11 @@ class MinecraftController:
 
         self._lock = threading.RLock()
         self._cancel = threading.Event()
-        # Consecutive probes that could not see the window. One miss is
-        # tolerated; see _guard.
-        self._window_misses = 0
+        # When the current run of probes that could not see the window
+        # began, or None. A run shorter than WINDOW_MISS_SPAN_S is tolerated;
+        # see _guard.
+        self._clock = clock if clock is not None else time.monotonic
+        self._first_miss_at = None
         self._last_stop_reason = ""
         self._action_in_flight = ""
 
@@ -256,22 +263,27 @@ class MinecraftController:
 
         info = self._locator.probe()
         if not info.found:
-            # Tolerate ONE miss. Enumerating windows can fail transiently --
+            # Tolerate a BLIP. Enumerating windows can fail transiently --
             # it did, spectacularly, when the ctypes prototypes were being
             # re-declared from several threads at once -- and treating a
-            # single blip as "the game closed" ends the task and costs the
-            # user a fresh confirmation for something that never happened.
+            # blip as "the game closed" ends the task and costs the user a
+            # fresh confirmation for something that never happened.
             #
-            # A real close never recovers, so the second consecutive miss
-            # (40ms later) still stops everything. This buys one tick of
-            # patience, not a reason to keep pressing keys at a window that
-            # is gone.
+            # Measured in time, not in calls. This runs from the hold loop,
+            # the supervisor and the runner, sometimes back to back, so
+            # "the second miss" could be the same blip seen twice a few
+            # microseconds apart. A real close never recovers, so misses
+            # spanning WINDOW_MISS_SPAN_S -- less than one 40ms hold tick --
+            # still stop everything: patience for a blip, not a reason to
+            # keep pressing keys at a window that is gone.
+            now = self._clock()
             with self._lock:
-                self._window_misses += 1
-                missed = self._window_misses
-            return "window_gone" if missed > 1 else ""
+                if self._first_miss_at is None:
+                    self._first_miss_at = now
+                gone = now - self._first_miss_at >= WINDOW_MISS_SPAN_S
+            return "window_gone" if gone else ""
         with self._lock:
-            self._window_misses = 0
+            self._first_miss_at = None
         if not info.focus_known:
             return "focus_unknown"
         if not info.foreground:
