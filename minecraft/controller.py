@@ -59,6 +59,11 @@ from minecraft.window import Locator
 # of movement happens after focus is lost.
 TICK_SECONDS = 0.04
 
+# How often, during a hold, the injected hazard check is asked. The bridge
+# publishes every 200ms; asking every tick would read the same snapshot five
+# times over.
+HAZARD_CHECK_SECONDS = 0.1
+
 # The supervisor's own cadence. Slower: it only exists for the case where the
 # action loop has stopped ticking at all.
 SUPERVISOR_SECONDS = 0.2
@@ -148,7 +153,7 @@ class MinecraftController:
     def __init__(self, backend=None, locator=None, sessions=None,
                  process_module=None, emergency=None, start_watchers=True,
                  focus_wait_s: float = FOCUS_WAIT_SECONDS,
-                 progress_probe=None):
+                 progress_probe=None, hazard_probe=None):
         self._backend = backend if backend is not None else create_backend()
         self._locator = locator if locator is not None else Locator()
         self._sessions = sessions if sessions is not None else SessionManager()
@@ -194,6 +199,12 @@ class MinecraftController:
         # source: this package stays input-only, and the controller should
         # not learn how to read the game just to know when to stop pressing.
         self._progress_probe = progress_probe
+
+        # `hazard_probe(action)` -> a check to call while that action's keys
+        # are down, returning a sentence when the player is in danger, or
+        # None for no check. Injected for the same reason: the controller
+        # lets go, the caller decides what danger is.
+        self._hazard_probe = hazard_probe
 
         self._sessions.on_end(self._on_session_end)
 
@@ -280,6 +291,25 @@ class MinecraftController:
             return self._progress_probe()
         except Exception:
             return None
+
+    def _hazard_for(self, action: str):
+        """This hold's danger check, or None. Never raises."""
+        if self._hazard_probe is None:
+            return None
+        try:
+            check = self._hazard_probe(action)
+        except Exception:
+            return None
+        return check if callable(check) else None
+
+    @staticmethod
+    def _danger(check) -> str:
+        """A danger sentence, or "". A check that fails is no danger: the
+        hold is still bounded by its duration, the deadman and the guard."""
+        try:
+            return str(check() or "")
+        except Exception:
+            return ""
 
     def _await_focus(self, seconds: float | None = None,
                      epoch: int | None = None) -> str:
@@ -672,6 +702,20 @@ class MinecraftController:
         with self._lock:
             self._action_in_flight = action
 
+        # Danger already present: press nothing at all.
+        hazard = self._hazard_for(action)
+        danger = self._danger(hazard) if hazard is not None else ""
+        if danger:
+            with self._lock:
+                self._action_in_flight = ""
+            return ActionResult(
+                ok=False, action=action, requested=requested,
+                actual_duration_ms=0, stopped_reason="danger",
+                clamped=clamped, error_class="Danger",
+                error=f"I did not start: {danger}.",
+            )
+        next_hazard_check = time.monotonic() + HAZARD_CHECK_SECONDS
+
         baseline = self._probe() if stop_when_changed else None
         finished_early = False
         changed_for = 0
@@ -699,6 +743,17 @@ class MinecraftController:
                 if self._aborted(epoch):
                     stopped_reason = "cancelled"
                     break
+
+                # Danger, checked while the keys are down: a mine holds for
+                # up to ten seconds, and a zombie arriving one second in used
+                # to get the other nine. Every HAZARD_CHECK_SECONDS rather than
+                # every tick -- the bridge only publishes five times a second.
+                if hazard is not None and time.monotonic() >= next_hazard_check:
+                    next_hazard_check = time.monotonic() + HAZARD_CHECK_SECONDS
+                    danger = self._danger(hazard)
+                    if danger:
+                        stopped_reason = "danger"
+                        break
 
                 # Mining: let go once the target has changed. Holding on past
                 # that wastes the rest of the budget and starts breaking
@@ -745,6 +800,8 @@ class MinecraftController:
         if stopped_reason == "cancelled" and not error:
             return self._cancelled_result(action, requested, clamped,
                                           elapsed_ms, released)
+        if stopped_reason == "danger" and not error:
+            error = f"I let go: {danger}."
         ok = stopped_reason is None and not error
         if finished_early:
             requested = dict(requested)
@@ -1143,6 +1200,7 @@ def _explain(reason: str | None) -> str:
                 "pressed nothing.",
         "target_not_confirmed": "The crosshair was not confirmed on the "
                                 "intended block, so nothing was pressed.",
+        "danger": "I let go because the player was in danger.",
     }.get(reason or "", "")
 
 

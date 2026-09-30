@@ -32,6 +32,7 @@ from minecraft import capabilities as mc_phase
 from minecraft import navigation as mc_nav
 from minecraft import perception as mc_perception
 from minecraft import skills as mc_skills
+from minecraft import danger as mc_danger
 from minecraft.controller import MinecraftController
 from minecraft.debug_overlay import DebugOverlayStateSource, NEEDS_MOD_BRIDGE
 from minecraft.mod_bridge import ModBridgeStateSource
@@ -85,10 +86,46 @@ def _target_probe():
     return (block.name, block.x, block.y, block.z)
 
 
+# Danger inside a hold, per kind of action: (hostile radius, health lost).
+# Working holds -- mining for up to ten seconds, eating, using a block --
+# let go for a zombie three blocks off or a heart lost. Walking is looser,
+# because walking is how you get AWAY: only a mob right on top of you, or
+# two hearts gone, stops a stride. Attacking and using an item (a shield, a
+# bow) are how you fight, so the mob being there is the point: no check.
+_HAZARD_THRESHOLDS = {
+    "mine": (3.0, 2.0), "eat": (3.0, 2.0), "interact": (3.0, 2.0),
+    "place": (3.0, 2.0),
+    "move": (1.5, 4.0), "move_and_jump": (1.5, 4.0), "sprint": (1.5, 4.0),
+    "sneak": (1.5, 4.0),
+}
+
+
+def _hazard_probe(action):
+    """The controller's `hazard_probe`: a check for one hold, or None.
+
+    The check compares against the health at the start of the hold, so
+    damage taken before it started -- already reported by the task's own
+    danger watch -- does not stop it."""
+    thresholds = _HAZARD_THRESHOLDS.get(str(action))
+    if thresholds is None:
+        return None
+    radius, hurt_by = thresholds
+    watch = mc_danger.DangerWatch(hostile_radius=radius, hurt_by=hurt_by)
+    try:
+        watch.check(_get_state_source().read())       # the starting health
+    except Exception:
+        return None
+
+    def check():
+        return watch.check(_get_state_source().read())
+    return check
+
+
 def _get_controller() -> MinecraftController:
     global _controller, _observer
     if _controller is None:
-        _controller = MinecraftController(progress_probe=_target_probe)
+        _controller = MinecraftController(progress_probe=_target_probe,
+                                          hazard_probe=_hazard_probe)
         _observer = Observer(_controller._locator)
     return _controller
 

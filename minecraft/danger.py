@@ -71,17 +71,21 @@ class DangerWatch:
     the last one."""
 
     def __init__(self, watch_health: bool = True,
-                 watch_hostiles: bool = True):
+                 watch_hostiles: bool = True,
+                 hostile_radius: float = HOSTILE_RADIUS,
+                 hurt_by: float = HURT_BY):
         self.watch_health = watch_health
         self.watch_hostiles = watch_hostiles
+        self.hostile_radius = hostile_radius
+        self.hurt_by = hurt_by
         self.peak = None
 
     def check(self, state) -> str | None:
         """A reason to stop now, or None."""
         hurt = self._hurt(state)
         mob = nearest_hostile(state) if self.watch_hostiles else None
-        close = mob if mob is not None and mob.distance <= HOSTILE_RADIUS \
-            else None
+        close = mob if mob is not None \
+            and mob.distance <= self.hostile_radius else None
         if hurt and close:
             return (f"I am taking damage ({hurt}) and a {_mob_name(close)} "
                     f"is {close.distance:.0f} blocks away")
@@ -99,7 +103,7 @@ class DangerWatch:
         if self.peak is None or health > self.peak:
             self.peak = float(health)
             return ""
-        if self.peak - health >= HURT_BY:
+        if self.peak - health >= self.hurt_by:
             return f"health {self.peak:.0f} to {health:.0f} of 20"
         return ""
 
