@@ -281,7 +281,7 @@ class WorldState:
     notable_blocks: tuple | None = None    # tuple[NearbyBlock, ...]
     scan_radius: int | None = None         # how far the scan reached
 
-    # An open screen, from the bridge only (see docs/minecraft-gui.md).
+    # An open screen, from the bridge only (see docs/minecraft/gui.md).
     screen: str | None = None              # inventory / crafting_table / ...
     gui: GuiView | None = None
     slots: tuple | None = None             # tuple[GuiSlot, ...]

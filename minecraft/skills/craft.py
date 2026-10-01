@@ -66,7 +66,7 @@ class CraftItem:
 
     Its own danger watch, stricter than the runner's (a hostile within 8
     blocks, any health lost) -- the runner's would stop the task with the
-    screen open; this one closes the screen first. See docs/minecraft-gui.md.
+    screen open; this one closes the screen first. See docs/minecraft/gui.md.
     """
 
     item: str = ""

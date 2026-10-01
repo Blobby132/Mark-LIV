@@ -2,7 +2,7 @@
 minecraft/gui.py — when a click inside an inventory screen may happen, and
 how the pointer is brought to a slot.
 
-Pure rules over what the bridge reports (docs/minecraft-gui.md): the open
+Pure rules over what the bridge reports (docs/minecraft/gui.md): the open
 screen's kind, the game mode, each slot's centre in window pixels, the
 pointer in the same coordinates, the mobs around and the player's health.
 Nothing here presses anything; the controller asks `click_refusal` from a

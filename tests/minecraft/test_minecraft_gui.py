@@ -1,6 +1,6 @@
 """
 B3c: minecraft/gui.py -- when a click inside a screen may happen, and how
-the pointer is brought to a slot. Pure rules; see docs/minecraft-gui.md.
+the pointer is brought to a slot. Pure rules; see docs/minecraft/gui.md.
 """
 
 from __future__ import annotations

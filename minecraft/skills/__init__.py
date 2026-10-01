@@ -138,7 +138,7 @@ NOT_YET_POSSIBLE = {
                            "a gap, needs a jump and a place timed inside "
                            "one hold, about 0.3s apart; the controller "
                            "does not schedule taps within a hold yet "
-                           "(design: docs/minecraft-jump-place.md).",
+                           "(design: docs/minecraft/jump-place.md).",
     "return_to_base": "navigation exists now, but only within the scan "
                       "radius. Walking back to a base 300 blocks away needs "
                       "stored waypoints and route-finding across terrain not "
