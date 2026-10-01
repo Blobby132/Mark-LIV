@@ -28,3 +28,4 @@ and safety in brief. Everything else is here.
 |---|---|
 | [Project structure](project-structure.md) | What each file and folder is for |
 | [Architecture](ARCHITECTURE.md) | Where new code, tests and docs go |
+| [Splitting ui.py and main.py](proposals/ui-main-split.md) | A proposal: the seams, how to test each cut, what cannot be tested headless |
