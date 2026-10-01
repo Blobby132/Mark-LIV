@@ -437,7 +437,11 @@ def parse_attack(params: dict) -> HoldSpec:
 
 
 def parse_use_item(params: dict) -> HoldSpec:
-    """Hold the use button: place a block, eat, open a door."""
+    """Hold the use button: place a block, eat, open a door.
+
+    `expect_item` names what the hand must hold -- a check, not a choice:
+    it selects nothing. Pouring a bucket or starting a fire needs it
+    (USE_ITEM_NAMED)."""
     for unsupported in ("item", "slot", "target", "block"):
         if unsupported in (params or {}):
             raise InvalidAction(
@@ -446,8 +450,16 @@ def parse_use_item(params: dict) -> HoldSpec:
                 f"first with 'hotbar_select'."
             )
     duration, requested = _bounded_duration(params, 0.2, MAX_USE_DURATION_S)
+    detail = None
+    if "expect_item" in (params or {}):
+        named = params["expect_item"]
+        if not isinstance(named, str) or not _short_item(named):
+            raise InvalidAction("'expect_item' must be the name of the item "
+                                "in your hand, e.g. lava_bucket.")
+        detail = {"expect_item": _short_item(named)}
     return HoldSpec(action="use_item", buttons=(USE_BUTTON,),
-                    duration=duration, requested_duration=requested)
+                    duration=duration, requested_duration=requested,
+                    detail=detail)
 
 
 def parse_sneak(params: dict) -> HoldSpec:
@@ -677,6 +689,83 @@ _PLACE_DENIED_ENDINGS = {
 }
 
 
+def _denied_use(name):
+    """What right-clicking with `name` would do, when it is on the deny-list,
+    or None."""
+    what = _PLACE_DENIED.get(name)
+    if what is None:
+        what = next((why for ending, why in _PLACE_DENIED_ENDINGS.items()
+                     if name.endswith(ending)), None)
+    return what
+
+
+def _short_item(held) -> str:
+    return str(held).split(":")[-1].strip().lower()
+
+
+def interact_refusal(held) -> str | None:
+    """Why `interact` must not right-click with `held`, or None when it may.
+
+    The same button as `place`, so the same deny-list -- with one
+    difference: an empty hand is fine, because an empty hand is how doors
+    and chests are opened. A hand that cannot be seen is a refusal."""
+    if held is None:
+        return ("I cannot see what is in your hand, so I did not interact: "
+                "a right-click uses whatever is held, and that could be a "
+                "lava bucket or flint and steel. Seeing the hand needs the "
+                "bridge mod running.")
+    name = _short_item(held)
+    if not name or name == "air":
+        return None
+    what = _denied_use(name)
+    if what is None:
+        return None
+    return (f"You are holding {' '.join(name.split('_'))}. Right-clicking "
+            f"with it would {what} if what is under the crosshair does not "
+            f"take the click itself, so I did not. Select another slot -- "
+            f"an empty one is best -- first.")
+
+
+USE_ITEM_NAMED = {
+    "lava_bucket": "pour out lava",
+    "water_bucket": "pour out water",
+    "powder_snow_bucket": "pour out powder snow",
+    "flint_and_steel": "start a fire",
+    "fire_charge": "start a fire",
+}
+"""Items `use_item` uses only when they are named (`expect_item`): what
+they do cannot be taken back."""
+
+
+def use_item_refusal(held, named=None) -> str | None:
+    """Why `use_item` must not right-click with `held`, or None.
+
+    use_item is the explicit "use what I am holding" -- a bow, a shield,
+    food -- and stays unchecked, except for USE_ITEM_NAMED, which need
+    `named` to be that item. A named item is a precondition: the hand must
+    hold it, and be seen to."""
+    if named is not None:
+        if held is None:
+            return (f"You named {' '.join(named.split('_'))}, and I cannot "
+                    f"see what is in your hand to check. Nothing was "
+                    f"pressed.")
+        name = _short_item(held)
+        if name != named:
+            return (f"You named {' '.join(named.split('_'))}, but the hand "
+                    f"holds {' '.join(name.split('_')) or 'nothing'}. "
+                    f"Nothing was pressed.")
+        return None
+    if held is None:
+        return None
+    name = _short_item(held)
+    what = USE_ITEM_NAMED.get(name)
+    if what is None:
+        return None
+    return (f"You are holding a {' '.join(name.split('_'))}: using it would "
+            f"{what}, which cannot be taken back. I only do that when it is "
+            f"named -- use_item with expect_item: {name}.")
+
+
 def place_refusal(held) -> str | None:
     """Why `place` must not right-click with `held`, or None when it may.
 
@@ -688,13 +777,10 @@ def place_refusal(held) -> str | None:
                 "placing right-clicks with whatever is held, and that could "
                 "be a lava bucket or flint and steel. Seeing the hand needs "
                 "the bridge mod running.")
-    name = str(held).split(":")[-1].strip().lower()
+    name = _short_item(held)
     if not name or name == "air":
         return "Your hand is empty, so there is nothing to place."
-    what = _PLACE_DENIED.get(name)
-    if what is None:
-        what = next((why for ending, why in _PLACE_DENIED_ENDINGS.items()
-                     if name.endswith(ending)), None)
+    what = _denied_use(name)
     if what is None:
         return None
     return (f"You are holding {' '.join(name.split('_'))}. Right-clicking "

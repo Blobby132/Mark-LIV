@@ -437,6 +437,9 @@ def _mc_guard(params: dict) -> dict:
             f"This does NOT let me type in chat, run slash commands, or touch "
             f"anything outside Minecraft. I never attack a player, a pet, a "
             f"villager or an animal -- only a mob the game calls hostile. "
+            f"I never right-click with a bucket, flint and steel, TNT or a "
+            f"spawn egg to open something, and I pour lava or water or "
+            f"start a fire only when you name the item. "
             f"Inside screens I only ever click in "
             f"your inventory and a crafting table -- never a chest, a "
             f"furnace or the creative inventory -- and only when the game "
@@ -1131,7 +1134,11 @@ TOOL = {
         "place (refused, before anything is pressed, unless the hand holds a "
         "block: never a bucket, flint and steel, TNT, a spawn egg, a pearl, a "
         "potion, a bow or a tool -- and never when the hand cannot be seen), "
-        "interact (up to 1s), use_item (up to 2s), eat (up to 3s), drop (one "
+        "interact (up to 1s; the same held-item refusal as place, except an "
+        "empty hand is fine), use_item (up to 2s; pouring a lava, water or "
+        "powder-snow bucket or using flint and steel or a fire charge needs "
+        "expect_item naming it, only when the user named it), eat (up to "
+        "3s), drop (one "
         "item), hotbar_select (slot 1-9), inventory (state=open|close), "
         "stop. Longer durations are shortened to the limit, not refused. "
         "While any screen is open (the bridge says which), attack, mine, "
@@ -1407,6 +1414,13 @@ TOOL = {
                                 "chest. For place_block_at, build_line and "
                                 "build_blueprint: the block to place — e.g. "
                                 "cobblestone, dirt, oak_planks."),
+            },
+            "expect_item": {
+                "type": "STRING",
+                "description": ("For use_item: the item the user named, "
+                                "e.g. lava_bucket. Needed to pour a bucket "
+                                "or start a fire; it checks the hand, it "
+                                "does not select anything."),
             },
             "plan": {
                 "type": "STRING",

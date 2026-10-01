@@ -2980,6 +2980,20 @@ def _words(name) -> str:
     return " ".join(str(name).split("_"))
 
 
+def _held_name(state):
+    """The held item's name, "" for an empty hand, None when unknown."""
+    held = getattr(state, "held_item", None)
+    if held is not None and getattr(held, "name", None):
+        return building_mod.short(held.name)
+    if getattr(state, "inventory", None) is None \
+            or getattr(state, "selected_slot", None) is None:
+        return None
+    for stack in state.inventory:
+        if stack.slot == state.selected_slot and (stack.count or 0) > 0:
+            return building_mod.short(stack.name)
+    return ""
+
+
 def _learn_pointer(pointer, last) -> None:
     """Measure the pointer's gain from the move just made, if it was one."""
     if last is None or last.step.get("action") != "gui_point":
@@ -3044,6 +3058,9 @@ class CraftItem:
     _still: int = 0              # pointer moves in a row that did not move it
     _placer: object = None
     _table_note: str = ""
+    _hand_before: int | None = None    # the slot changed to open a table
+    _hand_tries: int = 0
+    _hand_restored: bool = False
 
     @property
     def goal(self) -> str:
@@ -3061,6 +3078,13 @@ class CraftItem:
     # ── the loop ─────────────────────────────────────────────────────────
 
     def plan(self, state, step_index: int, history: tuple):
+        step = self._plan_step(state, step_index, history)
+        if step is None and self._phase == "done":
+            # However it ended: the slot changed to open a table goes back.
+            return self._restore_hand(state)
+        return step
+
+    def _plan_step(self, state, step_index: int, history: tuple):
         last = history[-1] if history else None
         self._learn(last)
         if self._phase == "done":
@@ -3212,6 +3236,49 @@ class CraftItem:
         self._phase = "open"
         return self._open(state, ())
 
+    # ── the hand that right-clicks the table ─────────────────────────────
+
+    def _safe_hand(self, state):
+        """A hotbar_select to a slot `interact` will right-click with --
+        an empty one first, else one holding nothing on the deny-list --
+        when the held item is on it (an axe, after chopping). None when
+        the hand is fine already. Stops when there is no such slot."""
+        held = _held_name(state)
+        if held is None or not action_spec.interact_refusal(held):
+            return None
+        by_slot = {s.slot: s.name for s in (state.inventory or ())
+                   if s.slot is not None and 0 <= s.slot <= 8
+                   and (s.count or 0) > 0}
+        safe = [slot for slot in range(9) if slot not in by_slot] + [
+            slot for slot in range(9) if slot in by_slot
+            and not action_spec.interact_refusal(by_slot[slot])]
+        if not safe or self._hand_tries >= 2:
+            return self._stop(
+                f"I would right-click the crafting table holding "
+                f"{_words(held)}, which could use it instead, and no hotbar "
+                f"slot is empty or holds something safe to right-click "
+                f"with.")
+        self._hand_tries += 1
+        if self._hand_before is None:
+            self._hand_before = state.selected_slot
+        slot = safe[0] + 1
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot),
+                    note=f"hold hotbar slot {slot} rather than the "
+                         f"{_words(held)} to open the crafting table")
+
+    def _restore_hand(self, state):
+        """Put back the slot changed for the table, once."""
+        if self._hand_before is None or self._hand_restored \
+                or state.selected_slot == self._hand_before \
+                or getattr(state, "screen", None):
+            return None
+        self._hand_restored = True
+        slot = self._hand_before + 1
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot),
+                    note=f"back to hotbar slot {slot}")
+
     # ── a table of its own ───────────────────────────────────────────────
 
     def _place_table(self, state):
@@ -3302,6 +3369,9 @@ class CraftItem:
         seen = _crosshair_at(state)
         if seen is not None and tuple(seen[0]) == tuple(table.position) \
                 and seen[1] == "crafting_table":
+            hand = self._safe_hand(state)
+            if hand is not None:
+                return hand
             self._open_tries += 1
             return Step(action="interact", params={},
                         expectation=verify_mod.screen_is("crafting_table"),
@@ -5442,6 +5512,10 @@ NOT_YET_POSSIBLE = {
                                  "calls hostile: never a player, a pet, a "
                                  "villager or an animal. That is deliberate, "
                                  "and hunting animals for food is not built.",
+    "use_dangerous_items_unasked": "a lava, water or powder-snow bucket, "
+                                   "flint and steel and a fire charge are "
+                                   "used only when the user names the item; "
+                                   "interact never right-clicks with them.",
     "pillar_up_or_bridge": "building upwards past two blocks, or out over "
                            "a gap, needs a jump and a place timed inside "
                            "one hold, about 0.3s apart; the controller "

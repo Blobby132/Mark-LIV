@@ -1099,8 +1099,24 @@ class MinecraftController:
         return None if held is None else str(held)
 
     def interact(self, params: dict | None = None) -> ActionResult:
-        return self._gameplay(core_caps.MINECRAFT_INTERACT, "interact",
-                              action_spec.parse_interact, params)
+        """Right-click to open or use a block -- with `place`'s deny-list on
+        the held item (an empty hand allowed), checked before pressing."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_INTERACT,
+                                           "interact")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_interact(params or {})
+        problem = action_spec.interact_refusal(self._held_item())
+        if problem:
+            return self._held_item_refused("interact", spec, problem)
+        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                 "interact", spec.as_dict(), spec.clamped)
+
+    def _held_item_refused(self, action, spec, problem) -> ActionResult:
+        return ActionResult(
+            ok=False, action=action, requested=spec.as_dict(),
+            actual_duration_ms=0, stopped_reason="held_item",
+            error_class="HeldItemRefused", error=problem)
 
     def eat(self, params: dict | None = None) -> ActionResult:
         return self._gameplay(core_caps.MINECRAFT_ITEMS, "eat",
@@ -1140,8 +1156,20 @@ class MinecraftController:
                                  expect_hostile=spec.expect_hostile)
 
     def use_item(self, params: dict | None = None) -> ActionResult:
-        return self._gameplay(core_caps.MINECRAFT_ITEMS, "use_item",
-                              action_spec.parse_use_item, params)
+        """Hold the use button with what is held -- the explicit way to use
+        an item. A bucket of lava, water or powder snow, flint and steel and
+        a fire charge are used only when named (`expect_item`)."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_ITEMS,
+                                           "use_item")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_use_item(params or {})
+        named = (spec.detail or {}).get("expect_item")
+        problem = action_spec.use_item_refusal(self._held_item(), named)
+        if problem:
+            return self._held_item_refused("use_item", spec, problem)
+        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                 "use_item", spec.as_dict(), spec.clamped)
 
     def sneak(self, params: dict | None = None) -> ActionResult:
         return self._gameplay(core_caps.MINECRAFT_MOVEMENT, "sneak",

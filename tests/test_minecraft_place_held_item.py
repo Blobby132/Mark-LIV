@@ -6,8 +6,9 @@ item does: a lava bucket pours lava, flint and steel starts a fire, an
 ender pearl teleports you, a bow draws. parse_place and the PlaceBlock skill
 never looked. Now the controller asks an injected `held_item_probe` what is
 held and refuses before pressing anything when it is on the deny-list -- or
-when it cannot tell. `use_item` is not checked: it is the explicit "use
-what I am holding" action.
+when it cannot tell. `use_item` is the explicit "use what I am holding"
+action: it is checked only for a lava, water or powder-snow bucket and fire
+starters, which need the item named (item 3, test_minecraft_interact_held_item).
 """
 
 from __future__ import annotations

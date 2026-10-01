@@ -102,6 +102,7 @@ class GuiWorld(TreeWorld):
         self.cursor = [WINDOW[0] / 2, WINDOW[1] / 2]
         self.clicks = 0
         self.swaps = 0
+        self.used_with = []                 # interacts refused for the hand
         self.refused = []
         self.dropped = []
         self.table = table
@@ -258,6 +259,14 @@ class GuiWorld(TreeWorld):
         self.screen = None
 
     def interact(self, params):
+        # The controller's held-item check (item 3), as it makes it.
+        from minecraft import action_spec
+        held = self.stacks.get(self.selected)
+        refusal = action_spec.interact_refusal(held[0] if held else "")
+        if refusal:
+            self.used_with.append(held[0])
+            return self._done("interact", params, ok=False,
+                              reason="held_item", error=refusal)
         hit = self.crosshair()
         if hit and hit[1] == "crafting_table" and self.screen is None:
             self.screen = "crafting_table"
