@@ -488,6 +488,26 @@ class TestWindowProbeRobustness(unittest.TestCase):
         finally:
             controller.stop("test")
 
+    def test_two_blips_seconds_apart_are_two_blips(self):
+        """A5: a blip, a long idle with nothing asking, then another blip
+        read as one miss seconds long -- "window_gone", and the session
+        ended for two blips."""
+        locator = FakeLocator()
+        clock = Clock()
+        controller = self._controller(locator, clock)
+        try:
+            controller.start_session(duration_s=60)
+            locator.found = False
+            self.assertEqual(controller._guard(), "")
+            clock.t += 5.0
+            self.assertEqual(controller._guard(), "",
+                             "an old blip was counted into a new one")
+            clock.t += 0.04
+            self.assertEqual(controller._guard(), "window_gone",
+                             "a real close must still stop it")
+        finally:
+            controller.stop("test")
+
     def test_patience_is_bounded_in_time_not_in_calls(self):
         locator = FakeLocator()
         clock = Clock()

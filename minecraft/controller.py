@@ -64,6 +64,12 @@ TICK_SECONDS = 0.04
 # than the same enumeration blip seen by two guard calls back to back.
 WINDOW_MISS_SPAN_S = 0.03
 
+# A miss more than this after the previous one starts a new run. Without it
+# a blip, a long idle with nothing asking, and another blip read as one miss
+# seconds long. Over two hold ticks, so a real close -- missed every 40ms
+# while a key is held -- is still one run and still stops the next tick.
+WINDOW_MISS_RUN_GAP_S = 0.1
+
 # How often, during a hold, the injected hazard check is asked. The bridge
 # publishes every 200ms; asking every tick would read the same snapshot five
 # times over.
@@ -173,6 +179,7 @@ class MinecraftController:
         # see _guard.
         self._clock = clock if clock is not None else time.monotonic
         self._first_miss_at = None
+        self._last_miss_at = None
         self._last_stop_reason = ""
         self._action_in_flight = ""
 
@@ -283,12 +290,16 @@ class MinecraftController:
             # keep pressing keys at a window that is gone.
             now = self._clock()
             with self._lock:
-                if self._first_miss_at is None:
-                    self._first_miss_at = now
+                if self._first_miss_at is None or (
+                        self._last_miss_at is not None
+                        and now - self._last_miss_at > WINDOW_MISS_RUN_GAP_S):
+                    self._first_miss_at = now        # a new run of misses
+                self._last_miss_at = now
                 gone = now - self._first_miss_at >= WINDOW_MISS_SPAN_S
             return "window_gone" if gone else ""
         with self._lock:
             self._first_miss_at = None
+            self._last_miss_at = None
         if not info.focus_known:
             return "focus_unknown"
         if not info.foreground:
