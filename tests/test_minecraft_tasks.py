@@ -28,12 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from minecraft import skills, task_runner, verification as verify_mod  # noqa: E402
 from minecraft.controller import ActionResult                          # noqa: E402
 from minecraft.state import BlockRef, INFERRED, WorldState, empty_state  # noqa: E402
-from minecraft.progress import ProgressMonitor                          # noqa: E402
 from minecraft.task_runner import (                                    # noqa: E402
     COMPLETED, FAILED, INCOMPLETE, MAX_TASK_STEPS, STOPPED, Step, StepRecord,
     TaskRunner,
 )
-from minecraft import task_runner                                      # noqa: E402
 
 
 class FakeController:

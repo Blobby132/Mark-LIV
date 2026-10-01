@@ -146,7 +146,7 @@ class FleeTests(unittest.TestCase):
         follows: it ends, and says how close the mob still is."""
         world = MobWorld([zombie(3.5, 0.5)], chase=1.0, radius=5)
         skill = skills.create("flee")
-        result = run(world, skill, max_steps=45)
+        run(world, skill, max_steps=45)
         self.assertTrue(skill.failed)
         self.assertIn("zombie", skill.done_reason)
         self.assertIn("blocks away", skill.done_reason)

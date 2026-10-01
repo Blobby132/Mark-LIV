@@ -16,7 +16,6 @@ allows. What had to be got right is judgement, not input:
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 import unittest
 from pathlib import Path

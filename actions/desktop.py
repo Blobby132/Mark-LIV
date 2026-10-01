@@ -13,7 +13,7 @@ from core import capabilities, exec_safe, safe_path
 from core.undo import push_undo
 
 try:
-    import pyautogui
+    import pyautogui  # noqa: F401 -- availability check: sets _PYAUTOGUI
     _PYAUTOGUI = True
 except ImportError:
     _PYAUTOGUI = False
@@ -145,7 +145,9 @@ def _execute_generated_code(code: str, player=None) -> str:
 
 def _ask_gemini_for_desktop_action(task: str) -> str:
 
-    from google import genai as _genai
+    # The dependency check: without google-genai this raises here,
+    # before any work, as it always has.
+    from google import genai as _genai  # noqa: F401
 
     desktop = str(_get_desktop())
 

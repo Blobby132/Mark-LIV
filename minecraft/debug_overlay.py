@@ -63,7 +63,7 @@ from __future__ import annotations
 import re
 
 from minecraft.state import (
-    BlockRef, INFERRED, UNKNOWN, WorldState, empty_state,
+    BlockRef, INFERRED, WorldState, empty_state,
 )
 
 # ── The patterns ─────────────────────────────────────────────────────────────

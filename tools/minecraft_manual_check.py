@@ -175,7 +175,7 @@ def main() -> int:
         # ── 3 ────────────────────────────────────────────────────────────────
         heading("Does Minecraft have focus?")
         if not window.focus_known:
-            print(f"  I cannot read the foreground window on this platform.")
+            print("  I cannot read the foreground window on this platform.")
             print(f"  {window.detail}")
             record("focus detection", False,
                    "not supported on this platform — input will be refused")
@@ -203,7 +203,7 @@ def main() -> int:
             out = Path(__file__).resolve().parent / f"minecraft_frame{suffix}"
             out.write_bytes(observation.frame)
             print(f"  Saved: {out}")
-            print(f"  Open it and check it shows ONLY Minecraft.")
+            print("  Open it and check it shows ONLY Minecraft.")
             only_game = ask("Does the image show only the game window?")
             record("window-only capture", only_game,
                    "" if only_game else "the frame included other windows")

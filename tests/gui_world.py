@@ -25,7 +25,6 @@ stack limits below 64."""
 
 from __future__ import annotations
 
-import math
 import time
 
 from minecraft import gui as gui_mod

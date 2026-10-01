@@ -183,8 +183,7 @@ class BoundaryTests(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
         self.assertEqual(imported - {"__future__"},
-                         {"colorsys", "io", "math", "dataclasses",
-                          "minecraft", "PIL"})
+                         {"colorsys", "io", "dataclasses", "minecraft", "PIL"})
 
 
 if __name__ == "__main__":

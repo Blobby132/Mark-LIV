@@ -46,9 +46,9 @@ from minecraft import gui as gui_mod
 from minecraft.emergency import EmergencyStopWatcher
 from core import capabilities as core_caps
 from minecraft.errors import (
-    EmergencyStop, InputBackendUnavailable, InteractionNotGranted,
-    InvalidAction, MinecraftNotRunning, NoActiveSession, SessionExpired,
-    WindowNotFocused, WindowNotFound,
+    EmergencyStop, InputBackendUnavailable, InvalidAction,
+    MinecraftNotRunning, NoActiveSession, SessionExpired, WindowNotFocused,
+    WindowNotFound,
 )
 from minecraft.input_backend import create_backend
 from minecraft.ledger import InputLedger, MAX_HOLD_SECONDS

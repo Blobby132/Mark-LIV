@@ -36,16 +36,14 @@ from minecraft import perception as mc_perception
 from minecraft import skills as mc_skills
 from minecraft import danger as mc_danger
 from minecraft.controller import MinecraftController
-from minecraft.debug_overlay import DebugOverlayStateSource, NEEDS_MOD_BRIDGE
+from minecraft.debug_overlay import DebugOverlayStateSource
 from minecraft.mod_bridge import ModBridgeStateSource
 from minecraft.errors import (
     CapabilityDisabled, InvalidAction, MinecraftError, TaskAlreadyRunning,
 )
 from minecraft.observation import Observer
-from minecraft.state import VisionStateSource
 from minecraft.session import (
-    DEFAULT_SESSION_SECONDS, GRANT_SUMMARY, MAX_SESSION_SECONDS,
-    MIN_SESSION_SECONDS, UNLIMITED,
+    GRANT_SUMMARY, MAX_SESSION_SECONDS, MIN_SESSION_SECONDS, UNLIMITED,
 )
 from minecraft.task_runner import MAX_TASK_SECONDS, MAX_TASK_STEPS, TaskRunner
 from minecraft.task_slot import TaskSlot

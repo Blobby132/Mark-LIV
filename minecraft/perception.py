@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import colorsys
 import io
-import math
 from dataclasses import dataclass
 
 from minecraft.state import UNKNOWN

@@ -1,4 +1,3 @@
-import subprocess
 import sys
 import json
 import re
@@ -489,7 +488,9 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
         from google.genai import types
 
         image_bytes  = screenshot_path.read_bytes()
-        image_base64 = _image_to_base64(screenshot_path)
+        # Unused, but kept: dropping the call would drop a file read, and
+        # the lint cleanup changed no behaviour.
+        image_base64 = _image_to_base64(screenshot_path)  # noqa: F841
 
         user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
 
@@ -519,7 +520,7 @@ Be specific and actionable. If you see an error message, quote it exactly."""
             return "Sir, I couldn't reach Gemini to analyse that screenshot."
 
         analysis = (response.text or "").strip()
-        print(f"[Code] ✅ Screen analysis complete")
+        print("[Code] ✅ Screen analysis complete")
 
         try:
             screenshot_path.unlink()

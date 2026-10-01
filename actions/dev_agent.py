@@ -1,4 +1,3 @@
-import subprocess
 import sys
 import json
 import re
@@ -298,7 +297,7 @@ def _install_dependencies(dependencies: list[str], project_dir: Path) -> str:
                      f"look like plain package names: {', '.join(rejected[:3])}")
 
     if not to_install:
-        return " ".join(notes) or f"All dependencies already installed."
+        return " ".join(notes) or "All dependencies already installed."
 
     print(f"[DevAgent] 📦 Installing: {to_install}")
     result = exec_safe.run(

@@ -21,7 +21,7 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
-from core import capabilities, confirm, exec_safe
+from core import capabilities, exec_safe
 from core.undo import push_undo
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -98,7 +98,6 @@ def volume_get() -> int | None:
     undoable — a wrong undo is worse than no undo."""
     try:
         if _OS == "Windows":
-            import math
             from ctypes import cast, POINTER
             from comtypes import CLSCTX_ALL
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume

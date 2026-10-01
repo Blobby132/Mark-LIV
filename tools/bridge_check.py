@@ -177,7 +177,7 @@ def explain_why_not() -> None:
         print("  Check the game's log for 'markliv-bridge' — most likely the")
         print("  Fabric loader rejected it for a version mismatch.")
     else:
-        print(f"\n  >>> The mod is NOT in this instance. <<<")
+        print("\n  >>> The mod is NOT in this instance. <<<")
         print(f"  That folder has {others} other jar(s), but not ours.")
         print("\n  This is the instance you are actually playing, so this is")
         print("  where it needs to go. Copy it there with:")
@@ -191,7 +191,7 @@ def main() -> int:
 
     source = ModBridgeStateSource()
     if not source.available():
-        print(f"\n  NOT WORKING\n")
+        print("\n  NOT WORKING\n")
         for line in source.unavailable_reason().splitlines():
             print(f"  {line}")
         explain_why_not()

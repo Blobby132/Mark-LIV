@@ -25,7 +25,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 from test_minecraft_navigation import SimWorld, flat, run           # noqa: E402

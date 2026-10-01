@@ -31,7 +31,6 @@ from minecraft.input_backend import (                                  # noqa: E
 from minecraft.ledger import InputLedger, button_token                 # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
 from minecraft.state import WorldState                                 # noqa: E402
-from minecraft.controller import MinecraftController                   # noqa: E402
 from test_minecraft_controller import FakeLocator, FakeProcess         # noqa: E402
 
 

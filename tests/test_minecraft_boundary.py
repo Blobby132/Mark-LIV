@@ -124,7 +124,7 @@ class TestImportBoundary(unittest.TestCase):
                     offenders.append(f"{path}:{lineno} imports {name} ({reason})")
         self.assertEqual(offenders, [],
                          "the Minecraft package reached outside its "
-                         f"boundary:\n  " + "\n  ".join(offenders))
+                         "boundary:\n  " + "\n  ".join(offenders))
 
     def test_every_import_is_on_the_allowlist(self):
         offenders = []
@@ -173,7 +173,7 @@ class TestImportBoundary(unittest.TestCase):
         self.assertEqual(
             offenders, [],
             "the Minecraft package may only use core's permission, audit and "
-            f"capability interfaces:\n  " + "\n  ".join(offenders))
+            "capability interfaces:\n  " + "\n  ".join(offenders))
 
     def test_no_ocr_library_is_imported(self):
         """OCR is the one Phase 3 dependency that would have smuggled a

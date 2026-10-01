@@ -44,7 +44,7 @@ from minecraft import skills, verification as verify_mod              # noqa: E4
 from minecraft import mining as mining_mod                           # noqa: E402
 from minecraft.controller import ActionResult                          # noqa: E402
 from minecraft.state import (                                          # noqa: E402
-    BlockRef, EXACT, ItemStack, NearbyBlock, EntityRef, UNKNOWN, WorldState,
+    BlockRef, EXACT, ItemStack, NearbyBlock, EntityRef, WorldState,
     empty_state,
 )
 from minecraft.task_runner import DISPATCH, TaskRunner                 # noqa: E402
@@ -866,7 +866,7 @@ class CollectLogsWithAMapTests(unittest.TestCase):
         # Exactly enough steps to break both and not one more.
         probe = run(TreeWorld(flat(), list(logs)),
                     skills.create("collect_logs", count=2), max_steps=45)
-        result = run(world, skill, max_steps=probe.steps_taken)
+        run(world, skill, max_steps=probe.steps_taken)
         self.assertEqual(len(world.broken), 2)
         self.assertIn("2 of 2", skill.done_reason)
 
@@ -1011,7 +1011,6 @@ class AimingConvergesTests(unittest.TestCase):
 
     def machine(self, yaw_scale=1.0, pitch_scale=1.0):
         """A TreeWorld whose mouse behaves unlike the assumed default."""
-        outer = self
 
         class Machine(TreeWorld):
             def look(self, params):
@@ -1031,7 +1030,7 @@ class AimingConvergesTests(unittest.TestCase):
         vertically never lands on the block."""
         world = self.machine(pitch_scale=-1.0)
         skill = skills.create("collect_logs", count=1)
-        result = run(world, skill)
+        run(world, skill)
         self.assertEqual(len(world.broken), 1,
                          f"never broke it. {skill.done_reason}")
         self.assertLess(nav.calibration()["pitch_px_per_degree"], 0,
@@ -1510,7 +1509,7 @@ class MovementTests(unittest.TestCase):
                    for b in flat()]
         world = SimWorld(surface)
         skill = skills.create("navigate_to", destination=(6, 0))
-        result = run(world, skill)
+        run(world, skill)
         self.assertFalse(skill.failed, skill.done_reason)
         path_columns = [(x, z) for x, _y, z in (skill._path.waypoints
                                                  if skill._path else ())]
