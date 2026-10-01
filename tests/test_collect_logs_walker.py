@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import navigation as nav                              # noqa: E402
 from minecraft import skills                                         # noqa: E402
+from minecraft.skills import base as skills_base                        # noqa: E402
 from minecraft.state import (                                        # noqa: E402
     EXACT, EntityRef, ItemStack, NearbyBlock, WorldState)
 from tests.test_minecraft_navigation import flat                     # noqa: E402
@@ -49,7 +50,7 @@ class LogWalkerTests(unittest.TestCase):
         # Standing where the walk to EAST ends, asked to walk to WEST.
         there = state_at(east_column[0] + 0.5, east_column[1] + 0.5)
         step = skill._walk_towards(there, WEST)
-        self.assertIsNot(step, skills._ARRIVED,
+        self.assertIsNot(step, skills_base._ARRIVED,
                          "the walk to the old log counted as arriving at "
                          "the new one")
         self.assertEqual(skill._walker._destination,

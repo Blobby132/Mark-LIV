@@ -712,5 +712,30 @@ class TestSkills(unittest.TestCase):
                 self.assertNotIn(name, skills.available())
 
 
+class SkillsPublicNamesTests(unittest.TestCase):
+    """minecraft.skills re-exports what is public, listed in __all__, and
+    nothing else; the rest is imported from the submodule that defines it."""
+
+    def test_every_name_in_all_resolves(self):
+        for name in skills.__all__:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(skills, name))
+
+    def test_every_registered_skill_class_is_public(self):
+        classes = {f for f in skills.BUILTIN_SKILLS.values()
+                   if isinstance(f, type)}
+        for cls in classes:
+            with self.subTest(cls=cls.__name__):
+                self.assertIn(cls.__name__, skills.__all__)
+
+    def test_the_declared_api_from_before_the_split_is_kept(self):
+        for name in ("MIN_USEFUL_MINE_S", "Skill", "WalkForward", "Survey",
+                     "FindBlock", "BreakBlock", "PlaceBlock", "CollectLogs",
+                     "AimAtBlock", "BUILTIN_SKILLS", "create", "available",
+                     "LOG_BLOCKS", "NOT_YET_POSSIBLE"):
+            with self.subTest(name=name):
+                self.assertIn(name, skills.__all__)
+
+
 if __name__ == "__main__":
     unittest.main()

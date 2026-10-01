@@ -91,7 +91,7 @@ widen what the session allows.
 | `craft.py` | `craft_item` | |
 | `place_build.py` | `place_block`, `place_block_at`, `build_line`, `build_blueprint` | The blueprint memory that lets "carry on" resume. |
 | `combat.py` | `flee`, `fight` | `NEVER_MELEE`, the start-health floor, the weapon choice. |
-| `__init__.py` | — | The registry (`BUILTIN_SKILLS`, `create`, `available`), `NOT_YET_POSSIBLE`, and every name re-exported. |
+| `__init__.py` | — | The registry (`BUILTIN_SKILLS`, `create`, `available`), `NOT_YET_POSSIBLE`, and the public names in `__all__`. Anything else is imported from its submodule. |
 
 Each module imports only from those above it in the table (craft also from
 place_build), so there is no import cycle. The registry is a fixed table in

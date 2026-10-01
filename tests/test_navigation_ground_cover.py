@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT))
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
+from minecraft.skills import base as skills_base                        # noqa: E402
 from minecraft.mod_bridge import ModBridgeStateSource               # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 
@@ -364,7 +365,7 @@ class ShortOakTests(unittest.TestCase):
         self.assertEqual(world.wrong_block_swings, 0)
         self.assertTrue(world.leaves_broken)
         self.assertLessEqual(len(world.leaves_broken),
-                             skills.MAX_LEAVES_PER_LOG)
+                             skills_base.MAX_LEAVES_PER_LOG)
         clears = [r for r in result.records
                   if r.step.get("note", "").startswith("clear ")]
         self.assertEqual(len(clears), len(world.leaves_broken))

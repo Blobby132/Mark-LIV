@@ -286,10 +286,11 @@ class GuiWorld(TreeWorld):
         """Hold right click: the selected stack is eaten if it is food, the
         hold is long enough, the player is hungry and no screen is open."""
         from minecraft import skills
+        from minecraft.skills import eat as skills_eat
         held = self.stacks.get(self.selected)
         if self.screen is None and held and held[0] in skills.FOODS \
                 and self.hunger < 20 and float(params.get("duration", 0)) \
-                >= skills.eat_ticks(held[0]) / 20.0:
+                >= skills_eat.eat_ticks(held[0]) / 20.0:
             held[1] -= 1
             if held[1] <= 0:
                 del self.stacks[self.selected]

@@ -5,8 +5,10 @@ a small number of real ones.
 WHERE THINGS ARE
     This package was minecraft/skills.py, split by what the skills do, with
     nothing changed but where the code lives. This module keeps the registry
-    (BUILTIN_SKILLS, create, available), NOT_YET_POSSIBLE, and every name
-    the old module had, so `skills.X` still means what it did.
+    (BUILTIN_SKILLS, create, available), NOT_YET_POSSIBLE, and the public
+    names listed in __all__: the skill classes and the few constants used
+    outside the package. Anything else is imported from the submodule that
+    defines it -- `from minecraft.skills import combat as skills_combat`.
 
         base         the Skill protocol and what several modules share
         hotbar       HotbarFetch: an item from the main inventory to the hotbar
@@ -59,52 +61,17 @@ EVERY SKILL DECLARES WHAT IT CANNOT VERIFY
 
 from __future__ import annotations
 
-from minecraft.skills.base import (  # noqa: F401
-    CANNOT_SEE_TARGET, MIN_USEFUL_MINE_S, MAX_SKIPPED_TARGETS,
-    MAX_LEAVES_PER_LOG, MAX_TREE_LOGS, MAX_PICKUP_WALKS, DROP_RADIUS, _ARRIVED,
-    SWEEP_DEGREES, _sweep_pixels, _mine_params, _crosshair_at, _centre,
-    _crosshair_text, LOG_BLOCKS, Skill, _tree_label, FOODS, UNSAFE_FOODS,
-    INTERACTIVE_SUFFIXES, _interactive, _slot_of, _words, _learn_pointer,
+from minecraft.skills.base import FOODS, LOG_BLOCKS, MIN_USEFUL_MINE_S, Skill
+from minecraft.skills.navigate import FindBlock, NavigateTo, Survey, WalkForward
+from minecraft.skills.collect import (
+    AimAtBlock, BreakBlock, CollectBlocks, CollectLogs, _mine_block,
 )
-from minecraft.skills.hotbar import (  # noqa: F401
-    FETCH_WORTH_S, _KEEP_AT_HAND, _worth_keeping, hotbar_slot_to_fill,
-    HotbarFetch,
+from minecraft.skills.eat import EatFood
+from minecraft.skills.place_build import (
+    BuildBlueprint, BuildLine, PlaceBlock, PlaceBlockAt,
 )
-from minecraft.skills.navigate import (  # noqa: F401
-    WalkForward, Survey, FindBlock, CANNOT_SEE_WORLD, WALK_BLOCKS_PER_S,
-    SPRINT_BLOCKS_PER_S, SPRINT_FROM_BLOCKS, YAW_TOLERANCE_DEG,
-    REVALIDATE_EVERY, STALLS_BEFORE_OBSTACLE_CHECK, MAX_REROUTES,
-    REROUTE_REFILL_BLOCKS, AVOID_FOR_REPLANS, CAUTIOUS_STEP_S,
-    INPUT_STUCK_AFTER, MAX_STALLS, MAX_HOPS_ONTO, NavigateTo, nav_target,
-    _last_move_distance, block_label,
-)
-from minecraft.skills.collect import (  # noqa: F401
-    _HoldsTheRightTool, BreakBlock, _AIR, _Gatherer, CollectLogs, GATHERABLE,
-    GATHER_ALIASES, exposed, open_face, liquid_beside, underfoot,
-    CollectBlocks, _pickup_column, _under_the_trunk, FETCHED_DROP_DRIFT,
-    _still_there, _drop_text, _item_total, _log_total, AimAtBlock, _mine_block,
-)
-from minecraft.skills.eat import (  # noqa: F401
-    EAT_TICKS, EAT_SLOW_SERVER, EAT_LATENCY_S, eat_ticks, eat_seconds,
-    MAX_HUNGER, EatFood,
-)
-from minecraft.skills.place_build import (  # noqa: F401
-    PlaceBlock, MAX_PLACE_AIMS, MAX_PLACE_WALKS, PLACE_REACH_MARGIN,
-    _place_from, _in_view, _can_place_here, _stand_for, _face_words,
-    PlaceBlockAt, MAX_LINE_BLOCKS, MAX_FAILURES_IN_A_ROW, _LINE_DIRECTIONS,
-    _cells_text, _Builder, BuildLine, _BLUEPRINTS, _LAST_BLUEPRINT,
-    forget_blueprints, _cardinal, BuildBlueprint,
-)
-from minecraft.skills.craft import (  # noqa: F401
-    _CLICK_ACTIONS, _carried_of, _held_name, CraftItem,
-)
-from minecraft.skills.combat import (  # noqa: F401
-    FLEE_SAFE_DISTANCE, FLEE_KEEP_CLEAR, FLEE_REPLAN_EVERY, MAX_FLEE_SECONDS,
-    _hostiles, _mob_words, Flee, FIGHT_MAX_SECONDS, FIGHT_RETREAT_HEALTH,
-    FIGHT_START_HEALTH, FIGHT_WEAPON_SELECTS, FIGHT_RANGE, ENTITY_REACH,
-    ATTACK_TAP_S, AIM_ON_BODY_DEG, MOB_HEIGHTS, NEVER_MELEE,
-    best_hotbar_weapon, Fight, _mob_key,
-)
+from minecraft.skills.craft import CraftItem
+from minecraft.skills.combat import Fight, Flee
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -203,8 +170,14 @@ was made."""
 
 
 __all__ = [
-    "MIN_USEFUL_MINE_S",
+    # The registry.
+    "BUILTIN_SKILLS", "create", "available",
+    # The protocol and every registered skill class.
     "Skill", "WalkForward", "Survey", "FindBlock", "BreakBlock",
-    "PlaceBlock", "CollectLogs", "AimAtBlock",
-    "BUILTIN_SKILLS", "create", "available", "LOG_BLOCKS", "NOT_YET_POSSIBLE",
+    "PlaceBlock", "PlaceBlockAt", "BuildLine", "BuildBlueprint",
+    "CollectLogs", "CollectBlocks", "AimAtBlock", "NavigateTo", "EatFood",
+    "CraftItem", "Flee", "Fight",
+    # Constants used outside the package.
+    "MIN_USEFUL_MINE_S", "LOG_BLOCKS", "FOODS", "NOT_YET_POSSIBLE",
+    "NOW_POSSIBLE_WITH_THE_BRIDGE",
 ]

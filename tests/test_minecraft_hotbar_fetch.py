@@ -21,6 +21,7 @@ from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import mining as mining_mod                          # noqa: E402
 from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
+from minecraft.skills import hotbar as skills_hotbar                    # noqa: E402
 from minecraft import verification as verify_mod                    # noqa: E402
 from minecraft.state import (                                       # noqa: E402
     EXACT, ItemStack, NearbyBlock, WorldState)
@@ -263,19 +264,19 @@ class WhichHotbarSlotTests(unittest.TestCase):
 
     def test_an_empty_slot_first(self):
         state = hotbar(0, (0, "dirt"), (1, "stone"), (3, "torch"))
-        self.assertEqual(skills.hotbar_slot_to_fill(state), 2)
+        self.assertEqual(skills_hotbar.hotbar_slot_to_fill(state), 2)
 
     def test_then_the_last_that_holds_nothing_worth_keeping(self):
         state = hotbar(0, *[(i, n) for i, n in enumerate(
             ("dirt", "cobblestone", "iron_pickaxe", "bread", "oak_planks",
              "stone_sword", "torch", "water_bucket", "shield"))])
-        self.assertEqual(skills.hotbar_slot_to_fill(state), 4)
+        self.assertEqual(skills_hotbar.hotbar_slot_to_fill(state), 4)
 
     def test_never_the_held_slot_while_another_will_do(self):
         state = hotbar(4, *[(i, n) for i, n in enumerate(
             ("iron_pickaxe", "stone_axe", "bread", "apple", "dirt",
              "stone_sword", "bow", "shield", "water_bucket"))])
-        self.assertNotEqual(skills.hotbar_slot_to_fill(state), 4)
+        self.assertNotEqual(skills_hotbar.hotbar_slot_to_fill(state), 4)
 
 
 class RunnerWatchTests(unittest.TestCase):

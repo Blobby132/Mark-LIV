@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft import action_spec, skills                           # noqa: E402
+from minecraft.skills import combat as skills_combat                    # noqa: E402
 from minecraft.controller import ActionResult                       # noqa: E402
 from minecraft.state import EntityRef, ItemStack                    # noqa: E402
 from test_minecraft_flee import MobWorld                            # noqa: E402
@@ -248,7 +249,7 @@ class NeverMeleeTests(unittest.TestCase):
                 self.assertEqual(result.steps_taken, 0)
                 self.assertEqual(world.hits, {})
                 self.assertIn(" ".join(name.split("_")), skill.done_reason)
-                self.assertIn(skills.NEVER_MELEE[name], skill.done_reason)
+                self.assertIn(skills_combat.NEVER_MELEE[name], skill.done_reason)
 
     def test_named_or_nearest_alike(self):
         world = Arena([("enderman", 3.5, 0.5, "hostile")])
@@ -257,7 +258,7 @@ class NeverMeleeTests(unittest.TestCase):
 
     def test_every_reason_says_something(self):
         for name in NEVER_FOUGHT:
-            self.assertGreater(len(skills.NEVER_MELEE.get(name, "")), 15,
+            self.assertGreater(len(skills_combat.NEVER_MELEE.get(name, "")), 15,
                                name)
 
     def test_a_zombie_next_to_an_enderman_is_still_fought(self):
@@ -270,14 +271,14 @@ class NeverMeleeTests(unittest.TestCase):
 class HealthFloorTests(unittest.TestCase):
 
     def test_below_the_floor_it_does_not_start(self):
-        world = Arena([zombie(2.5, 0.5)], health=skills.FIGHT_START_HEALTH - 1)
+        world = Arena([zombie(2.5, 0.5)], health=skills_combat.FIGHT_START_HEALTH - 1)
         skill, result = fight(world)
         self.assertEqual(result.steps_taken, 0)
         self.assertEqual(world.hits, {})
         self.assertIn("health", skill.done_reason)
 
     def test_at_the_floor_it_does(self):
-        world = Arena([zombie(2.5, 0.5)], health=skills.FIGHT_START_HEALTH)
+        world = Arena([zombie(2.5, 0.5)], health=skills_combat.FIGHT_START_HEALTH)
         fight(world)
         self.assertGreater(world.hits.get("zombie", 0), 0)
 
@@ -288,8 +289,8 @@ class HealthFloorTests(unittest.TestCase):
         self.assertIn("cannot read my health", skill.done_reason)
 
     def test_the_floor_is_above_the_retreat(self):
-        self.assertGreater(skills.FIGHT_START_HEALTH,
-                           skills.FIGHT_RETREAT_HEALTH)
+        self.assertGreater(skills_combat.FIGHT_START_HEALTH,
+                           skills_combat.FIGHT_RETREAT_HEALTH)
 
 
 class WeaponTests(unittest.TestCase):

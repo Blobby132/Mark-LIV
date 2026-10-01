@@ -25,6 +25,8 @@ sys.path.insert(0, str(ROOT))
 
 from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
+from minecraft.skills import base as skills_base                        # noqa: E402
+from minecraft.skills import eat as skills_eat                          # noqa: E402
 from minecraft.controller import ActionResult                       # noqa: E402
 from minecraft.state import (                                       # noqa: E402
     BlockRef, EXACT, EntityRef, ItemStack, UNKNOWN, WorldState,
@@ -94,7 +96,7 @@ class Kitchen:
             self.used_instead.append(self.entity.name)
             return self._result("eat", params)
         name = getattr(self.target, "name", None)
-        if name and skills._interactive(name):
+        if name and skills_base._interactive(name):
             self.used_instead.append(name)
             return self._result("eat", params)
         held = self.stacks.get(self.selected)
@@ -279,20 +281,20 @@ class HowLongItHolds(unittest.TestCase):
     def test_every_food_is_finished_even_on_a_slow_server(self):
         for food in skills.FOODS:
             with self.subTest(food=food):
-                use = skills.eat_ticks(food) / self.SLOW_TPS
+                use = skills_eat.eat_ticks(food) / self.SLOW_TPS
                 self.assertGreaterEqual(self.planned_hold(food),
                                         use + self.LATENCY_S)
 
     def test_no_food_is_eaten_twice_in_one_hold(self):
         for food in skills.FOODS:
             with self.subTest(food=food):
-                twice = 2 * skills.eat_ticks(food) / 20.0
+                twice = 2 * skills_eat.eat_ticks(food) / 20.0
                 self.assertLess(self.planned_hold(food), twice)
 
     def test_the_use_times_are_the_games(self):
-        self.assertEqual(skills.eat_ticks("honey_bottle"), 40)
-        self.assertEqual(skills.eat_ticks("dried_kelp"), 16)
-        self.assertEqual(skills.eat_ticks("bread"), 32)
+        self.assertEqual(skills_eat.eat_ticks("honey_bottle"), 40)
+        self.assertEqual(skills_eat.eat_ticks("dried_kelp"), 16)
+        self.assertEqual(skills_eat.eat_ticks("bread"), 32)
 
     def test_the_cap_is_about_three_seconds(self):
         from minecraft import action_spec

@@ -22,6 +22,7 @@ from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import building                                      # noqa: E402
 from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
+from minecraft.skills import place_build as skills_place_build          # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 from minecraft.task_runner import TaskRunner                        # noqa: E402
 from tests.build_world import BuildWorld                            # noqa: E402
@@ -83,7 +84,7 @@ class PlanTests(unittest.TestCase):
                              (0, 3, "south"), (0, 3, "east"),
                              (0, 3, "west")):
             with self.subTest(facing=facing, at=(x, z)):
-                skills.forget_blueprints()
+                skills_place_build.forget_blueprints()
                 world = BuildWorld({0: ("cobblestone", 40)})
                 for _attempt in range(5):
                     skill, _ = build(world, plan="shelter", x=x, y=64, z=z,
@@ -104,7 +105,7 @@ class PlanTests(unittest.TestCase):
 class BuildTests(unittest.TestCase):
 
     def setUp(self):
-        skills.forget_blueprints()
+        skills_place_build.forget_blueprints()
 
     def test_a_platform(self):
         world = BuildWorld({0: ("cobblestone", 20)})
@@ -202,7 +203,7 @@ class BuildTests(unittest.TestCase):
 class RefusalTests(unittest.TestCase):
 
     def setUp(self):
-        skills.forget_blueprints()
+        skills_place_build.forget_blueprints()
 
     def assertRefused(self, world, *words, **options):
         skill, result = build(world, **options)

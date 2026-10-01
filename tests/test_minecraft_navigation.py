@@ -41,6 +41,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from minecraft import action_spec                                    # noqa: E402
 from minecraft import navigation as nav                               # noqa: E402
 from minecraft import skills, verification as verify_mod              # noqa: E402
+from minecraft.skills import base as skills_base                        # noqa: E402
+from minecraft.skills import navigate as skills_navigate                # noqa: E402
 from minecraft import mining as mining_mod                           # noqa: E402
 from minecraft.controller import ActionResult                          # noqa: E402
 from minecraft.state import (                                          # noqa: E402
@@ -505,7 +507,7 @@ class NavigateToTests(unittest.TestCase):
         skill = skills.create("navigate_to", destination=(4, 0))
         result = run(world, skill)
         self.assertTrue(skill.failed)
-        self.assertEqual(skill.done_reason, skills.CANNOT_SEE_WORLD)
+        self.assertEqual(skill.done_reason, skills_navigate.CANNOT_SEE_WORLD)
         self.assertEqual(result.steps_taken, 0)
 
     def test_it_never_asks_for_an_action_the_runner_does_not_know(self):
@@ -942,13 +944,13 @@ class SweepingAndCalibrationTests(unittest.TestCase):
     def test_a_sweep_is_measured_in_degrees_not_pixels(self):
         """100 pixels is 12 degrees on one machine and 50 on another. A sweep
         sized in pixels either crawls or jumps straight past the tree."""
-        default = skills._sweep_pixels()
+        default = skills_base._sweep_pixels()
         self.assertAlmostEqual(default,
-                               round(skills.SWEEP_DEGREES
+                               round(skills_base.SWEEP_DEGREES
                                      * nav.PIXELS_PER_DEGREE))
         nav.calibrate(400, 20.0)          # this machine: 20 px/degree
-        self.assertAlmostEqual(skills._sweep_pixels(),
-                               round(skills.SWEEP_DEGREES * 20.0))
+        self.assertAlmostEqual(skills_base._sweep_pixels(),
+                               round(skills_base.SWEEP_DEGREES * 20.0))
 
     def test_the_runner_learns_the_mouse_from_any_turn(self):
         """Not just from navigating. A survey turns too, and the measurement
@@ -1803,7 +1805,7 @@ class CrosshairTargetingTests(unittest.TestCase):
                              "it swung at the log with a leaf in front of it")
             self.assertTrue(record.step["note"].startswith("clear oak_leaves"))
         self.assertLessEqual(world.wrong_block_swings,
-                             skills.MAX_LEAVES_PER_LOG)
+                             skills_base.MAX_LEAVES_PER_LOG)
         self.assertIn(log, world.logs, "it cannot have broken a hidden log")
         self.assertTrue(skill.failed)
         self.assertIn("in the way", skill.done_reason)
@@ -1978,8 +1980,8 @@ class MobInTheWayTests(unittest.TestCase):
 
     def test_an_avoided_column_is_forgotten_after_a_few_replans(self):
         skill = skills.NavigateTo(destination=(6, 0))
-        skill._avoid_for((3, 0), skills.AVOID_FOR_REPLANS)
-        for _ in range(skills.AVOID_FOR_REPLANS):
+        skill._avoid_for((3, 0), skills_navigate.AVOID_FOR_REPLANS)
+        for _ in range(skills_navigate.AVOID_FOR_REPLANS):
             self.assertIn((3, 0), skill._avoid)
             skill._age_avoids()
         self.assertNotIn((3, 0), skill._avoid)
@@ -1990,7 +1992,7 @@ class MobInTheWayTests(unittest.TestCase):
         skill.plan(state, 0, ())
         skill.plan(state, 1, (_record("move", (1.5, 64.0, 0.5)),))
         self.assertIn((2, 0), skill._avoid)
-        for _ in range(skills.AVOID_FOR_REPLANS):
+        for _ in range(skills_navigate.AVOID_FOR_REPLANS):
             skill._age_avoids()
         self.assertNotIn((2, 0), skill._avoid, "a moving mob avoided for good")
 
@@ -2006,7 +2008,7 @@ class MobInTheWayTests(unittest.TestCase):
         skill._avoid.clear()
         skill._path = None
         skill.plan(_gap_world(), 3, ())
-        skill._reroutes = skills.MAX_REROUTES
+        skill._reroutes = skills_navigate.MAX_REROUTES
         skill._reroute(stuck_diagnosis())
         self.assertNotIn("cow", skill._stopped)
 
@@ -2014,7 +2016,7 @@ class MobInTheWayTests(unittest.TestCase):
         """Only a mob's column expires: a fence post stays a fence post."""
         skill = skills.NavigateTo(destination=(6, 0))
         skill._reroute(stuck_diagnosis(), avoid=(3, 0))
-        for _ in range(skills.AVOID_FOR_REPLANS + 2):
+        for _ in range(skills_navigate.AVOID_FOR_REPLANS + 2):
             skill._age_avoids()
         self.assertIn((3, 0), skill._avoid)
 
@@ -2103,7 +2105,7 @@ class HopProgressTests(unittest.TestCase):
         self.assertNotIn("route was fine", skill.done_reason)
         self.assertIn("step", skill.done_reason)
         self.assertLess(result.steps_taken, 40)
-        self.assertLessEqual(world.hops, 2 * (skills.MAX_REROUTES + 1))
+        self.assertLessEqual(world.hops, 2 * (skills_navigate.MAX_REROUTES + 1))
 
     def test_a_hop_that_gets_up_resets_the_count(self):
         skill = skills.NavigateTo(destination=(4, 0))
@@ -2194,7 +2196,7 @@ class RerouteBudgetTests(unittest.TestCase):
         skill = skills.NavigateTo(destination=(6, 0))
         look_again = stuck_mod.Diagnosis(stuck_mod.UNKNOWN_TERRAIN,
                                          stuck_mod.OBSERVE)
-        for _ in range(skills.MAX_REROUTES + 1):
+        for _ in range(skills_navigate.MAX_REROUTES + 1):
             skill._reroute(look_again, avoid=None)
         self.assertFalse(skill._stopped, skill._stopped)
         self.assertEqual(skill._reroutes, 0)

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
+from minecraft.skills import place_build as skills_place_build          # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 from minecraft.task_runner import TaskRunner                        # noqa: E402
 from tests.build_world import BuildWorld                            # noqa: E402
@@ -112,10 +113,10 @@ class RefusalTests(unittest.TestCase):
     def test_too_long(self):
         world = BuildWorld({0: ("cobblestone", 64)})
         skill, result = build(world, x=2, y=64, z=0, direction="east",
-                              count=skills.MAX_LINE_BLOCKS + 1)
+                              count=skills_place_build.MAX_LINE_BLOCKS + 1)
         self.assertTrue(skill.failed)
         self.assertEqual(result.steps_taken, 0)
-        self.assertIn(str(skills.MAX_LINE_BLOCKS), skill.done_reason)
+        self.assertIn(str(skills_place_build.MAX_LINE_BLOCKS), skill.done_reason)
 
     def test_down_and_nonsense_directions(self):
         for direction in ("down", "sideways", ""):

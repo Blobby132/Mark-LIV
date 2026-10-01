@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft import skills                                        # noqa: E402
+from minecraft.skills import navigate as skills_navigate                # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 from test_minecraft_navigation import SimWorld, flat, run           # noqa: E402
 
@@ -48,7 +49,7 @@ class HopTests(unittest.TestCase):
         result = run(world, skill, max_steps=45)
         hops = [r for r in result.records
                 if r.step["action"] == "move_and_jump"]
-        self.assertLessEqual(len(hops), skills.MAX_HOPS_ONTO)
+        self.assertLessEqual(len(hops), skills_navigate.MAX_HOPS_ONTO)
         self.assertLess(result.steps_taken, 45, "it ran to the step limit")
         if skill.failed:
             self.assertIn("hopped at the block", skill.done_reason)

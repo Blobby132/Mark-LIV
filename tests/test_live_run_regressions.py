@@ -39,6 +39,7 @@ from core.voice_diagnostics import (                                # noqa: E402
 )
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import skills                                        # noqa: E402
+from minecraft.skills import base as skills_base                        # noqa: E402
 from minecraft import mining as mining_mod                          # noqa: E402
 from minecraft import verification as verify_mod                    # noqa: E402
 from minecraft.progress import BLIND_AFTER, ProgressMonitor         # noqa: E402
@@ -398,7 +399,7 @@ class LeavesInTheWayTests(unittest.TestCase):
         result = run(world, skill)
         clears = [r for r in result.records
                   if r.step.get("note", "").startswith("clear ")]
-        self.assertEqual(len(clears), skills.MAX_LEAVES_PER_LOG)
+        self.assertEqual(len(clears), skills_base.MAX_LEAVES_PER_LOG)
         self.assertEqual(world.broken, [])
         self.assertIn("out of reach", skill.done_reason)
         self.assertIn("oak_leaves", skill.done_reason,
