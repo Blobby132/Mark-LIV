@@ -69,7 +69,7 @@ widen what the session allows.
 
 | Module | Job |
 |---|---|
-| `navigation.py` | The local terrain map and the pathfinder. Imports only heapq, math, dataclasses. |
+| `navigation.py` | The local terrain map and the pathfinder. Imports only heapq, math, dataclasses and `aiming` (which imports only math and dataclasses). |
 | `aiming.py` | "Look at that" → mouse pixels, with calibration. |
 | `mining.py` | Break times, the right tool, whether a block drops. |
 | `building.py` | Which cell may take a block, and the face to click. |

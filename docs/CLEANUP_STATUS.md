@@ -22,8 +22,8 @@ part-way, the next one starts here.
 | Item | State | Commit |
 |---|---|---|
 | 1 project-structure doc | done | 6e0a090 |
-| 2 move test_install_mod | done | (this commit) |
-| 3 two readme lines | | |
+| 2 move test_install_mod | done | 3281520 |
+| 3 two readme lines | done | (this commit) |
 | 4 unused public names | | |
 | 5 remaining lint | | |
 | 6 stale Java comment | | |
@@ -31,4 +31,4 @@ part-way, the next one starts here.
 
 ## Next
 
-Item 3.
+Item 4.
