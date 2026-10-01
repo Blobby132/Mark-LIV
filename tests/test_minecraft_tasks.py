@@ -26,59 +26,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import skills, task_runner, verification as verify_mod  # noqa: E402
-from minecraft.controller import ActionResult                          # noqa: E402
 from minecraft.state import BlockRef, INFERRED, WorldState, empty_state  # noqa: E402
 from minecraft.task_runner import (                                    # noqa: E402
     COMPLETED, FAILED, INCOMPLETE, MAX_TASK_STEPS, STOPPED, Step, StepRecord,
     TaskRunner,
 )
-
-
-class FakeController:
-    """Records calls. Its `_guard` is what the runner consults between steps."""
-
-    def __init__(self, guard=""):
-        self.calls: list = []
-        self.guard_reason = guard
-
-    def _guard(self):
-        return self.guard_reason
-
-    def _record(self, name, params):
-        self.calls.append((name, dict(params or {})))
-        return ActionResult(ok=True, action=name, requested=dict(params or {}),
-                            actual_duration_ms=500)
-
-    def move(self, p): return self._record("move", p)
-    def look(self, p): return self._record("look", p)
-    def jump(self, p): return self._record("jump", p)
-    def attack(self, p): return self._record("attack", p)
-    def mine(self, p): return self._record("mine", p)
-    def place(self, p): return self._record("place", p)
-    def interact(self, p): return self._record("interact", p)
-    def eat(self, p): return self._record("eat", p)
-    def drop(self, p): return self._record("drop", p)
-    def inventory(self, p): return self._record("inventory", p)
-    def use_item(self, p): return self._record("use_item", p)
-    def sneak(self, p): return self._record("sneak", p)
-    def sprint(self, p): return self._record("sprint", p)
-    def hotbar_select(self, p): return self._record("hotbar_select", p)
-
-
-class StaticSource:
-    def __init__(self, state=None):
-        self.state = state if state is not None else empty_state("test")
-        self.reads = 0
-
-    def read(self):
-        self.reads += 1
-        return self.state
-
-
-def runner(controller=None, source=None):
-    return TaskRunner(controller or FakeController(),
-                      source or StaticSource(),
-                      sleeper=lambda _s: None)
+from tests.support.fakes import (  # noqa: E402
+    FakeController, StaticSource, runner,
+)
 
 
 # ── Adversarial skills ───────────────────────────────────────────────────────

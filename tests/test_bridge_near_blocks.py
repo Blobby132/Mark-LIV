@@ -107,7 +107,7 @@ class ReaderTests(unittest.TestCase):
 
     def read(self, near):
         sys.path.insert(0, str(ROOT / "tests"))
-        from test_minecraft_mod_bridge import payload, source
+        from tests.support.bridge_payloads import payload, source
         data = payload(near_blocks=near)
         if near is None:
             del data["near_blocks"]

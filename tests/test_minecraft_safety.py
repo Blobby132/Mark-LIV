@@ -29,7 +29,7 @@ from minecraft.input_backend import FakeInputBackend              # noqa: E402
 from minecraft.ledger import InputLedger                          # noqa: E402
 from minecraft.session import SessionManager                      # noqa: E402
 
-from tests.test_minecraft_controller import FakeLocator, FakeProcess  # noqa: E402
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
 from minecraft import controller as controller_mod                # noqa: E402
 
 

@@ -105,7 +105,7 @@ class TestOneConfirmationCoversGameplay(unittest.TestCase):
     def _controller(self):
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from test_minecraft_controller import FakeLocator, FakeProcess
+        from tests.support.fakes import FakeLocator, FakeProcess
         from minecraft.controller import MinecraftController
         from minecraft.input_backend import FakeInputBackend
         from minecraft.session import SessionManager
@@ -279,7 +279,7 @@ class TestSessionLifetime(unittest.TestCase):
     def test_f12_still_revokes_an_unlimited_session(self):
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from test_minecraft_controller import FakeLocator, FakeProcess
+        from tests.support.fakes import FakeLocator, FakeProcess
         from minecraft.controller import MinecraftController
         from minecraft.input_backend import FakeInputBackend
         from minecraft.session import SessionManager, UNLIMITED

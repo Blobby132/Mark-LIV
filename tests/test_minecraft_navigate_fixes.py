@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from minecraft import skills                                        # noqa: E402
 from minecraft.skills import navigate as skills_navigate                # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
-from test_minecraft_navigation import SimWorld, flat, run           # noqa: E402
+from tests.support.sim_world import SimWorld, flat, run  # noqa: E402
 
 
 def with_columns(raised):

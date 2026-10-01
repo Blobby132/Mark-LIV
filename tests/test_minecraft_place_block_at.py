@@ -26,7 +26,7 @@ from minecraft import skills                                        # noqa: E402
 from minecraft.state import (                                       # noqa: E402
     EXACT, NearbyBlock, WorldState)
 from minecraft.task_runner import TaskRunner                        # noqa: E402
-from tests.build_world import BuildWorld                            # noqa: E402
+from tests.support.build_world import BuildWorld  # noqa: E402
 
 
 def place(world, x, y, z, item="cobblestone"):

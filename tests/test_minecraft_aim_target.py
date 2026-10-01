@@ -40,8 +40,8 @@ from minecraft.state import (                                       # noqa: E402
 )
 from minecraft.task_runner import Step                              # noqa: E402
 
-from tests.test_minecraft_controller import FakeLocator, FakeProcess  # noqa: E402
-from tests.test_minecraft_navigation import TreeWorld, flat, run    # noqa: E402
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
+from tests.support.sim_world import TreeWorld, flat, run  # noqa: E402
 
 LOG = NearbyBlock(2, 64, 0, "oak_log", True)
 """Two blocks east of a player standing at (0.5, 64, 0.5): within reach."""

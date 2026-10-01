@@ -25,18 +25,8 @@ from minecraft.controller import MinecraftController                   # noqa: E
 from minecraft.input_backend import FakeInputBackend                   # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
 from minecraft.state import EXACT, ItemStack, WorldState               # noqa: E402
-from test_minecraft_controller import FakeLocator, FakeProcess         # noqa: E402
-
-DENIED = (
-    "lava_bucket", "water_bucket", "powder_snow_bucket", "bucket",
-    "milk_bucket", "axolotl_bucket", "flint_and_steel", "fire_charge", "tnt",
-    "zombie_spawn_egg", "creeper_spawn_egg", "ender_pearl", "ender_eye",
-    "splash_potion", "lingering_potion", "potion", "bow", "crossbow",
-    "trident", "snowball", "egg", "brown_egg", "firework_rocket",
-    "end_crystal", "experience_bottle", "wind_charge", "tnt_minecart",
-    "fishing_rod", "iron_axe", "diamond_shovel", "wooden_hoe", "shears",
-    "brush", "bone_meal",
-)
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
+from tests.support.held_items import DENIED  # noqa: E402
 BLOCKS = ("cobblestone", "oak_planks", "dirt", "stone", "torch",
           "crafting_table", "glass", "oak_log", "sand")
 

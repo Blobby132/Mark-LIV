@@ -25,7 +25,7 @@ from minecraft import skills                                        # noqa: E402
 from minecraft.skills import place_build as skills_place_build          # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 from minecraft.task_runner import TaskRunner                        # noqa: E402
-from tests.build_world import BuildWorld                            # noqa: E402
+from tests.support.build_world import BuildWorld  # noqa: E402
 
 
 def build(world, **options):

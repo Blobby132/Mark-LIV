@@ -29,8 +29,8 @@ from minecraft import action_spec                                      # noqa: E
 from minecraft.action_spec import InvalidAction                        # noqa: E402
 from minecraft.controller import MinecraftController                   # noqa: E402
 from minecraft.input_backend import FakeInputBackend                   # noqa: E402
-from test_minecraft_controller import FakeLocator, FakeProcess         # noqa: E402
-from test_minecraft_place_held_item import DENIED                      # noqa: E402
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
+from tests.support.held_items import DENIED  # noqa: E402
 
 
 def controller(held):
@@ -130,7 +130,7 @@ class CraftWithAnAxeInHandTests(unittest.TestCase):
     def test_it_selects_a_safe_slot_to_open_the_table_and_puts_it_back(self):
         from minecraft import aiming as aiming_mod, navigation as nav, skills
         from minecraft.task_runner import TaskRunner
-        from tests.gui_world import GuiWorld
+        from tests.support.gui_world import GuiWorld
         world = GuiWorld({0: ("stone_axe", 1), 1: ("oak_planks", 5),
                           2: ("stick", 4)},
                          table=(1, 64, 0), yaw=-90.0)
@@ -147,7 +147,7 @@ class CraftWithAnAxeInHandTests(unittest.TestCase):
     def test_the_slot_is_put_back_when_the_table_will_not_open(self):
         from minecraft import aiming as aiming_mod, navigation as nav, skills
         from minecraft.task_runner import TaskRunner
-        from tests.gui_world import GuiWorld
+        from tests.support.gui_world import GuiWorld
         world = GuiWorld({0: ("stone_axe", 1), 1: ("oak_planks", 5),
                           2: ("stick", 4)},
                          table=(1, 64, 0), yaw=-90.0)

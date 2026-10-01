@@ -26,7 +26,7 @@ from minecraft import skills                                         # noqa: E40
 from minecraft.skills import base as skills_base                        # noqa: E402
 from minecraft.state import (                                        # noqa: E402
     EXACT, EntityRef, ItemStack, NearbyBlock, WorldState)
-from tests.test_minecraft_navigation import flat                     # noqa: E402
+from tests.support.sim_world import flat  # noqa: E402
 
 EAST = NearbyBlock(6, 64, 0, "oak_log", True)
 WEST = NearbyBlock(-6, 64, 0, "oak_log", True)

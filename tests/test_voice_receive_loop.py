@@ -558,7 +558,7 @@ class QueueAccountingTests(unittest.TestCase):
     dropped. The level meter plays no part in any of it."""
 
     def test_the_counts_reconcile_with_what_is_in_the_queue(self):
-        from tests.test_voice_main_paths import METHODS as MAIN_PATHS
+        from tests.support.voice_paths import METHODS as MAIN_PATHS
         a = types.SimpleNamespace(_voice=VoiceDiagnostics(),
                                   out_queue=asyncio.Queue(maxsize=5))
         a._enqueue_audio = types.MethodType(MAIN_PATHS["_enqueue_audio"], a)

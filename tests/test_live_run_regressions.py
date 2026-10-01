@@ -40,74 +40,17 @@ from core.voice_diagnostics import (                                # noqa: E402
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import skills                                        # noqa: E402
 from minecraft.skills import base as skills_base                        # noqa: E402
-from minecraft import mining as mining_mod                          # noqa: E402
 from minecraft import verification as verify_mod                    # noqa: E402
 from minecraft.progress import BLIND_AFTER, ProgressMonitor         # noqa: E402
-from minecraft.state import EntityRef, NearbyBlock                  # noqa: E402
+from minecraft.state import NearbyBlock                  # noqa: E402
 
-from tests.test_minecraft_navigation import TreeWorld, flat, run    # noqa: E402
+from tests.support.sim_world import TreeWorld, flat, run  # noqa: E402
+from tests.support.regression_worlds import DropWorld, LeafWorld  # noqa: E402
 
 
 def trunk(x=5, z=0, bottom=64, height=4):
     return [NearbyBlock(x, y, z, "oak_log", True)
             for y in range(bottom, bottom + height)]
-
-
-class DropWorld(TreeWorld):
-    """TreeWorld where a broken log DROPS, as in the real game.
-
-    TreeWorld puts a broken log straight into the inventory. Minecraft does
-    not: it spawns an item where the block was, which lands beside the trunk,
-    and the player collects it only by walking within about a block of it.
-    The item is reported the way the bridge reports it -- an entity of
-    category "item" with a position."""
-
-    PICKUP = 1.425
-    """Minecraft collects items whose box meets the player's box grown by one
-    block sideways: about 1.4 blocks either side, per axis -- a box, not a
-    circle."""
-
-    def __init__(self, *args, drop_under_trunk=False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.drops = []
-        self.drop_under_trunk = drop_under_trunk
-
-    def mine(self, params):
-        before = dict(self.inventory)
-        broke_before = len(self.broken)
-        result = TreeWorld.mine(self, params)
-        if len(self.broken) > broke_before:
-            log = self.broken[-1]
-            self.inventory = before                 # not in the bag yet...
-            if self.drop_under_trunk:
-                # ...it fell into the gap it left, under the rest of the tree.
-                self.drops.append((log.x + 0.5, 64.0, log.z + 0.5))
-            else:
-                # ...it fell to the ground on the far side of the trunk.
-                self.drops.append((log.x + 1.5, 64.0, log.z + 0.5))
-        self._collect()
-        return result
-
-    def _collect(self):
-        for drop in list(self.drops):
-            if abs(drop[0] - self.x) <= self.PICKUP \
-                    and abs(drop[2] - self.z) <= self.PICKUP:
-                self.drops.remove(drop)
-                self.inventory["oak_log"] = self.inventory.get("oak_log", 0) + 1
-
-    def _walk(self, distance, jumping):
-        TreeWorld._walk(self, distance, jumping)
-        self._collect()
-
-    def read(self):
-        self._collect()
-        state = TreeWorld.read(self)
-        items = tuple(
-            EntityRef(name="item", category="item", hostile=False,
-                      position=drop,
-                      distance=math.dist(drop, (self.x, self.y, self.z)))
-            for drop in self.drops)
-        return dataclasses.replace(state, nearby_entities=items)
 
 
 class CollectOneLogTests(unittest.TestCase):
@@ -311,29 +254,6 @@ class VoiceWatchdogFalseAlarmTests(unittest.TestCase):
         self.assertIn("no_transcript=1", self.diag.line())
 
 
-# ── The second run ───────────────────────────────────────────────────────────
-
-class LeafWorld(TreeWorld):
-    """TreeWorld whose leaves can be broken, as the game's can: hold attack
-    on a leaf block long enough and it goes."""
-
-    def mine(self, params):
-        hit = self.crosshair()
-        if hit is not None and hit[0] in self.blocks \
-                and hit[1].endswith("_leaves"):
-            self.swings += 1
-            needed = mining_mod.estimate_break_duration(hit[1]).seconds
-            if float(params.get("duration", 0)) >= needed:
-                del self.blocks[hit[0]]
-                self.leaves_broken.append(hit[0])
-            return self._result("mine", params)
-        return TreeWorld.mine(self, params)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.leaves_broken = []
-
-
 def canopy_round(log, below=True):
     """Leaves boxing a log in on every side a player could see it from."""
     x, y, z = log
@@ -457,8 +377,7 @@ class BreakBlockHonestyTests(unittest.TestCase):
 
     def test_nothing_under_the_crosshair_is_not_swung_at_or_called_gone(self):
         from minecraft.task_runner import INCOMPLETE
-        from tests.test_minecraft_tasks import (
-            FakeController, StaticSource, runner)
+        from tests.support.fakes import FakeController, StaticSource, runner
         controller = FakeController()
         result = runner(controller, StaticSource(self.looking_at("air"))).run(
             skills.create("break_block"))
@@ -473,7 +392,7 @@ class BreakBlockHonestyTests(unittest.TestCase):
         after it. That is not evidence anything broke."""
         from minecraft.state import WorldState
         from minecraft.task_runner import INCOMPLETE
-        from tests.test_minecraft_tasks import FakeController, runner
+        from tests.support.fakes import FakeController, runner
 
         class Source:
             def __init__(inner):
@@ -493,7 +412,7 @@ class BreakBlockHonestyTests(unittest.TestCase):
 
     def test_a_block_that_really_broke_is_still_reported(self):
         from minecraft.task_runner import COMPLETED
-        from tests.test_minecraft_tasks import FakeController, runner
+        from tests.support.fakes import FakeController, runner
 
         class Source:
             def __init__(inner):
@@ -519,7 +438,7 @@ class RacyBridge:
 
     @staticmethod
     def make(surface, **kwargs):
-        from tests.test_minecraft_navigation import SimWorld
+        from tests.support.sim_world import SimWorld
 
         class World(SimWorld):
             stamp_units = "epoch_ms"
@@ -581,7 +500,7 @@ class ArrivalMessageTests(unittest.TestCase):
     def test_arriving_short_of_the_tree_says_so(self):
         """"Walk to the nearest tree" answered "arrived, 0 steps" three
         blocks away, the nearest place it could stand, without saying so."""
-        from tests.test_minecraft_navigation import SimWorld
+        from tests.support.sim_world import SimWorld
         aiming_mod.SHARED.reset()
         log = NearbyBlock(3, 64, 0, "oak_log", True)
         surface = [NearbyBlock(b.x, b.y, b.z, "water", False)
@@ -600,7 +519,7 @@ class ArrivalMessageTests(unittest.TestCase):
     def test_a_tree_is_named_by_its_trunk_not_its_nearest_branch(self):
         """The fifth run said "2 blocks from an oak log at (-47, 69, -202)"
         -- a log five blocks up. Where a tree is, is where its trunk is."""
-        from tests.test_minecraft_navigation import SimWorld
+        from tests.support.sim_world import SimWorld
         # Standing up on higher ground, as in the run, so the nearest log
         # is the branch, not the foot of the trunk.
         world = SimWorld(flat(), position=(0.5, 68.0, 0.5))
@@ -617,7 +536,7 @@ class ArrivalMessageTests(unittest.TestCase):
         self.assertNotIn("69", skill.done_reason)
 
     def test_arriving_beside_it_does_not_apologise(self):
-        from tests.test_minecraft_navigation import SimWorld
+        from tests.support.sim_world import SimWorld
         world = SimWorld(flat())
         world.notable = (NearbyBlock(5, 64, 0, "oak_log", True),)
         skill = skills.create("navigate_to", target="log")

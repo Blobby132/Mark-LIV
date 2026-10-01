@@ -21,51 +21,7 @@ from minecraft.controller import MinecraftController              # noqa: E402
 from minecraft.errors import InvalidAction                        # noqa: E402
 from minecraft.input_backend import FakeInputBackend              # noqa: E402
 from minecraft.session import SessionManager                      # noqa: E402
-from minecraft.window import WindowInfo, WindowRect               # noqa: E402
-
-
-class FakeLocator:
-    """A window whose state the test sets directly."""
-
-    def __init__(self, found=True, foreground=True, focus_known=True,
-                 pid=4242, width=1920, height=1080):
-        self.found = found
-        self.foreground = foreground
-        self.focus_known = focus_known
-        self.pid = pid
-        self.width = width
-        self.height = height
-        self.probes = 0
-
-    def attach(self) -> WindowInfo:
-        return self.probe()
-
-    def probe(self) -> WindowInfo:
-        self.probes += 1
-        rect = (WindowRect(0, 0, self.width, self.height)
-                if self.found else None)
-        return WindowInfo(found=self.found, handle=1, title="Minecraft 1.21",
-                          pid=self.pid, rect=rect,
-                          foreground=self.foreground,
-                          focus_known=self.focus_known,
-                          detail="fake window")
-
-
-class FakeProcess:
-    """Stands in for minecraft/process.py."""
-
-    def __init__(self, alive=True):
-        self.alive = alive
-
-    def is_alive(self, pid):
-        return self.alive
-
-    def find(self):
-        from minecraft.process import ProcessInfo
-        if self.alive:
-            return ProcessInfo(running=True, pid=4242, name="javaw.exe",
-                               matched_on="fake", detail="fake Minecraft")
-        return ProcessInfo(running=False, detail="not running")
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
 
 
 class _ControllerCase(unittest.TestCase):

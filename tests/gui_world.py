@@ -32,7 +32,7 @@ from minecraft import recipes
 from minecraft.controller import ActionResult
 from minecraft.state import (EXACT, BlockRef, EntityRef, GuiSlot, GuiView,
                              ItemStack, NearbyBlock, WorldState)
-from tests.test_minecraft_navigation import TreeWorld, flat
+from tests.support.sim_world import TreeWorld, flat
 
 SCALE = 3.0
 WINDOW = (1920, 1080)
@@ -192,7 +192,7 @@ class GuiWorld(TreeWorld):
         return total
 
     def read(self):
-        from tests.test_minecraft_navigation import SimWorld
+        from tests.support.sim_world import SimWorld
         base = SimWorld.read(self)
         hit = self.crosshair()
         target = (BlockRef(name=hit[1], x=hit[0][0], y=hit[0][1],

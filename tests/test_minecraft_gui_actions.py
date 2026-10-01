@@ -24,7 +24,7 @@ from minecraft.controller import MinecraftController                   # noqa: E
 from minecraft.input_backend import FakeInputBackend                   # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
 from minecraft.state import EXACT, GuiSlot, GuiView, WorldState        # noqa: E402
-from test_minecraft_controller import FakeLocator, FakeProcess         # noqa: E402
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
 
 SLOT = GuiSlot(i=0, role="craft_out", x=500.0, y=300.0)
 

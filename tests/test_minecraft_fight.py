@@ -30,8 +30,8 @@ from minecraft import action_spec, skills                           # noqa: E402
 from minecraft.skills import combat as skills_combat                    # noqa: E402
 from minecraft.controller import ActionResult                       # noqa: E402
 from minecraft.state import EntityRef, ItemStack                    # noqa: E402
-from test_minecraft_flee import MobWorld                            # noqa: E402
-from test_minecraft_navigation import run                           # noqa: E402
+from tests.support.mob_world import MobWorld  # noqa: E402
+from tests.support.sim_world import run  # noqa: E402
 
 
 class Arena(MobWorld):

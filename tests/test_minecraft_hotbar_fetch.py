@@ -27,7 +27,7 @@ from minecraft.state import (                                       # noqa: E402
     EXACT, ItemStack, NearbyBlock, WorldState)
 from minecraft.task_runner import (                                 # noqa: E402
     COMPLETED, STOPPED, Step, TaskRunner)
-from tests.gui_world import GuiWorld, zombie                        # noqa: E402
+from tests.support.gui_world import GuiWorld, zombie  # noqa: E402
 
 
 def run(world, skill, max_steps=45):

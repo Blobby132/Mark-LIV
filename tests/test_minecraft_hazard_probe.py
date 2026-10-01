@@ -28,7 +28,7 @@ from minecraft.mod_bridge import ModBridgeStateSource                  # noqa: E
 from minecraft.input_backend import FakeInputBackend                   # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
 from minecraft.state import EntityRef, EXACT, WorldState               # noqa: E402
-from test_minecraft_controller import FakeLocator, FakeProcess         # noqa: E402
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
 
 
 class ControllerHoldTests(unittest.TestCase):

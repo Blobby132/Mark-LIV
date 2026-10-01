@@ -16,7 +16,7 @@ from minecraft import gui as gui_mod                                # noqa: E402
 from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
 from minecraft.task_runner import TaskRunner                        # noqa: E402
-from tests.gui_world import GuiWorld, zombie                        # noqa: E402
+from tests.support.gui_world import GuiWorld, zombie  # noqa: E402
 
 
 def craft(world, item, count=1, max_steps=200):
@@ -81,7 +81,7 @@ class ThreeByThreeTests(unittest.TestCase):
     def test_a_table_in_the_inventory_is_placed_and_used(self):
         """B3f with B4a: no table near, one held -- placed beside the
         player, proven like any placement, then opened."""
-        from tests.build_world import BuildWorld
+        from tests.support.build_world import BuildWorld
         world = BuildWorld({0: ("oak_planks", 5), 1: ("stick", 4),
                             2: ("crafting_table", 1)})
         skill, result = craft(world, "wooden_pickaxe")

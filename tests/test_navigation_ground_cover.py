@@ -40,10 +40,10 @@ from minecraft.skills import base as skills_base                        # noqa: 
 from minecraft.mod_bridge import ModBridgeStateSource               # noqa: E402
 from minecraft.state import NearbyBlock                             # noqa: E402
 
-from tests.test_minecraft_navigation import (                       # noqa: E402
+from tests.support.sim_world import (  # noqa: E402
     SimWorld, _entered_face, flat, run, state_from,
 )
-from tests.test_live_run_regressions import LeafWorld               # noqa: E402
+from tests.support.regression_worlds import LeafWorld  # noqa: E402
 
 OLD = "markliv.minecraft.state/3"
 NEW = "markliv.minecraft.state/4"

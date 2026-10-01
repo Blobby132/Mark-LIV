@@ -27,7 +27,7 @@ import math
 from minecraft import action_spec
 from minecraft import building
 from minecraft.state import NearbyBlock, NearSnapshot
-from tests.gui_world import GuiWorld
+from tests.support.gui_world import GuiWorld
 
 MAX_CLEARANCE = 4
 NEED = 2

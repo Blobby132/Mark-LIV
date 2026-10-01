@@ -29,8 +29,8 @@ from minecraft import skills                                        # noqa: E402
 from minecraft import verification as verify_mod                   # noqa: E402
 from minecraft.state import BlockRef, EXACT, NearbyBlock, WorldState  # noqa: E402
 
-from tests.test_live_run_regressions import DropWorld               # noqa: E402
-from tests.test_minecraft_navigation import flat, run               # noqa: E402
+from tests.support.regression_worlds import DropWorld  # noqa: E402
+from tests.support.sim_world import flat, run  # noqa: E402
 
 
 def trunk(x, z, bottom=64, top=67, name="oak_log"):

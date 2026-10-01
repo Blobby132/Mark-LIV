@@ -25,7 +25,7 @@ from minecraft.danger import DangerWatch, HOSTILE_RADIUS            # noqa: E402
 from minecraft.state import EntityRef, EXACT, NearbyBlock, WorldState  # noqa: E402
 from minecraft.task_runner import STOPPED                           # noqa: E402
 
-from tests.test_minecraft_navigation import TreeWorld, flat, run    # noqa: E402
+from tests.support.sim_world import TreeWorld, flat, run  # noqa: E402
 
 
 def mob(name, distance, hostile=True):
@@ -177,7 +177,7 @@ class WalkingAwayTests(unittest.TestCase):
     helps, so navigate_to keeps going and says what is near when it ends."""
 
     def test_navigate_to_walks_away_from_a_zombie(self):
-        from tests.test_minecraft_navigation import SimWorld
+        from tests.support.sim_world import SimWorld
 
         class Chased(SimWorld):
             def read(self):

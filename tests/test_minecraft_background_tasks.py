@@ -36,7 +36,7 @@ from minecraft.state import EXACT, WorldState                       # noqa: E402
 from minecraft.task_runner import STOPPED, Step, TaskRunner         # noqa: E402
 from minecraft.task_slot import TaskSlot                            # noqa: E402
 
-from tests.test_minecraft_controller import FakeLocator, FakeProcess  # noqa: E402
+from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
 
 
 class StillSource:

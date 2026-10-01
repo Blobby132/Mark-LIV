@@ -92,8 +92,8 @@ class TaskResultTests(unittest.TestCase):
 
     def test_a_task_ending_at_dusk_says_so(self):
         from minecraft import skills
-        from test_minecraft_flee import MobWorld, zombie
-        from test_minecraft_navigation import run
+        from tests.support.mob_world import MobWorld, zombie
+        from tests.support.sim_world import run
         import dataclasses
 
         class Dusk(MobWorld):

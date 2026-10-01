@@ -26,7 +26,7 @@ from minecraft.skills import collect as skills_collect                  # noqa: 
 from minecraft.state import (                                        # noqa: E402
     BlockRef, EXACT, EntityRef, ItemStack, NearbyBlock, WorldState)
 from minecraft.task_runner import TaskRunner                         # noqa: E402
-from tests.test_minecraft_navigation import TreeWorld                # noqa: E402
+from tests.support.sim_world import TreeWorld  # noqa: E402
 
 DROPS = {"stone": "cobblestone", "grass_block": "dirt", "dirt": "dirt",
          "sand": "sand", "coal_ore": "coal"}
