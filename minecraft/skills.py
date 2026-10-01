@@ -100,13 +100,6 @@ DROP_RADIUS = 4.0
 treated as its drops and fetched. Further than that, an item on the ground is
 somebody else's business."""
 
-def _could_be_a_log(entity) -> bool:
-    """A dropped item that is a log -- or that might be, when an older jar
-    does not say what the item is."""
-    stack = getattr(entity, "item", None)
-    return stack is None or getattr(stack, "name", None) in LOG_BLOCKS
-
-
 _ARRIVED = object()
 """What _walk_towards returns when the walk is over and nothing is left to
 step: the caller decides what arriving means, instead of a filler step."""
@@ -1391,31 +1384,17 @@ def block_label(block) -> str:
 
 
 @dataclass
-class CollectLogs(_HoldsTheRightTool):
-    """Find a tree, get to it, mine it, repeat. The first genuinely useful goal.
+class _Gatherer(_HoldsTheRightTool):
+    """Find a block, get to it, mine it, pick up what it drops, repeat.
 
-    HOW IT LOOKS FOR A TREE DEPENDS ON WHAT IT CAN SEE
-        With the terrain scan, it finds the nearest log in the scanned volume,
-        checks there is a walkable route, walks there, aims at it and mines.
-        That is the difference between looking for a tree and turning on the
-        spot hoping one comes past — which is what the previous version did,
-        and what it looked like it was doing.
-
-        Without the scan it falls back to the crosshair sweep. Same skill,
-        much weaker, and the report says which one ran.
-
-    WHAT IT COUNTS DEPENDS ON WHAT CAN BE SEEN TOO
-        With the inventory readable, "collect 4 logs" means four logs actually
-        in the inventory — the real claim. Without it, only the block
-        disappearing is observable, and that is a weaker thing: an item that
-        fell in lava or landed out of reach was broken and never picked up.
-        So the result says which claim it is making.
-
-    ONE HOLD PER LOG, NOT SEVERAL TAPS
-        Minecraft discards breaking progress the moment the button comes up,
-        so a mining step asks for one continuous hold of at least
-        MIN_USEFUL_MINE_S. A skill that asks for one second mines forever and
-        breaks nothing, which is indistinguishable from broken input."""
+    The machinery collect_logs was built with -- a route to somewhere to
+    stand, an aim the bridge confirms block by block, a hold sized by the
+    break-time model with the right hotbar tool, and a walk over to the
+    drops -- for any set of blocks. Parameterised by what a subclass
+    supplies: which blocks to break (`_wanted_names`), which items are
+    their drops and so count (`_drop_names`), what to call one (`_noun`),
+    how to pick the next one (`_next_target`), and `count`. collect_logs,
+    fell_tree and collect_blocks are thin subclasses."""
 
     count: int = 4
     sweep_steps: int = 10
@@ -1426,8 +1405,51 @@ class CollectLogs(_HoldsTheRightTool):
     """fell_tree: every log of one tree it can reach, then stop -- rather
     than a count of logs from wherever they are nearest."""
 
-    name = "collect_logs"
+    name = "gather"
     verifiable_with = ("surface", "target_block", "inventory")
+
+    # ── what a subclass supplies ─────────────────────────────────────────
+
+    def _wanted_names(self) -> frozenset:
+        """The blocks to break."""
+        return LOG_BLOCKS
+
+    def _drop_names(self) -> frozenset:
+        """The items those blocks drop: what is counted and fetched."""
+        return LOG_BLOCKS
+
+    def _noun(self, plural: bool = False) -> str:
+        return "logs" if plural else "log"
+
+    def _broken_noun(self) -> str:
+        """What the broken count counts, in the pickup report."""
+        return "block(s)"
+
+    def _clears_leaves(self) -> bool:
+        """Break leaves in the way of the aim? Only round a tree."""
+        return False
+
+    def _next_target(self, state):
+        """The next block to go for: the nearest wanted one there is a route
+        to somewhere to stand by, not given up on."""
+        return nav.nearest_of(state, nav.blocks_matching(
+            state, self._wanted_names()), reachable_only=True,
+            exclude=self._skip)
+
+    def _nearest_seen(self, state):
+        """The nearest wanted block at all -- for saying why none will do."""
+        return nav.nearest_of(state, nav.blocks_matching(
+            state, self._wanted_names()))
+
+    def _none_found_note(self) -> str:
+        return ""
+
+    def _work_without_the_map(self, state):
+        """No terrain scan: nothing to plan over."""
+        self._walk_failed = (f"Collecting {self._noun(True)} needs the "
+                             f"terrain scan from the bridge mod, to see "
+                             f"where they are.")
+        return None
 
     _broken: int = 0
     _collected: int = 0
@@ -1504,52 +1526,14 @@ class CollectLogs(_HoldsTheRightTool):
         return f"{self._progress_text()}{how}"
 
     def _progress_text(self) -> str:
-        if self.whole_tree:
-            return self._tree_progress_text()
+        what = self._noun(True)
         if self._can_count:
-            return (f"broke {self._broken} and collected {self._collected} "
-                    f"of {self.count} log(s), counted in the inventory"
-                    f"{self._trees_text()}")
-        return (f"broke {self._broken} of {self.count} log(s){self._trees_text()}"
-                f" — I cannot see the inventory, so I am reporting blocks "
-                f"that disappeared, not items picked up")
-
-    def _tree_progress_text(self) -> str:
-        labels = [self._tree_of.get(tuple(w)) for w in self._broken_at]
-        labels = [l for l in labels if l is not None]
-        tree = _tree_label(labels[0]) if labels else "the tree"
-        text = f"broke {self._broken} log(s) from {tree}"
-        if self._can_count:
-            text += (f" and collected {self._collected}, counted in the "
-                     f"inventory")
-        else:
-            text += (" — I cannot see the inventory, so these are blocks "
-                     "that disappeared, not items picked up")
-        if self._tree_left:
-            heights = sorted({b.y for b in self._tree_left})
-            span = (f"y {heights[0]}" if len(heights) == 1
-                    else f"y {heights[0]}–{heights[-1]}")
-            text += (f"; {len(self._tree_left)} more log(s) of it are still "
-                     f"standing ({span}) where I cannot reach or hit them")
-        elif self._tree_done:
-            text += "; none of it is left standing that I can see"
-        return text
-
-    def _trees_text(self) -> str:
-        """Which trees the broken logs came from, so "why did you mine that
-        tree" has a true answer rather than an invented one."""
-        counts: dict = {}
-        for where in self._broken_at:
-            label = self._tree_of.get(tuple(where))
-            if label is not None:
-                counts[label] = counts.get(label, 0) + 1
-        if not counts:
-            return ""
-        if len(counts) == 1:
-            return f", all from {_tree_label(next(iter(counts)))}"
-        parts = [f"{n} from {_tree_label(label)}"
-                 for label, n in counts.items()]
-        return f" — {', '.join(parts)}"
+            return (f"broke {self._broken} block(s) and collected "
+                    f"{self._collected} of {self.count} {what}, counted in "
+                    f"the inventory")
+        return (f"broke {self._broken} block(s) for {self.count} {what} — I "
+                f"cannot see the inventory, so I am reporting blocks that "
+                f"disappeared, not items picked up")
 
     # ── planning ─────────────────────────────────────────────────────────
 
@@ -1603,7 +1587,7 @@ class CollectLogs(_HoldsTheRightTool):
 
         if not crosshair_readable:
             return None
-        return self._work_from_the_crosshair(state)
+        return self._work_without_the_map(state)
 
     def account_for(self, state, history) -> None:
         """Count the final step before reporting.
@@ -1631,17 +1615,17 @@ class CollectLogs(_HoldsTheRightTool):
         if self._can_count:
             # Collected: what is actually in the bag, against where it started.
             if self._starting_logs is None:
-                self._starting_logs = _log_total(state)
-            self._collected = _log_total(state) - self._starting_logs
+                self._starting_logs = _item_total(state, self._drop_names())
+            self._collected = _item_total(state, self._drop_names()) - self._starting_logs
 
     def _work_from_the_map(self, state, local, crosshair_readable,
                            history=()):
         """Next log: walk to it if it is far, aim and mine if it is close."""
-        target = self._next_log(state)
+        target = self._next_target(state)
         if target is None and self._tree_done:
             return None
         if target is None:
-            seen = nav.nearest_block(state, "log")
+            seen = self._nearest_seen(state)
             if seen is not None and seen.position in self._skip \
                     and self._aim_gave_up:
                 # The logs left are ones this task already gave up aiming at.
@@ -1652,8 +1636,8 @@ class CollectLogs(_HoldsTheRightTool):
             if seen is None:
                 self._walk_failed = (
                     f"The scan covered {local.known_columns} columns within "
-                    f"{local.radius or '?'} blocks and found no logs. There "
-                    f"may be a forest past that; I cannot see it.")
+                    f"{local.radius or '?'} blocks and found no "
+                    f"{self._noun(True)}{self._none_found_note()}.")
             else:
                 self._walk_failed = (
                     f"I can see {block_label(seen)} at {seen.position} but "
@@ -1726,7 +1710,7 @@ class CollectLogs(_HoldsTheRightTool):
         # that stopped converging, and holding attack now would break
         # whatever IS under the crosshair, which is exactly the thing not to
         # do. Try a different log instead.
-        if converging is None:
+        if converging is None and self._clears_leaves():
             clearing = self._clear_leaves(state, target)
             if clearing is not None:
                 return clearing
@@ -1749,49 +1733,6 @@ class CollectLogs(_HoldsTheRightTool):
             return None
         return self._work_from_the_map(state, local, crosshair_readable,
                                        history)
-
-    def _next_log(self, state):
-        """The next log to go for.
-
-        From the tree already started, while it has one within reach of
-        somewhere to stand. Only then another tree: the nearest, or the one
-        under the crosshair. "Nearest log" on its own hopped between trees
-        whenever a pickup walk left another trunk a little closer."""
-        if self._tree:
-            logs = nav.tree_logs(state, self._tree)
-            self._adopt(logs)
-            target = nav.nearest_of(state, logs, reachable_only=True,
-                                    exclude=self._skip)
-            if target is not None:
-                return target
-            if self.whole_tree:
-                self._tree_done = True
-                self._tree_left = logs
-                return None
-            self._tree = set()            # this one is done; the next tree
-
-        start = self._log_under_crosshair(state)
-        if start is None:
-            start = nav.nearest_block(state, "log", reachable_only=True,
-                                      exclude=self._skip)
-        if start is None:
-            return None
-        self._adopt(nav.tree_logs(state, {start.position}) or (start,))
-        return start
-
-    def _adopt(self, logs) -> None:
-        """Make `logs` the tree being worked on, keeping the name it was
-        first given -- its trunk moves up as the bottom logs go."""
-        if not logs:
-            return
-        label = next((self._tree_of[b.position] for b in logs
-                      if b.position in self._tree_of), None)
-        if label is None:
-            lowest = min(logs, key=lambda b: b.y)
-            label = (lowest.name, (lowest.x, lowest.z))
-        for block in logs:
-            self._tree.add(block.position)
-            self._tree_of.setdefault(block.position, label)
 
     def _tally(self) -> str:
         if self.whole_tree:
@@ -1868,7 +1809,8 @@ class CollectLogs(_HoldsTheRightTool):
         None. Reach matters: a crosshair on a log eight blocks away is a
         perfectly good aim that breaks nothing."""
         target = getattr(state, "target_block", None)
-        if target is None or getattr(target, "name", None) not in LOG_BLOCKS:
+        if target is None or getattr(target, "name", None) \
+                not in self._wanted_names():
             return None
         try:
             position = (int(target.x), int(target.y), int(target.z))
@@ -1969,13 +1911,13 @@ class CollectLogs(_HoldsTheRightTool):
         if drop is None:
             self._pickup_walker = None
             self._pickup_note = (
-                f"I broke {self._broken} log(s) but only {self._collected} "
+                f"I broke {self._broken} {self._broken_noun()} but only {self._collected} "
                 f"reached the inventory, and I cannot see the rest lying "
                 f"anywhere near where they fell.")
             return None
         where = _drop_text(drop)
         if not local.usable:
-            self._pickup_note = (f"The dropped log is on the ground at "
+            self._pickup_note = (f"The dropped {self._noun()} is on the ground at "
                                  f"{where}, but I cannot see the terrain to "
                                  f"walk to it.")
             return None
@@ -1991,7 +1933,7 @@ class CollectLogs(_HoldsTheRightTool):
         if walker is None:
             if self._pickup_walks >= MAX_PICKUP_WALKS:
                 self._pickup_note = (
-                    f"I broke {self._broken} log(s) and picked up "
+                    f"I broke {self._broken} {self._broken_noun()} and picked up "
                     f"{self._collected}; the rest is on the ground at {where} "
                     f"and I could not get to it after {self._pickup_walks} "
                     f"tries.")
@@ -2006,7 +1948,7 @@ class CollectLogs(_HoldsTheRightTool):
                     break
             if target is None:
                 self._pickup_note = (
-                    f"I broke {self._broken} log(s) and picked up "
+                    f"I broke {self._broken} {self._broken_noun()} and picked up "
                     f"{self._collected}; the rest is on the ground at {where} "
                     f"and there is nowhere I can stand close enough to pick "
                     f"it up.")
@@ -2015,7 +1957,7 @@ class CollectLogs(_HoldsTheRightTool):
             self._pickup_walks += 1
             walker = NavigateTo(destination=column, arrive_within=within)
             self._pickup_walker = walker
-            self._fetch_baseline = _log_total(state)
+            self._fetch_baseline = _item_total(state, self._drop_names())
             self._fetching = where
             self._fetching_at = drop.position
 
@@ -2028,13 +1970,13 @@ class CollectLogs(_HoldsTheRightTool):
         # reads as nothing gained -- the real run's "no more birch_log than
         # before", for an oak log that had just been collected.
         if self._fetch_baseline is not None \
-                and _log_total(state) > self._fetch_baseline:
+                and _item_total(state, self._drop_names()) > self._fetch_baseline:
             self._fetch_baseline = None
             return self._pick_up(state, local, history)
         if walker.failed:
             if self._pickup_walks >= MAX_PICKUP_WALKS:
                 self._pickup_note = (
-                    f"I broke {self._broken} log(s) and picked up "
+                    f"I broke {self._broken} {self._broken_noun()} and picked up "
                     f"{self._collected}; the rest is at {where} and I could "
                     f"not walk there: {walker.done_reason}")
                 return None
@@ -2043,10 +1985,17 @@ class CollectLogs(_HoldsTheRightTool):
         # one observed pause lets the inventory catch up -- and is CHECKED,
         # against the bag, so it is never a filler step.
         return Step(action="look", params={"dx": 1, "dy": 0},
-                    expectation=verify_mod.collected(LOG_BLOCKS,
-                                                     label="logs"),
-                    note=(f"standing where the dropped log is "
+                    expectation=verify_mod.collected(
+                        self._drop_names(), label=self._noun(True)),
+                    note=(f"standing where the dropped {self._noun()} is "
                           f"({self._fetching or where})"))
+
+    def _could_be_a_drop(self, entity) -> bool:
+        """A dropped item that is one of ours -- or might be, when an older
+        jar does not say what the item is."""
+        stack = getattr(entity, "item", None)
+        return stack is None or getattr(stack, "name", None) \
+            in self._drop_names()
 
     def _drops(self, state):
         """Logs on the ground near blocks this task broke, nearest first.
@@ -2058,7 +2007,7 @@ class CollectLogs(_HoldsTheRightTool):
         items = [e for e in (getattr(state, "nearby_entities", None) or ())
                  if getattr(e, "category", None) == "item"
                  and getattr(e, "position", None) is not None
-                 and _could_be_a_log(e)]
+                 and self._could_be_a_drop(e)]
         if not items or state.position is None:
             return []
         anchors = self._broken_at or [tuple(state.position)]
@@ -2072,31 +2021,6 @@ class CollectLogs(_HoldsTheRightTool):
                       key=lambda e: math.hypot(
                           e.position[0] - state.position[0],
                           e.position[2] - state.position[2]))
-
-    def _work_from_the_crosshair(self, state):
-        """The old behaviour, kept for when the mod is not running."""
-        block = state.target_block
-        name = getattr(block, "name", None) if block else None
-        done = self._done
-
-        if name in LOG_BLOCKS:
-            ready = self._tool_for(state, name)
-            if isinstance(ready, Step):
-                return ready
-            self._last_target = name
-            # Judged on the block, never the bag -- see _mine.
-            check = verify_mod.block_broken(name)
-            return Step(action="mine",
-                        params=_mine_params(self._mine_seconds(), block),
-                        expectation=check,
-                        note=f"mine {name} ({done}/{self.count})")
-
-        # Nothing wooden under the crosshair: sweep the view looking for some.
-        return Step(action="look",
-                    params={"dx": self.delta_px or _sweep_pixels(), "dy": 0},
-                    expectation=verify_mod.turned(min_degrees=2.0),
-                    note=(f"sweeping for a log ({done}/{self.count}) — no "
-                          f"terrain scan, so I can only check the crosshair"))
 
     @staticmethod
     def _mine_seconds(estimate=None) -> float:
@@ -2130,6 +2054,170 @@ class CollectLogs(_HoldsTheRightTool):
         if last != "mine":
             return None
         return "sweep for a different log"
+
+
+@dataclass
+class CollectLogs(_Gatherer):
+    """Find a tree, get to it, mine it, repeat. The first genuinely useful goal.
+
+    HOW IT LOOKS FOR A TREE DEPENDS ON WHAT IT CAN SEE
+        With the terrain scan, it finds the nearest log in the scanned volume,
+        checks there is a walkable route, walks there, aims at it and mines.
+        That is the difference between looking for a tree and turning on the
+        spot hoping one comes past — which is what the previous version did,
+        and what it looked like it was doing.
+
+        Without the scan it falls back to the crosshair sweep. Same skill,
+        much weaker, and the report says which one ran.
+
+    WHAT IT COUNTS DEPENDS ON WHAT CAN BE SEEN TOO
+        With the inventory readable, "collect 4 logs" means four logs actually
+        in the inventory — the real claim. Without it, only the block
+        disappearing is observable, and that is a weaker thing: an item that
+        fell in lava or landed out of reach was broken and never picked up.
+        So the result says which claim it is making.
+
+    ONE HOLD PER LOG, NOT SEVERAL TAPS
+        Minecraft discards breaking progress the moment the button comes up,
+        so a mining step asks for one continuous hold of at least
+        MIN_USEFUL_MINE_S. A skill that asks for one second mines forever and
+        breaks nothing, which is indistinguishable from broken input."""
+
+    name = "collect_logs"
+
+    def _broken_noun(self) -> str:
+        return "log(s)"
+
+    def _clears_leaves(self) -> bool:
+        return True
+
+    def _nearest_seen(self, state):
+        return nav.nearest_block(state, "log")
+
+    def _none_found_note(self) -> str:
+        return ". There may be a forest past that; I cannot see it"
+
+    def _next_target(self, state):
+        return self._next_log(state)
+
+    def _work_without_the_map(self, state):
+        return self._work_from_the_crosshair(state)
+
+    def _next_log(self, state):
+        """The next log to go for.
+
+        From the tree already started, while it has one within reach of
+        somewhere to stand. Only then another tree: the nearest, or the one
+        under the crosshair. "Nearest log" on its own hopped between trees
+        whenever a pickup walk left another trunk a little closer."""
+        if self._tree:
+            logs = nav.tree_logs(state, self._tree)
+            self._adopt(logs)
+            target = nav.nearest_of(state, logs, reachable_only=True,
+                                    exclude=self._skip)
+            if target is not None:
+                return target
+            if self.whole_tree:
+                self._tree_done = True
+                self._tree_left = logs
+                return None
+            self._tree = set()            # this one is done; the next tree
+
+        start = self._log_under_crosshair(state)
+        if start is None:
+            start = nav.nearest_block(state, "log", reachable_only=True,
+                                      exclude=self._skip)
+        if start is None:
+            return None
+        self._adopt(nav.tree_logs(state, {start.position}) or (start,))
+        return start
+
+    def _adopt(self, logs) -> None:
+        """Make `logs` the tree being worked on, keeping the name it was
+        first given -- its trunk moves up as the bottom logs go."""
+        if not logs:
+            return
+        label = next((self._tree_of[b.position] for b in logs
+                      if b.position in self._tree_of), None)
+        if label is None:
+            lowest = min(logs, key=lambda b: b.y)
+            label = (lowest.name, (lowest.x, lowest.z))
+        for block in logs:
+            self._tree.add(block.position)
+            self._tree_of.setdefault(block.position, label)
+
+    def _progress_text(self) -> str:
+        if self.whole_tree:
+            return self._tree_progress_text()
+        if self._can_count:
+            return (f"broke {self._broken} and collected {self._collected} "
+                    f"of {self.count} log(s), counted in the inventory"
+                    f"{self._trees_text()}")
+        return (f"broke {self._broken} of {self.count} log(s){self._trees_text()}"
+                f" — I cannot see the inventory, so I am reporting blocks "
+                f"that disappeared, not items picked up")
+
+    def _tree_progress_text(self) -> str:
+        labels = [self._tree_of.get(tuple(w)) for w in self._broken_at]
+        labels = [l for l in labels if l is not None]
+        tree = _tree_label(labels[0]) if labels else "the tree"
+        text = f"broke {self._broken} log(s) from {tree}"
+        if self._can_count:
+            text += (f" and collected {self._collected}, counted in the "
+                     f"inventory")
+        else:
+            text += (" — I cannot see the inventory, so these are blocks "
+                     "that disappeared, not items picked up")
+        if self._tree_left:
+            heights = sorted({b.y for b in self._tree_left})
+            span = (f"y {heights[0]}" if len(heights) == 1
+                    else f"y {heights[0]}–{heights[-1]}")
+            text += (f"; {len(self._tree_left)} more log(s) of it are still "
+                     f"standing ({span}) where I cannot reach or hit them")
+        elif self._tree_done:
+            text += "; none of it is left standing that I can see"
+        return text
+
+    def _trees_text(self) -> str:
+        """Which trees the broken logs came from, so "why did you mine that
+        tree" has a true answer rather than an invented one."""
+        counts: dict = {}
+        for where in self._broken_at:
+            label = self._tree_of.get(tuple(where))
+            if label is not None:
+                counts[label] = counts.get(label, 0) + 1
+        if not counts:
+            return ""
+        if len(counts) == 1:
+            return f", all from {_tree_label(next(iter(counts)))}"
+        parts = [f"{n} from {_tree_label(label)}"
+                 for label, n in counts.items()]
+        return f" — {', '.join(parts)}"
+
+    def _work_from_the_crosshair(self, state):
+        """The old behaviour, kept for when the mod is not running."""
+        block = state.target_block
+        name = getattr(block, "name", None) if block else None
+        done = self._done
+
+        if name in LOG_BLOCKS:
+            ready = self._tool_for(state, name)
+            if isinstance(ready, Step):
+                return ready
+            self._last_target = name
+            # Judged on the block, never the bag -- see _mine.
+            check = verify_mod.block_broken(name)
+            return Step(action="mine",
+                        params=_mine_params(self._mine_seconds(), block),
+                        expectation=check,
+                        note=f"mine {name} ({done}/{self.count})")
+
+        # Nothing wooden under the crosshair: sweep the view looking for some.
+        return Step(action="look",
+                    params={"dx": self.delta_px or _sweep_pixels(), "dy": 0},
+                    expectation=verify_mod.turned(min_degrees=2.0),
+                    note=(f"sweeping for a log ({done}/{self.count}) — no "
+                          f"terrain scan, so I can only check the crosshair"))
 
 
 def _pickup_column(state, local, drop):
@@ -2209,13 +2297,18 @@ def _drop_text(entity) -> str:
         return "somewhere nearby"
 
 
-def _log_total(state) -> int:
-    """Every kind of log in the inventory, added up."""
+def _item_total(state, names) -> int:
+    """Every stack of any of `names` in the inventory, added up."""
     total = 0
     for stack in (state.inventory or ()):
-        if getattr(stack, "name", None) in LOG_BLOCKS:
+        if getattr(stack, "name", None) in names:
             total += int(getattr(stack, "count", 0) or 0)
     return total
+
+
+def _log_total(state) -> int:
+    """Every kind of log in the inventory, added up."""
+    return _item_total(state, LOG_BLOCKS)
 
 
 # ── Eating ───────────────────────────────────────────────────────────────────
