@@ -24,13 +24,10 @@ from __future__ import annotations
 
 import base64
 import os
-import sys
 import unittest
 import unittest.mock
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from dashboard import server                                        # noqa: E402
 

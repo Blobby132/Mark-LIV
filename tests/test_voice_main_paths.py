@@ -17,15 +17,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import sys
 import threading
 import time
 import types
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 from core.voice_diagnostics import VoiceDiagnostics                  # noqa: E402
 from tests.support.voice_paths import MAIN, METHODS  # noqa: E402

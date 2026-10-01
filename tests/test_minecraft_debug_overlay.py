@@ -14,11 +14,8 @@ that only works on clean input is a parser that only works in its own tests.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import debug_overlay as f3                              # noqa: E402
 from minecraft.state import UNKNOWN, INFERRED                          # noqa: E402

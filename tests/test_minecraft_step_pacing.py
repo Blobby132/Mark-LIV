@@ -16,11 +16,8 @@ MIN_OBSERVATION_INTERVAL_S -- is unchanged, and a slow step still does not
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import task_runner, verification as verify_mod   # noqa: E402
 from minecraft.controller import ActionResult                    # noqa: E402

@@ -23,9 +23,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import capabilities as caps                            # noqa: E402
+from tests.support.paths import REPO_ROOT
 
 
 def _try_import(name: str):
@@ -549,7 +549,7 @@ class TestNoShellInActions(unittest.TestCase):
 
     def _action_trees(self):
         import ast as _ast
-        for path in sorted(Path("actions").glob("*.py")):
+        for path in sorted((REPO_ROOT / "actions").glob("*.py")):
             source = path.read_text(encoding="utf-8", errors="replace")
             yield path, _ast.parse(source)
 
@@ -585,7 +585,7 @@ class TestNoShellInActions(unittest.TestCase):
         for name in ("open_app.py", "dev_agent.py", "code_helper.py",
                      "desktop.py", "file_processor.py", "computer_control.py"):
             with self.subTest(name=name):
-                source = (Path("actions") / name).read_text(encoding="utf-8")
+                source = (REPO_ROOT / "actions" / name).read_text(encoding="utf-8")
                 self.assertIn("exec_safe", source,
                               f"{name} no longer uses core/exec_safe.py")
 
@@ -603,9 +603,9 @@ class TestNoUnboundedBlockingCalls(unittest.TestCase):
     A tree-wide property rather than a per-file test, so a new call added
     without a timeout fails here."""
 
-    FILES = (sorted(Path("actions").glob("*.py"))
-             + [Path("core/installer.py"), Path("core/llm_client.py"),
-                Path("core/tts.py"), Path("core/wake_word.py")])
+    FILES = (sorted((REPO_ROOT / "actions").glob("*.py"))
+             + [REPO_ROOT / "core" / "installer.py", REPO_ROOT / "core" / "llm_client.py",
+                REPO_ROOT / "core" / "tts.py", REPO_ROOT / "core" / "wake_word.py"])
 
     def test_every_blocking_subprocess_call_has_a_timeout(self):
         import ast as _ast

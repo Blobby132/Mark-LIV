@@ -14,13 +14,10 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import sys
 import types
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from core import interrupts                                         # noqa: E402
 

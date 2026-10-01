@@ -14,21 +14,19 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 import zipfile
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from minecraft.mod_bridge import ModBridgeStateSource, SCHEMA       # noqa: E402
 from minecraft.state import GuiSlot, ItemStack                      # noqa: E402
+from tests.support.paths import JAVA_HARNESS_DIR
 
 SRC = ROOT / "fabric-mod" / "src" / "main" / "java" / "com" / "markliv" \
     / "bridge"
-HARNESS = ROOT / "tests" / "java" / "GuiCheck.java"
+HARNESS = JAVA_HARNESS_DIR / "GuiCheck.java"
 RESOURCES = ROOT / "fabric-mod" / "src" / "main" / "resources"
 JAR = ROOT / "mods" / "markliv-bridge-1.0.0.jar"
 

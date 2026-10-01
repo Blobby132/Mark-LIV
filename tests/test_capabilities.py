@@ -9,11 +9,8 @@ restates it would only ever break in step with it.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import capabilities as caps                           # noqa: E402
 

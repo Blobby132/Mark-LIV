@@ -21,12 +21,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from tests.support.paths import REPO_ROOT as ROOT
+from tests.support.paths import JAVA_HARNESS_DIR
 SOURCE = ROOT / "fabric-mod" / "src" / "main" / "java" / "com" / "markliv" \
     / "bridge" / "ColumnScan.java"
-HARNESS = ROOT / "tests" / "java" / "ColumnScanCheck.java"
+HARNESS = JAVA_HARNESS_DIR / "ColumnScanCheck.java"
 
 # The mod's constants, which the harness is told rather than guessing.
 SCAN_UP, SCAN_DOWN, MAX_CLEARANCE, PLAYER_HEIGHT = 4, 5, 4, 2

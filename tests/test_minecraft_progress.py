@@ -20,11 +20,8 @@ THE DISTINCTION THAT MATTERS MOST
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import verification as verify_mod                       # noqa: E402
 from minecraft.progress import (                                       # noqa: E402

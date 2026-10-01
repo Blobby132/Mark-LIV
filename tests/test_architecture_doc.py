@@ -6,12 +6,9 @@ layer dropped from it, fails here rather than leaving the map quietly wrong.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 DOC = ROOT / "docs" / "ARCHITECTURE.md"
 

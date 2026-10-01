@@ -16,7 +16,6 @@ import time
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import exec_safe                                      # noqa: E402
 from core.exec_safe import UnsafeCommand                        # noqa: E402

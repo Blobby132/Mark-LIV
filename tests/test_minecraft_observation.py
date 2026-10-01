@@ -9,11 +9,8 @@ in the confused situations where it does most harm.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft.errors import ObservationFailed                    # noqa: E402
 from minecraft.observation import Observation, Observer           # noqa: E402

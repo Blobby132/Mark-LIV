@@ -7,13 +7,11 @@ The property these protect: `minecraft/capabilities.py` can refuse something
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import audit, capabilities as core_caps, confirm, permissions  # noqa: E402
 from minecraft import capabilities as mc_phase                           # noqa: E402
@@ -103,8 +101,6 @@ class TestOneConfirmationCoversGameplay(unittest.TestCase):
     the whole subsystem would be wide open. These tests are what would notice."""
 
     def _controller(self):
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tests.support.fakes import FakeLocator, FakeProcess
         from minecraft.controller import MinecraftController
         from minecraft.input_backend import FakeInputBackend
@@ -277,8 +273,6 @@ class TestSessionLifetime(unittest.TestCase):
         self.assertFalse(session.active)
 
     def test_f12_still_revokes_an_unlimited_session(self):
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
         from tests.support.fakes import FakeLocator, FakeProcess
         from minecraft.controller import MinecraftController
         from minecraft.input_backend import FakeInputBackend

@@ -18,11 +18,8 @@ from __future__ import annotations
 
 import io
 import random
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import perception as per                                # noqa: E402
 from minecraft.state import BlockRef, EXACT, WorldState, empty_state   # noqa: E402

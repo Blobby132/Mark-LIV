@@ -12,11 +12,8 @@ No test here touches a real file or a real Minecraft.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft.mod_bridge import (                                     # noqa: E402
     MAX_AGE_SECONDS, ModBridgeStateSource, state_file_path,

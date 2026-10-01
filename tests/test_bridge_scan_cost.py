@@ -17,9 +17,8 @@ from __future__ import annotations
 import re
 import unittest
 import zipfile
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from tests.support.paths import REPO_ROOT as ROOT
 SOURCE = (ROOT / "fabric-mod" / "src" / "main" / "java" / "com" / "markliv"
           / "bridge" / "MarkLivBridge.java").read_text(encoding="utf-8")
 

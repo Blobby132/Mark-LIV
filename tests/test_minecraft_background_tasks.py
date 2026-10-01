@@ -19,14 +19,10 @@ the game.
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 from core import interrupts                                         # noqa: E402
 from minecraft.controller import MinecraftController, TICK_SECONDS  # noqa: E402

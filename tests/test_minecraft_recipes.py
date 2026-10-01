@@ -8,12 +8,9 @@ aligned top-left; tags name the sets of items that fit ("planks", "logs").
 from __future__ import annotations
 
 import ast
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from minecraft import recipes                                       # noqa: E402
 

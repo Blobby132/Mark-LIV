@@ -11,11 +11,8 @@ So these tests are mostly about what must NOT happen.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft.state import (                                          # noqa: E402
     BlockRef, CONFIDENCE_LEVELS, EXACT, INFERRED, ItemStack, UNKNOWN,

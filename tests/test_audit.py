@@ -10,12 +10,10 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import audit                                          # noqa: E402
 

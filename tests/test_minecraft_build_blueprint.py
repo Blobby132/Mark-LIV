@@ -12,11 +12,8 @@ blueprint that needs more is carried on by asking again.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import building                                      # noqa: E402
@@ -26,6 +23,7 @@ from minecraft.skills import place_build as skills_place_build          # noqa: 
 from minecraft.state import NearbyBlock                             # noqa: E402
 from minecraft.task_runner import TaskRunner                        # noqa: E402
 from tests.support.build_world import BuildWorld  # noqa: E402
+from tests.support.paths import REPO_ROOT
 
 
 def build(world, **options):
@@ -255,7 +253,7 @@ class WordingTests(unittest.TestCase):
         self.assertIn("one sentence", text)
         self.assertIn("build_blueprint", skills.available())
         self.assertNotIn("build_structure", skills.NOT_YET_POSSIBLE)
-        prompt = (Path(__file__).resolve().parent.parent / "core"
+        prompt = (REPO_ROOT / "core"
                   / "prompt.txt").read_text(encoding="utf-8")
         self.assertIn("build_blueprint", prompt)
 

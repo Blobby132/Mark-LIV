@@ -18,12 +18,8 @@ two-high wall stops the move, jumping or not.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft import skills                                        # noqa: E402
 from minecraft.skills import navigate as skills_navigate                # noqa: E402

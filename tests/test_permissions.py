@@ -12,13 +12,11 @@ approval can exist.
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import audit, capabilities as caps, confirm, permissions  # noqa: E402
 from core import undo as undo_stack                                 # noqa: E402

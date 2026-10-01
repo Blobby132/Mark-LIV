@@ -30,17 +30,14 @@ from __future__ import annotations
 import ast
 import asyncio
 import re
-import sys
 import threading
 import time
 import traceback
 import types
 import unittest
 from datetime import datetime
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from core import interrupts                                         # noqa: E402
 from core.voice_diagnostics import VoiceDiagnostics                 # noqa: E402

@@ -28,9 +28,8 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-ROOT = Path(__file__).resolve().parent.parent
+from tests.support.paths import REPO_ROOT as ROOT
 
 # Directories that are ours. Deliberately not a blanket rglob: a virtualenv or
 # a vendored dependency under the repo would make this test about someone

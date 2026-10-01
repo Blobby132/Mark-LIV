@@ -220,12 +220,12 @@ precondition can only refuse; it never redirects.
 
 ### Around all of it
 
-- **Import boundary:** `tests/test_minecraft_boundary.py` parses every module
+- **Import boundary:** `test_minecraft_boundary.py` parses every module
   under `minecraft/`, recursively, plus the adapter. It allows no
   subprocess, network, file write, `exec`/`eval`, other action modules or OCR
   engines. New hooks are injected callables, never new imports.
 - **The bridge mod is read-only:** it writes a snapshot file and never sends
   input, packets or commands. Schema changes are additive optional fields
   under `/4`, and the reader rejects unknown versions.
-  `tests/test_bridge_jar_is_current.py` keeps the shipped jar in step with
+  `test_bridge_jar_is_current.py` keeps the shipped jar in step with
   the source.

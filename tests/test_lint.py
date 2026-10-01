@@ -14,9 +14,8 @@ from __future__ import annotations
 
 import io
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from tests.support.paths import REPO_ROOT as ROOT
 
 SKIP_DIRS = {".git", ".venv", "venv", "env", "ENV", "build", "dist",
              "fabric-mod", "__pycache__", ".pytest_cache", ".ruff_cache"}

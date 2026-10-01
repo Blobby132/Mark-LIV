@@ -17,12 +17,8 @@ fetch it from there first: tests/test_minecraft_hotbar_fetch.py.)
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft import mining as mining_mod                           # noqa: E402
 from minecraft import skills, verification as verify_mod             # noqa: E402

@@ -5,11 +5,8 @@ game's own report, run end to end in the simulated screen (gui_world.py).
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import gui as gui_mod                                # noqa: E402

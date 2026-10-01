@@ -8,13 +8,10 @@ the thing under test is the guarding logic rather than the typing.
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import action_spec                                 # noqa: E402
 from minecraft.controller import MinecraftController              # noqa: E402

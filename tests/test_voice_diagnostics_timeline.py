@@ -11,12 +11,8 @@ timeline shows the stages in the order they happened.
 from __future__ import annotations
 
 import re
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 from core.voice_diagnostics import (                                # noqa: E402
     EVENT_LOG_SIZE, HEARD_IGNORED, SPEECH_FRAMES, UNANSWERED_AFTER_S,

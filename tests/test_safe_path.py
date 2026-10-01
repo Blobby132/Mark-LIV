@@ -8,14 +8,12 @@ touches the real home directory, and nothing needs the network.
 from __future__ import annotations
 
 import os
-import sys
 import tarfile
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.safe_path import (                                    # noqa: E402
     ArchiveTooLarge,

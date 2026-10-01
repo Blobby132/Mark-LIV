@@ -12,19 +12,16 @@ call them one at a time.
 
 from __future__ import annotations
 
-import sys
 import time
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft.controller import MinecraftController                   # noqa: E402
 from minecraft.input_backend import FakeInputBackend                   # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
 from minecraft.state import EXACT, GuiSlot, GuiView, WorldState        # noqa: E402
 from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
+from tests.support.paths import REPO_ROOT
 
 SLOT = GuiSlot(i=0, role="craft_out", x=500.0, y=300.0)
 
@@ -187,7 +184,7 @@ class ConsentTests(unittest.TestCase):
         self.assertIn("creative", detail)
 
     def test_the_readme_no_longer_says_it_cannot_click(self):
-        readme = (Path(__file__).resolve().parent.parent / "readme.md") \
+        readme = (REPO_ROOT / "readme.md") \
             .read_text(encoding="utf-8")
         self.assertNotIn("Click inside the inventory screen, so it cannot "
                          "craft yet", readme)

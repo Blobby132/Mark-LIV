@@ -13,13 +13,10 @@ that every 40ms during a mine.
 from __future__ import annotations
 
 import json
-import sys
 import unittest
 import unittest.mock
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 from minecraft import mod_bridge                                    # noqa: E402
 from minecraft.mod_bridge import ModBridgeStateSource, SCHEMA       # noqa: E402

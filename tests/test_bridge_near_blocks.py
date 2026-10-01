@@ -18,20 +18,18 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from minecraft import building                                      # noqa: E402
 from minecraft import navigation as nav                             # noqa: E402
+from tests.support.paths import JAVA_HARNESS_DIR
 
 SRC = ROOT / "fabric-mod" / "src" / "main" / "java" / "com" / "markliv" \
     / "bridge"
-HARNESS = ROOT / "tests" / "java" / "NearBlocksCheck.java"
+HARNESS = JAVA_HARNESS_DIR / "NearBlocksCheck.java"
 
 
 @unittest.skipUnless(shutil.which("javac") and shutil.which("java"),
@@ -106,7 +104,6 @@ class NearBlocksJavaTests(unittest.TestCase):
 class ReaderTests(unittest.TestCase):
 
     def read(self, near):
-        sys.path.insert(0, str(ROOT / "tests"))
         from tests.support.bridge_payloads import payload, source
         data = payload(near_blocks=near)
         if near is None:

@@ -13,11 +13,8 @@ hotbar can harvest is refused before any swing.
 from __future__ import annotations
 
 import math
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import mining as mining_mod                           # noqa: E402
 from minecraft import navigation as nav                              # noqa: E402

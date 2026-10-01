@@ -15,11 +15,8 @@ walked to, spending one of MAX_PICKUP_WALKS on an empty spot.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import navigation as nav                              # noqa: E402
 from minecraft import skills                                         # noqa: E402

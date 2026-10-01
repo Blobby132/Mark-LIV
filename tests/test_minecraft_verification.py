@@ -14,11 +14,8 @@ away" by someone later who finds two statuses tidier.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import verification as v                                # noqa: E402
 from minecraft.state import (                                          # noqa: E402

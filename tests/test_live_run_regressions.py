@@ -26,13 +26,10 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import sys
 import unittest
 import unittest.mock
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 from core.voice_diagnostics import (                                # noqa: E402
     LOST_INPUT_AFTER_S, SPEECH_FRAMES, VoiceDiagnostics,

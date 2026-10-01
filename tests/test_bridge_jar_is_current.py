@@ -18,13 +18,10 @@ WHY THIS EXISTS
 from __future__ import annotations
 
 import re
-import sys
 import unittest
 import zipfile
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 JAR = ROOT / "mods" / "markliv-bridge-1.0.0.jar"
 SOURCE = (ROOT / "fabric-mod" / "src" / "main" / "java" / "com" / "markliv"

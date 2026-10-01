@@ -6,13 +6,10 @@ the pointer is brought to a slot. Pure rules; see docs/minecraft-gui.md.
 from __future__ import annotations
 
 import ast
-import sys
 import time
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from minecraft import gui                                           # noqa: E402
 from minecraft.state import (                                       # noqa: E402

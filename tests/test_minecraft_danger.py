@@ -12,12 +12,8 @@ done by then.
 from __future__ import annotations
 
 import dataclasses
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 from minecraft import aiming as aiming_mod                          # noqa: E402
 from minecraft import skills                                        # noqa: E402

@@ -12,21 +12,18 @@ model's own `attack` hits whatever is under the crosshair, as before.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft.action_spec import InvalidAction, parse_attack         # noqa: E402
 from minecraft.controller import MinecraftController                   # noqa: E402
 from minecraft.input_backend import FakeInputBackend                   # noqa: E402
 from minecraft.state import EntityRef, WorldState                      # noqa: E402
 from tests.support.fakes import FakeLocator, FakeProcess  # noqa: E402
+from tests.support.paths import REPO_ROOT
 
-SRC = Path(__file__).resolve().parent.parent / "fabric-mod" / "src" / \
+SRC = REPO_ROOT / "fabric-mod" / "src" / \
     "main" / "java" / "com" / "markliv" / "bridge" / "MarkLivBridge.java"
 
 

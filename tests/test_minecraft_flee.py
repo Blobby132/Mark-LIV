@@ -10,12 +10,8 @@ that is what it is for (A1 made movement exempt from the hazard probe).
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft import skills                                        # noqa: E402
 from tests.support.sim_world import run  # noqa: E402

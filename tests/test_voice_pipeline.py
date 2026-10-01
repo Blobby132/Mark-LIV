@@ -14,11 +14,8 @@ WHAT THESE ARE FOR
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.voice_diagnostics import (                                  # noqa: E402
     HEARD_IGNORED, LOST_INPUT, LOST_INPUT_AFTER_S, SPEECH_FRAMES,

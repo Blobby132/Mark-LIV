@@ -19,12 +19,8 @@ before the first swing and puts the old slot back when it ends.
 from __future__ import annotations
 
 import math
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft import action_spec, skills                           # noqa: E402
 from minecraft.skills import combat as skills_combat                    # noqa: E402

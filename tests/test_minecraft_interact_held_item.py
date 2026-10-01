@@ -17,13 +17,9 @@ one back when it is done.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tests"))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from minecraft import action_spec                                      # noqa: E402
 from minecraft.action_spec import InvalidAction                        # noqa: E402

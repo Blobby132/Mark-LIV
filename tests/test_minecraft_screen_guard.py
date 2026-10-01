@@ -16,13 +16,8 @@ error: a screen left open would swallow the user's next keys too.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tests"))
 
 from minecraft import verification as verify_mod                    # noqa: E402
 from minecraft.controller import MinecraftController                   # noqa: E402

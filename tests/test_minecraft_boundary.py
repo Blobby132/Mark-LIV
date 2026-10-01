@@ -18,14 +18,12 @@ do, and a text search cannot tell an explanation from a call.
 from __future__ import annotations
 
 import ast
-import sys
 import unittest
-from pathlib import Path
+from tests.support.paths import REPO_ROOT
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-PACKAGE = Path("minecraft")
-ADAPTER = Path("actions/minecraft.py")
+PACKAGE = REPO_ROOT / "minecraft"
+ADAPTER = REPO_ROOT / "actions" / "minecraft.py"
 
 # Modules this package may import. Anything else is a boundary violation.
 #
@@ -381,7 +379,7 @@ class TestTheOnlyWayInIsTheBroker(unittest.TestCase):
         main.py — so it goes through the same enforcement as everything else."""
         from core.action_loader import discover_actions
         logs: list = []
-        registry = discover_actions(Path("actions"), reserved_names=set(),
+        registry = discover_actions(REPO_ROOT / "actions", reserved_names=set(),
                                     logger=logs.append)
         self.assertTrue(registry.has("minecraft_control"),
                         f"minecraft_control did not load: "

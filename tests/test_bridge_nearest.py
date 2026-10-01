@@ -20,12 +20,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from tests.support.paths import REPO_ROOT as ROOT
+from tests.support.paths import JAVA_HARNESS_DIR
 SRC = ROOT / "fabric-mod" / "src" / "main" / "java" / "com" / "markliv" \
     / "bridge"
-HARNESS = ROOT / "tests" / "java" / "NearestCheck.java"
+HARNESS = JAVA_HARNESS_DIR / "NearestCheck.java"
 
 # The mod's own quotas, from MarkLivBridge.NOTABLE_QUOTAS.
 NOTABLE = "log=160,ore=48,lava=24,water=24,station=16"

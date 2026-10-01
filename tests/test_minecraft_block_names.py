@@ -27,17 +27,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from tests.support.paths import REPO_ROOT as ROOT
 
 from minecraft import navigation as nav                             # noqa: E402
 from minecraft import skills                                        # noqa: E402
 from minecraft.state import EXACT, NearbyBlock, WorldState          # noqa: E402
+from tests.support.paths import JAVA_HARNESS_DIR
 
 SRC = ROOT / "fabric-mod" / "src" / "main" / "java" / "com" / "markliv" \
     / "bridge"
@@ -100,7 +98,7 @@ class ModKindsTests(unittest.TestCase):
         cls.build = tempfile.TemporaryDirectory()
         subprocess.run(["javac", "-d", cls.build.name, str(SRC / "Nearest.java"),
                         str(SRC / "Kinds.java"),
-                        str(ROOT / "tests" / "java" / "NearestCheck.java")],
+                        str(JAVA_HARNESS_DIR / "NearestCheck.java")],
                        check=True, capture_output=True)
 
     @classmethod
