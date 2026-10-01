@@ -693,16 +693,8 @@ class Obstacle:
     detail: str = ""
 
     @property
-    def can_jump(self) -> bool:
-        return self.kind == JUMPABLE
-
-    @property
     def needs_reroute(self) -> bool:
         return self.kind in (WALL, HEAD_BLOCKED, CLIFF, HAZARD)
-
-    @property
-    def needs_observation(self) -> bool:
-        return self.kind == UNSEEN
 
     def describe(self) -> str:
         where = f" at {self.column}" if self.column else ""

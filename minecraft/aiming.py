@@ -252,10 +252,6 @@ class MouseAim:
             self._from_settings = resolved
         return resolved
 
-    @property
-    def known_from_game(self) -> bool:
-        return self._from_settings is not None
-
     def pixels_per_degree(self) -> float:
         """Magnitude only, for anything that sweeps a fixed amount."""
         if self._from_settings is not None:

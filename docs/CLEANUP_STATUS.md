@@ -23,12 +23,12 @@ part-way, the next one starts here.
 |---|---|---|
 | 1 project-structure doc | done | 6e0a090 |
 | 2 move test_install_mod | done | 3281520 |
-| 3 two readme lines | done | (this commit) |
-| 4 unused public names | | |
+| 3 two readme lines | done | 553b139 |
+| 4 unused public names | done | (this commit) |
 | 5 remaining lint | | |
 | 6 stale Java comment | | |
 | 7 first-run docs | | |
 
 ## Next
 
-Item 4.
+Item 5.

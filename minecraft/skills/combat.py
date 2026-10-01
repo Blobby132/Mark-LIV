@@ -186,7 +186,6 @@ FIGHT_RANGE = 16.0
 ENTITY_REACH = 3.0
 """How far a survival player can hit a mob."""
 ATTACK_TAP_S = 0.1
-AIM_ON_BODY_DEG = 4.0
 
 MOB_HEIGHTS = {
     "zombie": 1.95, "husk": 1.95, "drowned": 1.95, "zombie_villager": 1.95,
