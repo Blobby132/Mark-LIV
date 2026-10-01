@@ -262,7 +262,7 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 
 ## 🎮 Minecraft (experimental)
 
-JARVIS can observe and play Minecraft Java Edition, inside a bounded, revocable session.
+JARVIS can observe and play Minecraft Java Edition, inside a bounded, revocable session. How the pieces fit — the modules, the skills package and every safety layer — is mapped in `docs/ARCHITECTURE.md`.
 
 **How much it can see depends on one optional mod.** `mods/markliv-bridge-1.0.0.jar` is a small **read-only** Fabric mod: it publishes client state to one JSON file and accepts nothing back. It is not a command channel, and it cannot be turned into one — it has no input path at all. Install it with `install_mod.bat`.
 
