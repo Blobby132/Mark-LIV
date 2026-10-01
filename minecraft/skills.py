@@ -48,6 +48,7 @@ from minecraft import stuck as stuck_mod
 from minecraft import aiming as aiming_mod
 from minecraft import mining as mining_mod
 from minecraft import gui as gui_mod
+from minecraft import building as building_mod
 from minecraft import recipes as recipes_mod
 from minecraft.state import EXACT, UNKNOWN
 from minecraft.task_runner import MAX_TASK_STEPS, Step
@@ -3692,6 +3693,412 @@ class HotbarFetch:
                          f"{self.hotbar + 1}")
 
 
+# ── One block into one cell ──────────────────────────────────────────────────
+
+MAX_PLACE_AIMS = 8
+"""Corrections to get the crosshair onto the face before giving up."""
+
+MAX_PLACE_WALKS = 2
+"""Walks to a place to stand before giving up."""
+
+PLACE_REACH_MARGIN = 0.3
+"""How far inside the game's reach the face must be. The aim point is not
+exactly where the ray will touch the face."""
+
+
+def _place_from(position, cell, ref) -> bool:
+    """Could a player whose feet are at `position` place into `cell`
+    against `ref`: out of the cell, on the outer side of the face, and
+    within reach of it?"""
+    if position is None:
+        return False
+    eye = (position[0], position[1] + aiming_mod.EYE_HEIGHT, position[2])
+    point = aiming_mod.target_point(ref.position, position, ref.face)
+    return (not building_mod.body_overlaps(position, cell)
+            and building_mod.faces_towards(eye, ref.position, ref.face)
+            and aiming_mod.distance_to(eye, point)
+            <= aiming_mod.REACH - PLACE_REACH_MARGIN)
+
+
+def _stand_for(state, cell, ref, avoid=()):
+    """The nearest column with a route to it from which `_place_from` holds
+    and the map shows nothing between the eye and the face -- or None."""
+    local = nav.LocalMap.from_state(state)
+    if not local.usable:
+        return None
+    here = local.origin
+    best = None
+    for column in nav.reachable_columns(local):
+        if column in avoid or abs(column[0] - cell[0]) > 4 \
+                or abs(column[1] - cell[2]) > 4:
+            continue
+        if not local.standable(*column) or not local.fits(*column):
+            continue
+        feet = (column[0] + 0.5, local.ground_at(*column) + 1,
+                column[1] + 0.5)
+        if not _place_from(feet, cell, ref):
+            continue
+        eye = (feet[0], feet[1] + aiming_mod.EYE_HEIGHT, feet[2])
+        point = aiming_mod.target_point(ref.position, feet, ref.face)
+        if not local.sight_is_clear(
+                eye, point, skip=(column, (cell[0], cell[2]),
+                                  (ref.position[0], ref.position[2]))):
+            continue
+        cost = (abs(column[0] - here[0]) + abs(column[1] - here[2]),
+                column)
+        if best is None or cost < best[0]:
+            best = (cost, column)
+    return None if best is None else best[1]
+
+
+def _face_words(ref) -> str:
+    side = {"up": "top", "down": "underside"}.get(ref.face,
+                                                  f"{ref.face} face")
+    return f"the {side} of the {_words(ref.name)} at {ref.position}"
+
+
+@dataclass
+class PlaceBlockAt:
+    """place_block_at: put one `item` block into the cell (x, y, z).
+
+    THE CELL FIRST
+        Refused unless the scan saw the cell empty or holding a plant the
+        game replaces (minecraft/building.py) -- never into a block, never
+        into space nobody looked at, never with anything but a plain
+        building block.
+    AGAINST A KNOWN BLOCK, ON A NAMED FACE
+        A block cannot float: it goes against a solid neighbour the scan or
+        the task itself confirmed, never one a right-click would use instead
+        (a chest, a door, a crafting table). It stands within reach of that
+        face, on its outer side and out of the cell, aims, and presses
+        nothing until the game reports the crosshair on that block and that
+        face -- which the controller checks once more as it presses
+        (expect_at, expect_face). A plant in the cell is under the
+        crosshair instead, and the game puts the block in its place.
+    PROVEN TWICE
+        The crosshair on a block of that name at the cell AND the held stack
+        one smaller. In creative the stack does not go down, and the report
+        says the crosshair is the only proof.
+
+    One press at most: a press whose result cannot be proven is reported,
+    never repeated -- a second could put a block somewhere else. Used on its
+    own and, cell by cell, by the build tasks, which pass the cells they
+    placed as `known`."""
+
+    x: int = 0
+    y: int = 0
+    z: int = 0
+    item: str = ""
+    known: dict = field(default_factory=dict)
+    restore_slot: bool = True
+
+    name = "place_block_at"
+    verifiable_with = ("target_block", "inventory")
+
+    _phase: str = "check"
+    _reason: str = ""
+    _placed: bool = False
+    _ref: object = None
+    _fetch: object = None
+    _walker: object = None
+    _walks: int = 0
+    _aims: int = 0
+    _misses: int = 0
+    _selects: int = 0
+    _previous_slot: int | None = None
+    _restored: bool = False
+    _tried: tuple = ()
+
+    @property
+    def cell(self) -> tuple:
+        return (int(self.x), int(self.y), int(self.z))
+
+    @property
+    def goal(self) -> str:
+        return f"place {_words(self.item)} at {self.cell}"
+
+    @property
+    def failed(self) -> bool:
+        return not self._placed
+
+    @property
+    def placed(self) -> bool:
+        return self._placed
+
+    @property
+    def done_reason(self) -> str:
+        if self._fetch is not None and self._fetch.landed:
+            return f"{self._fetch.done_reason}; {self._reason}"
+        return self._reason
+
+    @property
+    def watch_hostiles(self) -> bool:
+        return not (self._fetch is not None and self._fetch.in_screen)
+
+    @property
+    def watch_health(self) -> bool:
+        return not (self._fetch is not None and self._fetch.in_screen)
+
+    def _stop(self, reason, placed=False):
+        self._reason = reason
+        self._placed = placed
+        self._phase = "restore"
+        return None
+
+    def plan(self, state, step_index: int, history: tuple):
+        last = history[-1] if history else None
+        if self._phase == "done":
+            return None
+        if self._phase == "restore":
+            return self._restore(state)
+        step = self._step(state, step_index, history, last)
+        if step is None and self._phase == "restore":
+            return self._restore(state)
+        return step
+
+    def _restore(self, state):
+        self._phase = "done"
+        if not self.restore_slot or self._restored \
+                or self._previous_slot is None \
+                or state.selected_slot == self._previous_slot:
+            return None
+        self._restored = True
+        self._phase = "restore"          # one more look, to finish
+        slot = self._previous_slot + 1
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot),
+                    note=f"back to hotbar slot {slot}")
+
+    def _step(self, state, step_index, history, last):
+        if self._phase == "placed":
+            return self._judge(state, last)
+        if self._fetch is not None and not self._fetch.finished:
+            step = self._fetch.plan(state, step_index, history)
+            if step is not None:
+                return step
+            if self._fetch.failed:
+                return self._stop(f"The {_words(self.item)} is in the main "
+                                  f"inventory and I could not move it to "
+                                  f"the hotbar: {self._fetch.done_reason}.")
+        if self._phase == "check":
+            problem = self._check(state)
+            if problem:
+                return self._stop(problem)
+            self._phase = "work"
+            if self._previous_slot is None:
+                self._previous_slot = state.selected_slot
+        if self._walker is not None:
+            step = self._walker.plan(state, step_index, history)
+            if step is not None:
+                return step
+            failed = self._walker.failed
+            why = self._walker.done_reason
+            self._walker = None
+            if failed and not _place_from(state.position, self.cell,
+                                          self._ref):
+                return self._stop(f"I could not get to a place to stand: "
+                                  f"{why}")
+        held = self._hold(state)
+        if held is not None:
+            return held
+        if not _place_from(state.position, self.cell, self._ref):
+            return self._walk(state)
+        return self._aim_or_place(state)
+
+    # ── before anything ──────────────────────────────────────────────────
+
+    def _check(self, state):
+        item = building_mod.short(self.item)
+        self.item = item
+        if item not in building_mod.BUILDING_BLOCKS:
+            return (f"I only build with plain blocks -- "
+                    f"{', '.join(sorted(n for n in building_mod.BUILDING_BLOCKS if not n.endswith('_planks')))}"
+                    f" and any planks -- not {_words(item) or 'nothing'}.")
+        if state.inventory is None or state.position is None \
+                or state.confidence_of("target_block") != EXACT:
+            return ("Placing a block at a coordinate needs the bridge mod: "
+                    "without it I cannot see the cell, the crosshair's "
+                    "block and face, or the inventory.")
+        if verify_mod._count_of(state, {item}) <= 0:
+            return f"There is no {_words(item)} in the inventory."
+        local = nav.LocalMap.from_state(state)
+        verdict, name = building_mod.what_is_at(local, state, self.cell,
+                                                self.known)
+        if verdict == building_mod.OCCUPIED:
+            return (f"{self.cell} already holds "
+                    f"{'a ' + _words(name) if name else 'a block'}; I only "
+                    f"place into empty space or grass the game replaces.")
+        if verdict == building_mod.UNKNOWN:
+            return (f"I cannot see that {self.cell} is empty -- it is below "
+                    f"the ground, above the headroom the scan measures, or "
+                    f"outside it -- so I placed nothing.")
+        refs = building_mod.references(local, state, self.cell, self.known,
+                                       unusable=_interactive)
+        if not refs:
+            blocked = [n for n in (building_mod.solid_at(
+                local, state, building_mod.offset(self.cell, d), self.known)
+                for d, _f in building_mod.NEIGHBOURS) if n]
+            if blocked:
+                return (f"The only blocks next to {self.cell} are "
+                        f"{', '.join(_words(b) for b in blocked)}; "
+                        f"right-clicking would use them instead of placing "
+                        f"against them.")
+            return (f"There is nothing solid I know of next to {self.cell} "
+                    f"to place against -- a block cannot float.")
+        for ref in refs:
+            if _place_from(state.position, self.cell, ref) \
+                    or _stand_for(state, self.cell, ref) is not None:
+                self._ref = ref
+                return None
+        return (f"There is nowhere I can reach to stand and place at "
+                f"{self.cell} -- every block next to it is out of reach or "
+                f"out of sight from where I can walk.")
+
+    # ── the block in hand ────────────────────────────────────────────────
+
+    def _hold(self, state):
+        """A step to get the item into the hand, or None when it is."""
+        stacks = [s for s in (state.inventory or ())
+                  if s.name == self.item and (s.count or 0) > 0
+                  and s.slot is not None]
+        selected = state.selected_slot
+        if any(s.slot == selected for s in stacks):
+            return None
+        hotbar = [s for s in stacks if 0 <= s.slot <= 8]
+        if hotbar:
+            if self._selects >= 2:
+                return self._stop(f"I selected the {_words(self.item)} twice "
+                                  f"and the game still shows another slot.")
+            self._selects += 1
+            slot = max(hotbar, key=lambda s: (s.count, -s.slot)).slot + 1
+            return Step(action="hotbar_select", params={"slot": slot},
+                        expectation=verify_mod.holding_slot(slot),
+                        note=f"hold the {_words(self.item)} (hotbar slot "
+                             f"{slot})")
+        if self._fetch is None and stacks:
+            self._fetch = HotbarFetch(item=self.item,
+                                      hotbar=hotbar_slot_to_fill(state))
+            step = self._fetch.plan(state)
+            if step is not None:
+                return step
+            return self._stop(f"The {_words(self.item)} is only in the main "
+                              f"inventory and I could not move it to the "
+                              f"hotbar: {self._fetch.done_reason}.")
+        return self._stop(f"There is no {_words(self.item)} left to hold.")
+
+    # ── where to stand ───────────────────────────────────────────────────
+
+    def _walk(self, state):
+        if self._walks >= MAX_PLACE_WALKS:
+            return self._stop(f"I could not find a spot to stand within "
+                              f"reach of {_face_words(self._ref)} and out of "
+                              f"the way of {self.cell}.")
+        here = building_mod.cell_of((math.floor(state.position[0]), 0,
+                                     math.floor(state.position[2])))
+        column = _stand_for(state, self.cell, self._ref,
+                            avoid=self._tried + ((here[0], here[2]),))
+        if column is None:
+            return self._stop(f"There is nowhere I can walk to that reaches "
+                              f"{_face_words(self._ref)} without standing "
+                              f"in {self.cell}.")
+        self._walks += 1
+        self._tried += (column,)
+        self._walker = NavigateTo(destination=column, arrive_within=0.4)
+        step = self._walker.plan(state, 0, ())
+        if step is None:
+            self._walker = None
+            return self._stop(f"I could not walk to {column}.")
+        return step
+
+    # ── aim, then one press ──────────────────────────────────────────────
+
+    def _on_target(self, state):
+        """The block to require under the crosshair as the button goes
+        down, and its face (None: any face) -- or None, not on it yet."""
+        seen = state.target_block
+        try:
+            where = (int(seen.x), int(seen.y), int(seen.z))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        face = str(getattr(seen, "face", "") or "").lower()
+        if where == tuple(self._ref.position) and face == self._ref.face:
+            return where, face
+        if where == self.cell and building_mod.short(seen.name) \
+                in building_mod.REPLACEABLE:
+            return where, None
+        return None
+
+    def _aim_or_place(self, state):
+        target = self._on_target(state)
+        if target is not None:
+            local = nav.LocalMap.from_state(state)
+            verdict, name = building_mod.what_is_at(local, state, self.cell,
+                                                    self.known)
+            if verdict not in (building_mod.EMPTY, building_mod.REPLACE):
+                return self._stop(f"{self.cell} no longer looks empty "
+                                  f"({_words(name or 'something')} or "
+                                  f"unknown); I did not press.")
+            params = {"expect_at": list(target[0])}
+            if target[1] is not None:
+                params["expect_face"] = target[1]
+            creative = getattr(state, "game_mode", None) == "creative"
+            self._phase = "placed"
+            return Step(action="place", params=params,
+                        expectation=verify_mod.placed_block(
+                            self.cell, self.item, state.selected_slot,
+                            count_proof=not creative),
+                        note=(f"place {_words(self.item)} at {self.cell} "
+                              f"against {_face_words(self._ref)}"))
+        if self._aims >= MAX_PLACE_AIMS:
+            return self._stop(self._missed_text(state))
+        self._aims += 1
+        dx, dy, error = nav.aim_at(state.position, state.rotation,
+                                   self._ref.position, face=self._ref.face)
+        if dx == 0 and dy == 0:
+            return self._stop(self._missed_text(state))
+        return Step(action="look", params={"dx": dx, "dy": dy},
+                    expectation=verify_mod.turned(min_degrees=0.3),
+                    note=(f"aim at {_face_words(self._ref)} ({error:.1f}° "
+                          f"off; correction {self._aims} of "
+                          f"{MAX_PLACE_AIMS})"))
+
+    def _missed_text(self, state):
+        seen = state.target_block
+        on = (f"{_words(seen.name)} at ({seen.x}, {seen.y}, {seen.z}), "
+              f"{getattr(seen, 'face', None) or 'no'} face"
+              if seen is not None and getattr(seen, "x", None) is not None
+              else "nothing in reach")
+        return (f"I could not get the crosshair onto {_face_words(self._ref)}"
+                f" -- it is on {on}. Something may be in the way. I placed "
+                f"nothing.")
+
+    def _judge(self, state, last):
+        if last is None or last.step.get("action") != "place":
+            return self._stop("I lost track of the place step.")
+        result = last.action_result or {}
+        if result.get("stopped_reason") == "target_not_confirmed":
+            # Nothing was pressed: the crosshair moved off at the last
+            # moment. Aim again, twice at most.
+            self._misses += 1
+            if self._misses > 2:
+                return self._stop("The crosshair kept slipping off the face "
+                                  "as I went to press. I placed nothing.")
+            self._phase = "work"
+            return self._aim_or_place(state)
+        if not result.get("ok", True):
+            return self._stop(f"The place was refused: "
+                              f"{result.get('error') or 'no reason given'}")
+        reason = last.verification.get("reason", "")
+        if last.verification.get("status") == verify_mod.SUCCESS:
+            self.known[self.cell] = self.item
+            return self._stop(f"placed {_words(self.item)} at {self.cell} "
+                              f"against {_face_words(self._ref)}: {reason}",
+                              placed=True)
+        return self._stop(f"I pressed place once and could not prove a "
+                          f"{_words(self.item)} went into {self.cell}: "
+                          f"{reason} I did not press again.")
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -3873,6 +4280,7 @@ BUILTIN_SKILLS = {
     "find_block": FindBlock,
     "break_block": BreakBlock,
     "place_block": PlaceBlock,
+    "place_block_at": PlaceBlockAt,
     "collect_logs": CollectLogs,
     "fell_tree": lambda **kwargs: CollectLogs(whole_tree=True, **kwargs),
     "collect_blocks": CollectBlocks,

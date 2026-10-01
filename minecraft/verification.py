@@ -386,6 +386,46 @@ def pointer_moved() -> Expectation:
                        fields=("gui",), predicate=predicate)
 
 
+def placed_block(cell, item: str, slot: int,
+                 count_proof: bool = True) -> Expectation:
+    """A block of `item` is now at `cell`, proven twice: the crosshair --
+    which was aimed through that cell -- reports it there, AND the stack in
+    hotbar `slot` (0-8) is one smaller. In creative the stack does not go
+    down (`count_proof=False`), and the crosshair is the only proof."""
+    cell = tuple(int(v) for v in cell)
+
+    def held(state):
+        for stack in (state.inventory or ()):
+            if stack.slot == slot and stack.name == item:
+                return int(stack.count or 0)
+        return 0
+
+    def predicate(before, after):
+        target = after.target_block
+        try:
+            where = (int(target.x), int(target.y), int(target.z))
+        except (AttributeError, TypeError, ValueError):
+            where = None
+        if where != cell or target.name != item:
+            seen = (f"{target.name} at {where}" if where is not None
+                    else "no block")
+            return False, f"the crosshair shows {seen}, not {item} at {cell}."
+        if not count_proof:
+            return True, (f"the crosshair shows {item} at {cell}. In "
+                          f"creative the stack does not go down, so that is "
+                          f"the only proof.")
+        was, now = held(before), held(after)
+        if was - now == 1:
+            return True, (f"the crosshair shows {item} at {cell}, and the "
+                          f"stack went from {was} to {now}.")
+        return False, (f"the crosshair shows {item} at {cell}, but the stack "
+                       f"went from {was} to {now}, not down by one.")
+
+    return Expectation(name="placed_block", goal=f"place {item} at {cell}",
+                       fields=("target_block", "inventory"),
+                       predicate=predicate)
+
+
 def gui_effect(goal: str, check) -> Expectation:
     """A click's effect on the slots and the carried stack, judged by
     `check(before, after) -> (ok, detail)` from the mod's own report."""
@@ -648,5 +688,5 @@ __all__ = [
     "target_changed", "holding_slot", "collected", "unverifiable",
     "closer_to", "arrived_at", "block_gone", "broke_block_at",
     "screen_is", "screen_closed", "pointer_moved", "gui_effect",
-    "CAMERA_STEADY_DEG",
+    "placed_block", "CAMERA_STEADY_DEG",
 ]
