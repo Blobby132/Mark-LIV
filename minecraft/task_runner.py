@@ -697,6 +697,11 @@ class TaskRunner:
             nearby = danger_mod.DangerWatch(watch_health=False).check(state)
             if nearby:
                 reason = f"{reason.rstrip('.')}. Note: {nearby}"
+        # Dusk with a mob about (B5c): the fact the model needs to stop and
+        # offer a shelter, rather than start the next job in the dark.
+        dusk = danger_mod.dusk_note(state)
+        if dusk:
+            reason = f"{reason.rstrip('.')}. Note: {dusk}."
         return TaskResult(
             status=status, goal=goal, reason=reason,
             steps_taken=len(records), max_steps=MAX_TASK_STEPS,

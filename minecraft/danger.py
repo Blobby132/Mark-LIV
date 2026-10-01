@@ -108,5 +108,35 @@ class DangerWatch:
         return ""
 
 
+DUSK_START = 12000
+NIGHT_START = 13000
+NIGHT_END = 23000
+"""Minecraft time of day, in ticks: 12000 the sun starts to set, 13000 it
+is night and mobs spawn in the dark, 23000 it is dawn."""
+
+DUSK_WATCH_RADIUS = 24.0
+"""A hostile mob this close, at dusk or night, is worth a word."""
+
+
+def dusk_note(state) -> str | None:
+    """A sentence when it is getting dark or is night AND a hostile mob is
+    within DUSK_WATCH_RADIUS -- the moment to warn the user and offer a
+    shelter rather than keep working. None otherwise, or when the time or
+    the mobs cannot be read."""
+    ticks = getattr(state, "time_of_day", None)
+    if not isinstance(ticks, int) or not DUSK_START <= ticks % 24000 \
+            < NIGHT_END:
+        return None
+    mob = nearest_hostile(state)
+    if mob is None or mob.distance > DUSK_WATCH_RADIUS:
+        return None
+    when = ("it is getting dark" if ticks % 24000 < NIGHT_START
+            else "it is night")
+    return (f"{when} and a {_mob_name(mob)} is {mob.distance:.0f} blocks "
+            f"away -- warn the user and offer a shelter (build_blueprint "
+            f"shelter) or to flee, rather than carry on")
+
+
 __all__ = ["DangerWatch", "HOSTILE_RADIUS", "HURT_BY", "LEVEL_BAND",
-           "nearest_hostile"]
+           "nearest_hostile", "dusk_note", "DUSK_START", "NIGHT_START",
+           "NIGHT_END", "DUSK_WATCH_RADIUS"]
