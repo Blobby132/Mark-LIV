@@ -1,1 +1,1 @@
-"""Tests for the bridge mod and its reader: the jar, its payload."""
+"""Tests for the bridge mod: the jar, its payload, its reader and installer."""

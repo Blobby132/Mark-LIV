@@ -1,5 +1,5 @@
 """Tests for core/: permissions, capabilities, audit, safe paths, safe
-exec, confirmation, enforcement, vulnerabilities, installers, lint."""
+exec, confirmation, enforcement, vulnerabilities, lint, repo hygiene."""
 
 # This folder shares its name with the app's `core` package. Discovery
 # must start from the repository root -- pytest, or

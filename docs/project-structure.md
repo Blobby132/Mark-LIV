@@ -101,8 +101,8 @@ Mark LIV/
 ├── docs/                     # Everything not in the readme — start at docs/README.md
 └── tests/
     ├── minecraft/            # The Minecraft agent
-    ├── bridge/               # The bridge mod and its reader
-    ├── core/                 # Permissions, capabilities, audit, installers, hygiene
+    ├── bridge/               # The bridge mod, its reader and its installer
+    ├── core/                 # Permissions, capabilities, audit, lint, repo hygiene
     ├── voice/                # The voice path
     ├── dashboard/            # The phone dashboard
     ├── support/              # Shared fixtures — simulated worlds, fakes, paths

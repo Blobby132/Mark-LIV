@@ -276,8 +276,8 @@ walks into it:
 | Folder | What it tests |
 |---|---|
 | `tests/minecraft/` | The agent: `minecraft/`, `minecraft/skills/` and `actions/minecraft.py` |
-| `tests/bridge/` | The bridge mod and its reader: the jar, its payload, reading it |
-| `tests/core/` | Permissions, capabilities, audit, safe paths, safe exec, confirmation, enforcement, vulnerabilities, installers, lint, doc links |
+| `tests/bridge/` | The bridge mod and its reader: the jar, its payload, reading it, and the mod installer (`tools/install_mod.py`) |
+| `tests/core/` | Permissions, capabilities, audit, safe paths, safe exec, confirmation, enforcement, vulnerabilities, lint, repo hygiene (size budget, test isolation, import cycles, doc links, the project-structure tree) |
 | `tests/voice/` | The voice pipeline, diagnostics, and `main.py`'s voice methods |
 | `tests/dashboard/` | The phone dashboard |
 | `tests/support/` | What several tests share; nothing here is a test |
