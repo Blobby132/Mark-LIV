@@ -1068,7 +1068,8 @@ def _player_bits(state) -> list:
             text += "; no food on the hotbar"
         bits.append(text)
     ticks = state.time_of_day
-    if isinstance(ticks, int):
+    # Only the overworld has a night; the clock runs on elsewhere.
+    if isinstance(ticks, int) and mc_danger.has_night(state):
         if 13000 <= ticks < 23000:
             bits.append("it is night — hostile mobs spawn in the dark")
         elif 12000 <= ticks < 13000:

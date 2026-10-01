@@ -23,8 +23,9 @@ from minecraft import danger                                        # noqa: E402
 from minecraft.state import EXACT, EntityRef, WorldState            # noqa: E402
 
 
-def state(ticks, *mobs):
+def state(ticks, *mobs, dimension="overworld"):
     return WorldState(position=(0.5, 64.0, 0.5), time_of_day=ticks,
+                      dimension=dimension,
                       nearby_entities=tuple(
                           EntityRef(name=n, distance=d, hostile=True,
                                     category="hostile",
@@ -56,6 +57,37 @@ class DuskNoteTests(unittest.TestCase):
         self.assertIsNone(danger.dusk_note(state(None, ("zombie", 4.0))))
 
 
+class DimensionTests(unittest.TestCase):
+    """Item 4: only the overworld has days and nights. The world clock runs
+    on in the Nether and the End, so a time of 15000 there said "it is
+    night" to a player who has neither."""
+
+    def test_the_nether_has_no_night(self):
+        self.assertIsNone(danger.dusk_note(
+            state(15000, ("zombified_piglin", 8.0), dimension="the_nether")))
+
+    def test_the_end_has_no_night(self):
+        self.assertIsNone(danger.dusk_note(
+            state(15000, ("enderman", 8.0), dimension="the_end")))
+
+    def test_an_unknown_dimension_is_quiet(self):
+        """Not knowing where the player is, is not knowing it is night."""
+        self.assertIsNone(danger.dusk_note(
+            state(15000, ("zombie", 8.0), dimension=None)))
+
+    def test_the_overworld_still_warns(self):
+        self.assertIn("night", danger.dusk_note(
+            state(15000, ("zombie", 8.0))))
+
+    def test_look_around_says_no_night_in_the_nether(self):
+        from actions import minecraft as mc_actions
+        bits = mc_actions._player_bits(state(15000, dimension="the_nether"))
+        self.assertFalse(any("night" in b or "dark" in b for b in bits),
+                         bits)
+        bits = mc_actions._player_bits(state(15000))
+        self.assertTrue(any("night" in b for b in bits), bits)
+
+
 class TaskResultTests(unittest.TestCase):
 
     def test_a_task_ending_at_dusk_says_so(self):
@@ -67,7 +99,8 @@ class TaskResultTests(unittest.TestCase):
         class Dusk(MobWorld):
             def read(self):
                 return dataclasses.replace(MobWorld.read(self),
-                                           time_of_day=12600)
+                                           time_of_day=12600,
+                                           dimension="overworld")
         world = Dusk([zombie(14.5, 0.5)])
         result = run(world, skills.create("walk_forward", seconds=0.5),
                      max_steps=5)

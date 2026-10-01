@@ -1279,8 +1279,10 @@ class TheModelsViewOfTheWorldTests(unittest.TestCase):
         self.assertIn("5 log(s) visible", answer)
 
     def test_look_around_says_health_hunger_food_and_night(self):
+        # Night only where there is one (item 4): the overworld.
         state = dataclasses.replace(
             state_from(flat()), health=13.0, hunger=9.0, time_of_day=15000,
+            dimension="overworld",
             inventory=(ItemStack(slot=2, name="bread", count=4),
                        ItemStack(slot=20, name="apple", count=3)))
         self._source(state)

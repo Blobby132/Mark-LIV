@@ -117,6 +117,18 @@ is night and mobs spawn in the dark, 23000 it is dawn."""
 DUSK_WATCH_RADIUS = 24.0
 """A hostile mob this close, at dusk or night, is worth a word."""
 
+DAY_NIGHT_DIMENSIONS = frozenset({"overworld"})
+"""Where there is a day and a night. The world's clock keeps running in the
+Nether and the End, but neither has one."""
+
+
+def has_night(state) -> bool:
+    """Is the player somewhere with a day and a night? False when the
+    dimension cannot be read: not knowing where they are is not knowing
+    it is night."""
+    dimension = str(getattr(state, "dimension", None) or "").split(":")[-1]
+    return dimension in DAY_NIGHT_DIMENSIONS
+
 
 def dusk_note(state) -> str | None:
     """A sentence when it is getting dark or is night AND a hostile mob is
@@ -124,8 +136,8 @@ def dusk_note(state) -> str | None:
     shelter rather than keep working. None otherwise, or when the time or
     the mobs cannot be read."""
     ticks = getattr(state, "time_of_day", None)
-    if not isinstance(ticks, int) or not DUSK_START <= ticks % 24000 \
-            < NIGHT_END:
+    if not has_night(state) or not isinstance(ticks, int) \
+            or not DUSK_START <= ticks % 24000 < NIGHT_END:
         return None
     mob = nearest_hostile(state)
     if mob is None or mob.distance > DUSK_WATCH_RADIUS:
@@ -138,5 +150,6 @@ def dusk_note(state) -> str | None:
 
 
 __all__ = ["DangerWatch", "HOSTILE_RADIUS", "HURT_BY", "LEVEL_BAND",
-           "nearest_hostile", "dusk_note", "DUSK_START", "NIGHT_START",
-           "NIGHT_END", "DUSK_WATCH_RADIUS"]
+           "nearest_hostile", "dusk_note", "has_night", "DUSK_START",
+           "NIGHT_START", "NIGHT_END", "DUSK_WATCH_RADIUS",
+           "DAY_NIGHT_DIMENSIONS"]
