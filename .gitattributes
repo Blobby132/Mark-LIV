@@ -1,0 +1,13 @@
+# Line endings: the repository stores LF; a checkout gets the platform's
+# own. Windows batch files are CRLF everywhere, because cmd.exe misreads
+# labels and multi-line blocks in an LF .bat. The gradle wrapper script is
+# run by sh and must stay LF.
+* text=auto
+*.bat text eol=crlf
+gradlew text eol=lf
+
+# Binary: never converted, never diffed as text.
+*.jar binary
+*.ico binary
+*.obj binary
+*.png binary
