@@ -13,7 +13,13 @@ from core import capabilities, exec_safe, safe_path
 from core.undo import push_undo
 
 try:
-    import pyautogui  # noqa: F401 -- availability check: sets _PYAUTOGUI
+    # Kept as an import, not importlib.util.find_spec: importing pyautogui
+    # does things. On Windows it calls SetProcessDPIAware() for the whole
+    # process; on Linux without a display it raises KeyError (not
+    # ImportError), so this module fails to load and the action loader
+    # rejects it. A spec check would change both. _PYAUTOGUI is not read
+    # in this file.
+    import pyautogui  # noqa: F401
     _PYAUTOGUI = True
 except ImportError:
     _PYAUTOGUI = False
@@ -146,7 +152,8 @@ def _execute_generated_code(code: str, player=None) -> str:
 def _ask_gemini_for_desktop_action(task: str) -> str:
 
     # The dependency check: without google-genai this raises here,
-    # before any work, as it always has.
+    # before any work, as it always has. An import rather than find_spec,
+    # so a broken install fails here too, not later inside core.gemini.
     from google import genai as _genai  # noqa: F401
 
     desktop = str(_get_desktop())

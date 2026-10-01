@@ -1,4 +1,5 @@
 #youtube_video.py
+import importlib.util
 import json
 import re
 import sys
@@ -8,16 +9,20 @@ from datetime import datetime
 from urllib.parse import quote_plus
 
 try:
-    import pyautogui  # noqa: F401 -- availability check: sets _PYAUTOGUI
+    # Kept as an import, not importlib.util.find_spec: importing pyautogui
+    # does things. On Windows it calls SetProcessDPIAware() for the whole
+    # process; on Linux without a display it raises KeyError (not
+    # ImportError), so this module fails to load and the action loader
+    # rejects it. A spec check would change both. _PYAUTOGUI is not read
+    # in this file.
+    import pyautogui  # noqa: F401
     _PYAUTOGUI = True
 except ImportError:
     _PYAUTOGUI = False
 
-try:
-    import numpy as np  # noqa: F401 -- availability check: sets _NUMPY
-    _NUMPY = True
-except ImportError:
-    _NUMPY = False
+# Only whether numpy is installed. (main.py imports numpy before any action
+# loads, so in the app the import this replaces could not fail here.)
+_NUMPY = importlib.util.find_spec("numpy") is not None
 
 try:
     import requests

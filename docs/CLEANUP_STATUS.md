@@ -15,7 +15,7 @@ part-way, the next one starts here.
 - unittest (`discover -s tests -t .`): 1519 run; 13 / 37 / 37 skipped.
 - tests/minecraft/test_minecraft_boundary.py blob:
   1a38e53f650999eece833ce99678afc85d63fba3 (must not change).
-- pyflakes: 8 findings, all `# noqa` keeps.
+- pyflakes: 8 findings, all `# noqa` keeps (7 after item 5).
 
 ## Progress
 
@@ -24,11 +24,11 @@ part-way, the next one starts here.
 | 1 project-structure doc | done | 6e0a090 |
 | 2 move test_install_mod | done | 3281520 |
 | 3 two readme lines | done | 553b139 |
-| 4 unused public names | done | (this commit) |
-| 5 remaining lint | | |
+| 4 unused public names | done | 456153a |
+| 5 remaining lint | done | (this commit) |
 | 6 stale Java comment | | |
 | 7 first-run docs | | |
 
 ## Next
 
-Item 5.
+Item 6.

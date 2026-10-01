@@ -94,6 +94,9 @@ def main() -> None:
     # ── OS-specific post-install notes ────────────────────────────────────────
     if OS == "Windows":
         try:
+            # The import IS the check: pywin32's post-install step registers
+            # its DLLs, and when it did not run the module is still found
+            # (find_spec would pass) but importing it fails.
             import win32com.client  # noqa: F401
         except ImportError:
             postinstall = Path(sys.executable).parent / "Scripts" / "pywin32_postinstall.py"

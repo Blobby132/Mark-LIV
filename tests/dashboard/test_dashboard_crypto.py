@@ -38,6 +38,10 @@ LOGIN = (ROOT / "dashboard" / "static" / "login.html").read_text(
 
 
 def _deps():
+    # Imports, not find_spec: these are what the tests use, and they can
+    # fail with the package present -- starlette's TestClient needs httpx,
+    # and cryptography's AESGCM needs its compiled bindings. A spec check
+    # would let the tests error out instead of skipping.
     try:
         import fastapi.testclient                                    # noqa: F401
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa
