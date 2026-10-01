@@ -94,6 +94,17 @@ away produces a perfect crosshair and no interaction at all."""
 def pixels_per_degree_at(sensitivity) -> float | None:
     """Minecraft's own arithmetic, from the sensitivity slider (0..1).
 
+    THE NUMBER, NOT A GUESS AT THE NUMBER
+        Minecraft turns the view by
+
+            degrees = counts * 0.15 * (sensitivity * 0.6 + 0.2) ** 3 * 8
+
+        so given the slider there is nothing to estimate. The mod reports it,
+        and this converts it. A default-ish 47% slider works out near 7.4
+        pixels per degree; 100% is 1.63, more than four times finer -- which
+        is why a single hardcoded constant overshot by a factor of five for
+        anyone who had turned their sensitivity up.
+
     Returns None for anything that is not a usable slider position, so the
     caller falls back to measuring rather than trusting a bad reading."""
     try:

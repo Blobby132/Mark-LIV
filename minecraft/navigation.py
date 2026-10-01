@@ -240,7 +240,7 @@ class LocalMap:
         entry = self.ground.get((x, z))
         if entry is None:
             return False
-        _y, name, solid = entry[0], entry[1], entry[2]
+        name, solid = entry[1], entry[2]
         if name in HAZARDS or name in LIQUIDS:
             return False
         # What you would be standing IN. Grass is fine; a berry bush or fire
@@ -839,41 +839,6 @@ def _readable(name) -> str:
 
 # ── Heading ──────────────────────────────────────────────────────────────────
 #
-# All yaw arithmetic lives here. Minecraft's yaw is 0 at south (+Z) and
-# increases clockwise from above: 90 is west (-X), 180 north (-Z), 270 east
-# (+X). Getting that convention wrong sends an agent consistently ninety
-# degrees off, which looks like a pathfinding bug and is not.
-
-def pixels_per_degree_at(sensitivity) -> float | None:
-    """Minecraft's own arithmetic, from the mouse sensitivity slider.
-
-    THE NUMBER, NOT A GUESS AT THE NUMBER
-        Minecraft turns the view by
-
-            degrees = counts * 0.15 * (sensitivity * 0.6 + 0.2) ** 3 * 8
-
-        so given the slider there is nothing to estimate. The mod reports it,
-        and this converts it. A default-ish 47% slider works out near 7.4
-        pixels per degree; 100% is 1.63, more than four times finer -- which
-        is why a single hardcoded constant overshot by a factor of five for
-        anyone who had turned their sensitivity up.
-
-    Returns None when the value is not a usable slider position, so the
-    caller falls back to measuring instead of trusting a bad reading."""
-    try:
-        slider = float(sensitivity)
-    except (TypeError, ValueError):
-        return None
-    if not 0.0 <= slider <= 1.0:
-        return None
-    degrees_per_count = 0.15 * (slider * 0.6 + 0.2) ** 3 * 8.0
-    if degrees_per_count <= 1e-6:
-        return None
-    return 1.0 / degrees_per_count
-
-
-# ── Heading ──────────────────────────────────────────────────────────────────
-#
 # All of it lives in `minecraft/aiming.py` now. These names stay as thin
 # aliases because navigation is where callers expect to find "which way is
 # that", and because one module owning the arithmetic is the entire point --
@@ -944,7 +909,7 @@ __all__ = [
     "pixels_per_degree", "calibrate", "reset_calibration",
     "observe_turn", "calibration", "AIM_DAMPING",
     "pixels_per_degree_at", "use_sensitivity",
-    "line_is_walkable" if False else "furthest_clear", "MAX_SMOOTHING",
+    "furthest_clear", "MAX_SMOOTHING",
     "MAX_STEP_UP", "MAX_DROP", "MAX_NODES", "MAX_PATH_LENGTH",
     "HAZARDS", "LIQUIDS", "LOG_BLOCKS", "WOOD_BLOCKS", "CATEGORIES",
     "Obstacle", "obstacle_ahead", "PLAYER_HEIGHT", "JUMP_CLEARANCE",

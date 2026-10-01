@@ -1100,6 +1100,14 @@ class SensitivityAndStaleStateTests(unittest.TestCase):
         self.assertIsNone(nav.pixels_per_degree_at(1.5))
         self.assertIsNone(nav.pixels_per_degree_at("loud"))
 
+    def test_the_arithmetic_has_one_owner(self):
+        """navigation re-exports aiming's function; it does not keep a copy
+        (a second copy was shadowed, dead, and one edit from disagreeing)."""
+        from minecraft import aiming
+        self.assertIs(nav.pixels_per_degree_at, aiming.pixels_per_degree_at)
+        source = Path(nav.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("def pixels_per_degree_at", source)
+
     def test_a_reported_setting_beats_the_hardcoded_guess(self):
         self.assertEqual(nav.pixels_per_degree(), nav.PIXELS_PER_DEGREE)
         nav.use_sensitivity(1.0)
