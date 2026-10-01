@@ -35,6 +35,8 @@ NEED = 2
 
 class BuildWorld(GuiWorld):
 
+    SLIDE = True                  # walls are slid along, as in the game
+
     def __init__(self, items, placed=(), plants=(), hidden=(), **kwargs):
         super().__init__(items, **kwargs)
         self.base = {column: block.y for column, block in self.ground.items()}
@@ -115,6 +117,47 @@ class BuildWorld(GuiWorld):
     def read(self):
         self._rescan()
         return super().read()
+
+    def crosshair(self):
+        """(cell, name, face) of the first block the view ray enters within
+        reach, or None -- an exact voxel walk, as the game's raycast is.
+        TreeWorld samples the ray every 0.02 blocks, which on a diagonal
+        can step from one cell into another past the corner between them
+        and name the wrong face; placing against that face is exactly what
+        is being tested here."""
+        yaw, pitch = math.radians(self.yaw), math.radians(self.pitch)
+        d = (-math.sin(yaw) * math.cos(pitch), -math.sin(pitch),
+             math.cos(yaw) * math.cos(pitch))
+        o = (self.x, self.y + self.EYE, self.z)
+        cell = [math.floor(v) for v in o]
+        step = [1 if v > 0 else -1 for v in d]
+        t_max, t_delta = [], []
+        for axis in range(3):
+            if abs(d[axis]) < 1e-12:
+                t_max.append(float("inf"))
+                t_delta.append(float("inf"))
+                continue
+            edge = cell[axis] + (1 if d[axis] > 0 else 0)
+            t_max.append((edge - o[axis]) / d[axis])
+            t_delta.append(abs(1 / d[axis]))
+        faces = (("west", "east"), ("down", "up"), ("north", "south"))
+        while True:
+            axis = min(range(3), key=lambda a: t_max[a])
+            if t_max[axis] > self.REACH:
+                return None
+            cell[axis] += step[axis]
+            t_max[axis] += t_delta[axis]
+            here = tuple(cell)
+            # Entered moving +axis: through the cell's low face.
+            face = faces[axis][0] if step[axis] > 0 else faces[axis][1]
+            if here in self.blocks:
+                return here, self.blocks[here].name, face
+            log = next((l for l in self.logs if l.position == here), None)
+            if log is not None:
+                return here, log.name, face
+            name = self._name_at(here)
+            if name is not None:
+                return here, name, face
 
     # ── the controller ──────────────────────────────────────────────────
 

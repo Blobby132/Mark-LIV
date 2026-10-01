@@ -3870,6 +3870,7 @@ class PlaceBlockAt:
     item: str = ""
     known: dict = field(default_factory=dict)
     restore_slot: bool = True
+    avoid: frozenset = frozenset()   # (x, z) columns never to stand in
 
     name = "place_block_at"
     verifiable_with = ("target_block", "inventory")
@@ -3990,15 +3991,21 @@ class PlaceBlockAt:
             failed = self._walker.failed
             why = self._walker.done_reason
             self._walker = None
-            if failed and not _can_place_here(state, self.cell, self._ref):
+            if failed and not self._here_will_do(state) \
+                    and self._walks >= MAX_PLACE_WALKS:
                 return self._stop(f"I could not get to a place to stand: "
                                   f"{why}")
         held = self._hold(state)
         if held is not None:
             return held
-        if not _can_place_here(state, self.cell, self._ref):
+        if not self._here_will_do(state):
             return self._walk(state)
         return self._aim_or_place(state)
+
+    def _here_will_do(self, state) -> bool:
+        column = (math.floor(state.position[0]), math.floor(state.position[2]))
+        return column not in self.avoid \
+            and _can_place_here(state, self.cell, self._ref)
 
     # ── before anything ──────────────────────────────────────────────────
 
@@ -4041,9 +4048,12 @@ class PlaceBlockAt:
                         f"against them.")
             return (f"There is nothing solid I know of next to {self.cell} "
                     f"to place against -- a block cannot float.")
+        here = (math.floor(state.position[0]), math.floor(state.position[2]))
         for ref in refs:
-            if _can_place_here(state, self.cell, ref) \
-                    or _stand_for(state, self.cell, ref) is not None:
+            if (here not in self.avoid
+                    and _can_place_here(state, self.cell, ref)) \
+                    or _stand_for(state, self.cell, ref,
+                                  avoid=self.avoid) is not None:
                 self._ref = ref
                 return None
         return (f"There is nowhere I can reach to stand and place at "
@@ -4094,14 +4104,16 @@ class PlaceBlockAt:
         here = building_mod.cell_of((math.floor(state.position[0]), 0,
                                      math.floor(state.position[2])))
         column = _stand_for(state, self.cell, self._ref,
-                            avoid=self._tried + ((here[0], here[2]),))
+                            avoid=set(self._tried) | {(here[0], here[2])}
+                            | set(self.avoid))
         if column is None:
             return self._stop(f"There is nowhere I can walk to that reaches "
                               f"{_face_words(self._ref)} without standing "
                               f"in {self.cell}.")
         self._walks += 1
         self._tried += (column,)
-        self._walker = NavigateTo(destination=column, arrive_within=0.4)
+        self._walker = NavigateTo(destination=column, arrive_within=0.4,
+                                  keep_off=frozenset(self.avoid))
         step = self._walker.plan(state, 0, ())
         if step is None:
             self._walker = None
@@ -4247,6 +4259,7 @@ class _Builder:
     _in_a_row: int = 0
     _last_state: object = None
     _stopped: str = ""
+    _lists_untried = True
 
     @property
     def failed(self) -> bool:
@@ -4280,7 +4293,7 @@ class _Builder:
             text += " Failed: " + "; ".join(
                 f"{tuple(c)} -- {why}" for c, why in self._failed) + "."
         left = [c for c in self._cells if c not in self._done]
-        if left:
+        if left and self._lists_untried:
             text += f" Not tried: {_cells_text(left)}."
         if self._stopped:
             text += f" {self._stopped}"
@@ -4360,7 +4373,8 @@ class _Builder:
                 return self._restore(state)
             self._current = PlaceBlockAt(x=cell[0], y=cell[1], z=cell[2],
                                          item=self.item, known=self._known,
-                                         restore_slot=False)
+                                         restore_slot=False,
+                                         avoid=self._keep_out())
 
     def _prepare(self, state) -> str | None:
         self.item = building_mod.short(self.item)
@@ -4385,6 +4399,12 @@ class _Builder:
     def _targets(self, state):
         """Fill self._cells, or return why not."""
         raise NotImplementedError
+
+    def _keep_out(self) -> frozenset:
+        """Columns never to stand in while building: the structure's own.
+        Standing on a half-built wall or inside a half-built room is how a
+        player ends up boxed in by what they are building."""
+        return frozenset((c[0], c[2]) for c in self._cells)
 
     def _next_cell(self, state):
         for cell in self._cells:
@@ -4445,6 +4465,280 @@ class BuildLine(_Builder):
                                                    step[2] * i))
                        for i in range(count)]
         return None
+
+
+_BLUEPRINTS: dict = {}
+"""Blueprints under way, so asking again carries on: key -> {"cells": the
+plan's cells, "placed": cells proven placed}. In memory only. A task has 45
+steps and a shelter needs about seventy."""
+
+_LAST_BLUEPRINT: dict = {}
+"""(plan, item) -> the key of the last one started, for "carry on" without
+coordinates."""
+
+
+def forget_blueprints() -> None:
+    _BLUEPRINTS.clear()
+    _LAST_BLUEPRINT.clear()
+
+
+def _cardinal(dx, dz) -> str:
+    if abs(dx) > abs(dz):
+        return "east" if dx > 0 else "west"
+    return "south" if dz > 0 else "north"
+
+
+@dataclass
+class BuildBlueprint(_Builder):
+    """build_blueprint: a named plan -- platform, wall, or a hollow 3x3x3
+    shelter with a doorway -- built bottom-up, each block by
+    place_block_at.
+
+    THE LIMITS, CHECKED BEFORE ANYTHING IS PRESSED
+        At most 64 blocks; every cell within 6 blocks of where the task
+        began; every cell empty or holding grass the game replaces; flat
+        ground under the bottom layer; plain building blocks only; and
+        enough of them in the inventory for the whole plan.
+    ONE SENTENCE
+        The plan is one sentence (`goal`, which run_task's answer repeats):
+        what, of which block, where, which way the door faces, how many.
+    ORDER
+        The lowest unfinished layer first. Within it, the first cell in the
+        plan that can be placed from where it stands (its face in reach and
+        in view), else the nearest that has something to go against,
+        walking to it.
+    NEVER INSIDE IT
+        For walls and the shelter it never stands in, or routes through,
+        the structure's own footprint -- the step aside, which is there to
+        be stood on for the roof. Standing on a half-built wall or inside
+        the half-built room is how a player boxes themselves in.
+    MORE THAN ONE TASK
+        45 steps place about fifteen blocks. The plan and what has been
+        proven placed are kept in memory: asking again carries on, with the
+        same limits checked for what is left. Every report says what this
+        task placed and failed, and what is left."""
+
+    design: str = ""             # the plan's name; `plan` is the method
+    x: int | None = None
+    y: int | None = None
+    z: int | None = None
+    direction: str | None = None
+    size: int | None = None
+
+    name = "build_blueprint"
+
+    _key: tuple = None
+    _blueprint: object = None
+    _before: int = 0                # cells placed by earlier tasks
+    _found: list = field(default_factory=list)
+    _lists_untried = False          # "Still to place" says it
+
+    @property
+    def goal(self) -> str:
+        if None not in (self.x, self.y, self.z) and self.direction:
+            bp = building_mod.blueprint(self.design, (self.x, self.y, self.z),
+                                        self.direction, self.size,
+                                        building_mod.short(self.item))
+            if not isinstance(bp, str):
+                return f"build {bp.sentence}"
+        return (f"build a {self.design or 'blueprint'} of "
+                f"{_words(building_mod.short(self.item))}")
+
+    @property
+    def failed(self) -> bool:
+        record = _BLUEPRINTS.get(self._key)
+        return record is None or len(record["placed"]) \
+            < len(record["cells"])
+
+    def _report(self) -> str:
+        record = _BLUEPRINTS.get(self._key)
+        if record is None or self._blueprint is None:
+            return super()._report()
+        total = len(record["cells"])
+        done = len(record["placed"])
+        text = super()._report()
+        head = f"{self._blueprint.sentence}. "
+        if self._found:
+            head += (f"Already in place when I started, though not proven "
+                     f"by me: {_cells_text(self._found)}. ")
+        if done >= total:
+            return f"{head}Built: all {total} placed. This task {text}"
+        left = [c for c in record["cells"] if c not in record["placed"]]
+        return (f"{head}{done} of {total} placed so far. This task "
+                f"{text} Still to place: {_cells_text(left)}. Ask again "
+                f"(build_blueprint {self._blueprint.plan}) to carry on.")
+
+    def _record(self, current) -> None:
+        super()._record(current)
+        record = _BLUEPRINTS.get(self._key)
+        if record is not None and current.placed:
+            record["placed"].add(current.cell)
+
+    def _targets(self, state):
+        item = self.item
+        start = building_mod.cell_of((math.floor(state.position[0]),
+                                      math.floor(state.position[1]),
+                                      math.floor(state.position[2])))
+        local = nav.LocalMap.from_state(state)
+        key = self._resume_key()
+        if key is None:
+            made = self._new_plan(state, local, start)
+            if isinstance(made, str):
+                return made
+            key = made
+        record = _BLUEPRINTS[key]
+        self._key = key
+        self._blueprint = record["blueprint"]
+        _LAST_BLUEPRINT[(self._blueprint.plan, item)] = key
+        left = [c for c in record["cells"] if c not in record["placed"]]
+        self._before = len(record["placed"])
+        far = building_mod.within(left, start)
+        if far:
+            anchor = record["anchor"]
+            return (f"Every cell has to be within "
+                    f"{building_mod.MAX_BLUEPRINT_REACH} blocks of where I "
+                    f"start, and {_cells_text(far[:3])} "
+                    f"{'is' if len(far) == 1 else 'are'} not. Walk closer "
+                    f"to {anchor} and ask again.")
+        have = verify_mod._count_of(state, {item})
+        if getattr(state, "game_mode", None) != "creative" and have < len(left):
+            return (f"{self._blueprint.sentence[0].upper()}"
+                    f"{self._blueprint.sentence[1:]} needs {len(left)} more "
+                    f"{_words(item)}, and I have {have}.")
+        for cell in left:
+            verdict, name = building_mod.what_is_at(local, state, cell,
+                                                    record["known"])
+            if verdict == building_mod.OCCUPIED and name == item:
+                # The scan shows the block already there: a press an
+                # earlier task could not prove, most likely. Counted as
+                # found, not as placed by this task.
+                record["placed"].add(cell)
+                record["known"][cell] = item
+                self._found.append(cell)
+            elif verdict == building_mod.OCCUPIED:
+                return (f"{cell} holds {'a ' + _words(name) if name else 'a block'}"
+                        f", in the way of the {self._blueprint.plan}. Pick "
+                        f"another spot, or clear it first.")
+        left = [c for c in left if c not in record["placed"]]
+        self._cells = left
+        self._known = record["known"]
+        return None
+
+    def _keep_out(self) -> frozenset:
+        """For walls and a shelter, the footprint -- every column inside
+        the outline, the hollow too -- except the step, which is there to
+        be stood on. A platform is a floor: standing on it is the point,
+        and its middle cannot be reached from outside it."""
+        bp = self._blueprint
+        if bp is None:
+            return super()._keep_out()
+        steps = {(c[0], c[2]) for c, role in bp.roles if role == "step"}
+        body = [c for c, role in bp.roles if role in ("wall", "roof")]
+        if not body:
+            return frozenset()
+        xs = [c[0] for c in body]
+        zs = [c[2] for c in body]
+        return frozenset((x, z) for x in range(min(xs), max(xs) + 1)
+                         for z in range(min(zs), max(zs) + 1)) - steps
+
+    def _next_cell(self, state):
+        """The lowest unfinished layer; in it, the first cell in the plan
+        that can be placed from where it stands (its face in reach and in
+        view -- a block that would hide another's face is caught by that
+        view check, not by guessing an order), else the nearest one with
+        something to go against, walking to it."""
+        left = [c for c in self._cells if c not in self._done]
+        if not left:
+            return None
+        layer = min(c[1] for c in left)
+        here = [c for c in left if c[1] == layer]
+        local = nav.LocalMap.from_state(state)
+        ready = []
+        for cell in here:
+            refs = building_mod.references(local, state, cell, self._known,
+                                           unusable=_interactive)
+            if refs:
+                ready.append((cell, refs))
+        if not ready:
+            return here[0]           # it fails, and the report says why
+        pos = state.position
+        inside = (math.floor(pos[0]), math.floor(pos[2])) in self._keep_out()
+        for cell, refs in ready:
+            if not inside and any(_can_place_here(state, cell, r)
+                                  for r in refs):
+                return cell
+        return min((c for c, _refs in ready),
+                   key=lambda c: (math.dist(
+                       (pos[0], pos[1], pos[2]),
+                       (c[0] + 0.5, c[1] + 0.5, c[2] + 0.5)), c))
+
+    def _resume_key(self):
+        """The blueprint under way to carry on, or None for a new one."""
+        item = self.item
+        if None in (self.x, self.y, self.z):
+            key = _LAST_BLUEPRINT.get((str(self.design).lower(), item))
+            record = _BLUEPRINTS.get(key)
+            if record is not None and \
+                    len(record["placed"]) < len(record["cells"]):
+                return key
+            return None
+        for key, record in _BLUEPRINTS.items():
+            if record["anchor"] == (int(self.x), int(self.y), int(self.z)) \
+                    and record["blueprint"].plan == str(self.design).lower() \
+                    and key[-1] == item \
+                    and len(record["placed"]) < len(record["cells"]):
+                return key
+        return None
+
+    def _new_plan(self, state, local, start):
+        item = self.item
+        if None in (self.x, self.y, self.z):
+            yaw = math.radians((state.rotation or (0.0, 0.0))[0] or 0.0)
+            ahead = _cardinal(-math.sin(yaw), math.cos(yaw))
+            step = building_mod.FACE_OFFSETS[{"north": "north",
+                                              "south": "south",
+                                              "east": "east",
+                                              "west": "west"}[ahead]]
+            column = (start[0] + 3 * step[0], start[2] + 3 * step[2])
+            ground = local.ground_at(*column)
+            if ground is None:
+                return ("I cannot see the ground three blocks in front of "
+                        "me. Give me x, y and z from look_around.")
+            anchor = (column[0], ground + 1, column[1])
+        else:
+            anchor = (int(self.x), int(self.y), int(self.z))
+        facing = (str(self.direction).strip().lower() if self.direction
+                  else _cardinal(start[0] - anchor[0], start[2] - anchor[2]))
+        bp = building_mod.blueprint(self.design, anchor, facing, self.size,
+                                    item)
+        if isinstance(bp, str):
+            return bp
+        if not building_mod.supported_in_order(bp.cells, anchor[1] - 1):
+            return f"The {bp.plan} cannot be built bottom-up."
+        for cell in bp.cells:
+            verdict, name = building_mod.what_is_at(local, state, cell)
+            if verdict == building_mod.OCCUPIED:
+                return (f"{cell} holds "
+                        f"{'a ' + _words(name) if name else 'a block'}, in "
+                        f"the way of the {bp.plan}. Pick another spot, or "
+                        f"clear it first.")
+        bottom = [c for c in bp.cells if c[1] == anchor[1]]
+        for cell in bottom:
+            ground = local.ground_at(cell[0], cell[2])
+            if ground != anchor[1] - 1:
+                return (f"The ground under the {bp.plan} is not flat: at "
+                        f"{(cell[0], cell[2])} it is "
+                        f"{'unseen' if ground is None else f'at y={ground}'}"
+                        f", not y={anchor[1] - 1}. Pick flatter ground.")
+        for cell in bp.cells:
+            verdict, name = building_mod.what_is_at(local, state, cell)
+            if verdict == building_mod.UNKNOWN:
+                return (f"I cannot see that {cell} is empty, so I will not "
+                        f"start the {bp.plan} there.")
+        key = (bp.plan, anchor, facing, self.size, item)
+        _BLUEPRINTS[key] = {"blueprint": bp, "cells": bp.cells,
+                            "anchor": anchor, "placed": set(), "known": {}}
+        return key
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -4630,6 +4924,8 @@ BUILTIN_SKILLS = {
     "place_block": PlaceBlock,
     "place_block_at": PlaceBlockAt,
     "build_line": BuildLine,
+    "build_blueprint": lambda plan="", **kwargs: BuildBlueprint(
+        design=plan, **kwargs),
     "collect_logs": CollectLogs,
     "fell_tree": lambda **kwargs: CollectLogs(whole_tree=True, **kwargs),
     "collect_blocks": CollectBlocks,
@@ -4668,8 +4964,10 @@ NOT_YET_POSSIBLE = {
                  "What is missing is getting to iron that is NOT exposed, "
                  "which means digging a shaft, lighting it, and not falling "
                  "into lava — none of which is built.",
-    "build_structure": "needs a plan and a placement order, not just the "
-                       "ability to place one block.",
+    "pillar_up_or_bridge": "building upwards past two blocks, or out over "
+                           "a gap, needs a jump and a place timed inside "
+                           "one hold, about 0.3s apart; the controller "
+                           "does not schedule taps within a hold yet.",
     "return_to_base": "navigation exists now, but only within the scan "
                       "radius. Walking back to a base 300 blocks away needs "
                       "stored waypoints and route-finding across terrain not "

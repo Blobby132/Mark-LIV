@@ -728,7 +728,7 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
 
     options = {}
     for key in ("seconds", "direction", "expected", "swings", "steps",
-                "count", "slot", "target", "item"):
+                "count", "slot", "target", "item", "plan", "size"):
         if key in params:
             options[key] = params[key]
     if name in ("aim_at_block", "mine_block", "place_block_at",
@@ -738,6 +738,12 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
             return block
         options.update(x=block[0], y=block[1], z=block[2])
         options.pop("target", None)
+    if name == "build_blueprint":
+        if any(k in params for k in ("x", "y", "z")):
+            block = _block_from(params)
+            if isinstance(block, str):
+                return block
+            options.update(x=block[0], y=block[1], z=block[2])
     if name == "navigate_to":
         column = _destination_from(params)
         if isinstance(column, str):
@@ -1113,8 +1119,8 @@ TOOL = {
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
         "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
-        "craft_item, place_block_at, build_line, navigate_to, eat_food, "
-        "aim_at_block, "
+        "craft_item, place_block_at, build_line, build_blueprint, "
+        "navigate_to, eat_food, aim_at_block, "
         "mine_block. The mining tasks (break_block, collect_logs, fell_tree, "
         "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
         "slot back afterwards. When the tool that harvests the block -- or "
@@ -1203,6 +1209,22 @@ TOOL = {
         "not the count asked for. From the ground a column (up) is two "
         "blocks high: it cannot jump and place yet. If it ran out of steps, "
         "call it again from the next cell. "
+        "build_blueprint builds a named plan bottom-up: plan = platform "
+        "(size 2-5 across), wall (size 2-8 long, 2 high) or shelter (hollow "
+        "3x3x3, walls two high with a doorway, a roof, and a three-block "
+        "step along one side to stand on for the roof; 26 blocks). x, y, z are the centre at "
+        "the level the player stands in (leave them out for three blocks "
+        "in front); direction is the side the doorway faces (default: "
+        "towards the player). Limits: at most 64 blocks, every cell within "
+        "6 blocks of where it starts, only empty cells or grass, flat "
+        "ground, plain blocks, and enough of them for the whole plan -- "
+        "otherwise it refuses before pressing anything. BEFORE calling it, "
+        "tell the user the plan in one sentence: what, of which block, "
+        "where, how many blocks. A task places about fifteen blocks; if "
+        "the report says to ask again, call build_blueprint with the same "
+        "plan and no coordinates to carry on (a shelter takes three or "
+        "four tasks). Relay its report: which "
+        "cells were placed, which failed, and the inventory count. "
         "eat_food eats until not hungry (count: how many items at most): it "
         "picks food that will not make you ill and does not waste golden "
         "apples, looks up first if a chest or door is under the crosshair, "
@@ -1247,7 +1269,9 @@ TOOL = {
                 "description": ("For move/move_and_jump/sneak/sprint: "
                                 "forward | back | left | right. For "
                                 "run_task build_line: north | south | east "
-                                "| west | up."),
+                                "| west | up. For build_blueprint: the side "
+                                "the doorway (or the wall's face) points to "
+                                "-- north | south | east | west."),
             },
             "duration": {
                 "type": "NUMBER",
@@ -1292,8 +1316,8 @@ TOOL = {
                                 "find_block | break_block | place_block | "
                                 "collect_logs | fell_tree | collect_blocks | "
                                 "craft_item | place_block_at | build_line | "
-                                "navigate_to | eat_food | aim_at_block | "
-                                "mine_block."),
+                                "build_blueprint | navigate_to | eat_food | "
+                                "aim_at_block | mine_block."),
             },
             "x": {
                 "type": "INTEGER",
@@ -1332,9 +1356,20 @@ TOOL = {
                 "description": ("For craft_item: what to make — e.g. "
                                 "oak_planks, stick, crafting_table, "
                                 "wooden_pickaxe, stone_axe, furnace, torch, "
-                                "chest. For place_block_at and build_line: "
-                                "the block to place — e.g. cobblestone, "
-                                "dirt, oak_planks."),
+                                "chest. For place_block_at, build_line and "
+                                "build_blueprint: the block to place — e.g. "
+                                "cobblestone, dirt, oak_planks."),
+            },
+            "plan": {
+                "type": "STRING",
+                "description": ("For run_task build_blueprint: platform | "
+                                "wall | shelter."),
+            },
+            "size": {
+                "type": "INTEGER",
+                "description": ("For run_task build_blueprint: a "
+                                "platform's width (2-5) or a wall's length "
+                                "(2-8). The shelter has one size."),
             },
             "count": {
                 "type": "INTEGER",

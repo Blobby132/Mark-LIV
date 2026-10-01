@@ -224,7 +224,156 @@ def faces_towards(eye, block, face) -> bool:
                 face, False)
 
 
+# ── Blueprints ───────────────────────────────────────────────────────────────
+
+MAX_BLUEPRINT_BLOCKS = 64
+"""No blueprint places more."""
+
+MAX_BLUEPRINT_REACH = 6
+"""Every cell within this many blocks (on each axis) of where the task
+began."""
+
+PLANS = ("platform", "wall", "shelter")
+
+PLATFORM_SIZES = range(2, 6)
+WALL_LENGTHS = range(2, 9)
+WALL_HEIGHT = 2
+"""From the ground a wall is two high: a third layer goes on top faces
+above a standing player's eyes."""
+
+_FACINGS = ("north", "south", "east", "west")
+
+
+def _rotate(dx, dz, facing):
+    """A canonical offset -- the front facing +z (south) -- turned so the
+    front faces `facing`."""
+    if facing == "north":
+        return -dx, -dz
+    if facing == "east":
+        return dz, -dx
+    if facing == "west":
+        return -dz, dx
+    return dx, dz
+
+
+def _step_side(facing) -> str:
+    """The side the shelter's step is on (where canonical +x ends up),
+    named for the sentence."""
+    return {"south": "east", "north": "west", "east": "north",
+            "west": "south"}[facing]
+
+
+@dataclass(frozen=True)
+class Blueprint:
+    plan: str
+    cells: tuple              # absolute cells, bottom layer first
+    sentence: str             # the plan, in one sentence, for the user
+    roles: tuple = ()         # (cell, role) pairs: wall, roof, step, floor
+
+
+def blueprint(plan, anchor, facing="south", size=None, item="block"):
+    """The named plan's cells around `anchor` -- the centre of its
+    footprint, at the level a player standing on the ground occupies --
+    or a sentence saying why not. Bottom layer first; within a layer the
+    builder chooses the order as it goes."""
+    plan = str(plan or "").strip().lower()
+    facing = str(facing or "south").strip().lower()
+    if facing not in _FACINGS:
+        return f"The front faces north, south, east or west -- not {facing!r}."
+    ax, ay, az = cell_of(anchor)
+    words = " ".join(str(item).split("_"))
+    cells, roles = [], []
+
+    def add(dx, dy, dz, role):
+        rx, rz = _rotate(dx, dz, facing)
+        cell = (ax + rx, ay + dy, az + rz)
+        cells.append(cell)
+        roles.append((cell, role))
+
+    if plan == "platform":
+        n = 3 if size is None else int(size)
+        if n not in PLATFORM_SIZES:
+            return (f"A platform is {PLATFORM_SIZES[0]} to "
+                    f"{PLATFORM_SIZES[-1]} blocks across.")
+        low = -(n // 2)
+        for dx in range(low, low + n):
+            for dz in range(low, low + n):
+                add(dx, 0, dz, "floor")
+        sentence = (f"a {n} by {n} platform of {words}, one block high, "
+                    f"centred on {(ax, ay, az)} -- {len(cells)} blocks")
+    elif plan == "wall":
+        n = 5 if size is None else int(size)
+        if n not in WALL_LENGTHS:
+            return (f"A wall is {WALL_LENGTHS[0]} to {WALL_LENGTHS[-1]} "
+                    f"blocks long.")
+        low = -(n // 2)
+        for dy in range(WALL_HEIGHT):
+            for dx in range(low, low + n):
+                add(dx, dy, 0, "wall")
+        runs = "east to west" if facing in ("north", "south") \
+            else "north to south"
+        sentence = (f"a wall of {words} {n} long and {WALL_HEIGHT} high, "
+                    f"running {runs} through {(ax, ay, az)} -- "
+                    f"{len(cells)} blocks")
+    elif plan == "shelter":
+        if size not in (None, 3):
+            return "The shelter comes in one size: 3 by 3 by 3."
+        ring = [(dx, dz) for dx in (-1, 0, 1) for dz in (-1, 0, 1)
+                if (dx, dz) != (0, 0)]
+        door = (0, 1)
+        for dy in (0, 1):
+            for dx, dz in ring:
+                if (dx, dz) != door:
+                    add(dx, dy, dz, "wall")
+            if dy == 0:
+                # A porch the length of one side wall, to stand on for the
+                # roof: a hop onto a single block from beside it carries
+                # past it, and the full side catches it whichever way.
+                for dz in (-1, 0, 1):
+                    add(2, 0, dz, "step")
+        for dx in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                add(dx, 2, dz, "roof")
+        sentence = (f"a hollow 3 by 3 by 3 shelter of {words} centred on "
+                    f"{(ax, ay, az)}: walls two high with a doorway on the "
+                    f"{facing} side, a roof, and a three-block step along "
+                    f"the {_step_side(facing)} wall to stand on for the roof "
+                    f"-- {len(cells)} blocks")
+    else:
+        return (f"I know these plans: {', '.join(PLANS)} -- not "
+                f"{plan or 'nothing'}.")
+    if len(cells) > MAX_BLUEPRINT_BLOCKS:
+        return (f"That is {len(cells)} blocks; a blueprint places at most "
+                f"{MAX_BLUEPRINT_BLOCKS}.")
+    return Blueprint(plan=plan, cells=tuple(cells), sentence=sentence,
+                     roles=tuple(roles))
+
+
+def supported_in_order(cells, ground_y) -> bool:
+    """Bottom-up, does every cell have something to be placed against
+    when its turn comes: the ground (at `ground_y`, under the bottom layer)
+    or a cell earlier in the list?"""
+    placed = set()
+    for cell in cells:
+        below_is_ground = cell[1] - 1 == ground_y
+        if not below_is_ground and not any(
+                offset(cell, delta) in placed for delta, _f in NEIGHBOURS):
+            return False
+        placed.add(cell)
+    return True
+
+
+def within(cells, start, reach=MAX_BLUEPRINT_REACH):
+    """The cells more than `reach` blocks from `start` on any axis."""
+    sx, sy, sz = cell_of(start)
+    return tuple(c for c in cells
+                 if max(abs(c[0] - sx), abs(c[1] - sy), abs(c[2] - sz))
+                 > reach)
+
+
 __all__ = ["BUILDING_BLOCKS", "EMPTY", "FACE_OFFSETS", "NEIGHBOURS",
            "OCCUPIED", "REPLACE", "REPLACEABLE", "Reference", "UNKNOWN",
            "body_overlaps", "cell_of", "faces_towards", "lands_at",
-           "references", "solid_at", "what_is_at"]
+           "references", "solid_at", "what_is_at", "Blueprint", "PLANS",
+           "MAX_BLUEPRINT_BLOCKS", "MAX_BLUEPRINT_REACH", "blueprint",
+           "supported_in_order", "within"]

@@ -699,7 +699,7 @@ class TestSkills(unittest.TestCase):
         possible, and leaving the old claim in place would be a lie that
         happened to have been true once."""
         for name in ("count_inventory", "mine_ore", "navigate_to",
-                     "craft_item"):
+                     "craft_item", "build_structure"):
             with self.subTest(skill=name):
                 self.assertNotIn(name, skills.NOT_YET_POSSIBLE)
         self.assertIn("inventory contents", skills.NOW_POSSIBLE_WITH_THE_BRIDGE)
@@ -707,7 +707,7 @@ class TestSkills(unittest.TestCase):
                       skills.NOW_POSSIBLE_WITH_THE_BRIDGE)
 
     def test_the_things_it_cannot_do_are_named_rather_than_attempted(self):
-        for name in ("build_structure", "return_to_base",
+        for name in ("pillar_up_or_bridge", "return_to_base",
                      "long_distance_travel", "dig_or_bridge_a_route"):
             with self.subTest(skill=name):
                 self.assertIn(name, skills.NOT_YET_POSSIBLE)
