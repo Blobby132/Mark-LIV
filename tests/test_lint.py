@@ -17,9 +17,6 @@ ROOT = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {".git", ".venv", "venv", "env", "ENV", "build", "dist",
              "fabric-mod", "__pycache__", ".pytest_cache", ".ruff_cache"}
 
-# Known before the reorganisation, fixed in its own commit: remove the
-# entry with the fix, and never add one.
-KNOWN_UNDEFINED = {"tests/test_minecraft_observation.py: 'Observation'"}
 
 try:
     from pyflakes import api as pyflakes_api
@@ -50,12 +47,5 @@ def findings():
 class LintTests(unittest.TestCase):
 
     def test_no_undefined_names(self):
-        undefined = []
-        for line in findings():
-            if "undefined name" not in line:
-                continue
-            path = line.split(":", 1)[0]
-            name = line.rsplit("undefined name ", 1)[1]
-            if f"{path}: {name}" not in KNOWN_UNDEFINED:
-                undefined.append(line)
+        undefined = [line for line in findings() if "undefined name" in line]
         self.assertEqual(undefined, [])

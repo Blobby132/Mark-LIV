@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft.errors import ObservationFailed                    # noqa: E402
-from minecraft.observation import Observer                        # noqa: E402
+from minecraft.observation import Observation, Observer           # noqa: E402
 from minecraft.state import (                                     # noqa: E402
     UNKNOWN, VisionStateSource, WorldState, empty_state,
 )
@@ -297,9 +297,13 @@ class TestCaptureResolution(unittest.TestCase):
             def describe(self):
                 return "test"
 
-        DebugOverlayStateSource(observer=Recorder(), reader=Reader()).read()
+        state = DebugOverlayStateSource(observer=Recorder(),
+                                        reader=Reader()).read()
         self.assertIs(asked.get("compress"), False,
                       "the F3 reader must not be given a downscaled frame")
+        # The capture's own answer came back -- not "Screen capture failed",
+        # which is what a Recorder that raised would have produced.
+        self.assertEqual(state.notes, "not a real capture")
 
 
 if __name__ == "__main__":
