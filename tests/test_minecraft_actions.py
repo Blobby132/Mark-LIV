@@ -30,6 +30,7 @@ from minecraft.input_backend import (                                  # noqa: E
 )
 from minecraft.ledger import InputLedger, button_token                 # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
+from minecraft.state import WorldState                                 # noqa: E402
 from minecraft.controller import MinecraftController                   # noqa: E402
 from test_minecraft_controller import FakeLocator, FakeProcess         # noqa: E402
 
@@ -42,12 +43,17 @@ class _Case(unittest.TestCase):
         self.sessions = SessionManager()
         # A block in hand: `place` refuses an unknown hand (A4). A zombie
         # under the crosshair: `attack` hits only hostile mobs (item 1).
+        # The screen the bridge reports: ESC closes only a screen it
+        # reports open (item 6). None until a test opens one.
+        self.screen = None
         self.controller = MinecraftController(
             backend=self.backend, locator=self.locator,
             sessions=self.sessions, process_module=FakeProcess(),
             start_watchers=False, focus_wait_s=0.0,
             held_item_probe=lambda: "cobblestone",
-            entity_probe=lambda: ("zombie", "hostile"))
+            entity_probe=lambda: ("zombie", "hostile"),
+            gui_probe=lambda: WorldState(screen=self.screen,
+                                         source="bridge"))
 
     def tearDown(self):
         try:
@@ -327,6 +333,8 @@ class TestPhase4Actions(_Case):
             with self.subTest(action=action):
                 result = self.controller.execute_action(action, params)
                 self.assertTrue(result.ok, result.error)
+                if params.get("state") == "open":
+                    self.screen = "inventory"        # as the game would
         self.assert_nothing_held()
 
     def test_mining_holds_the_attack_button(self):
@@ -357,10 +365,12 @@ class TestPhase4Actions(_Case):
 
     def test_opening_and_closing_the_inventory_use_different_keys(self):
         """Close is ESC, not E again. If the inventory state were misread,
-        a toggle would open it exactly when we wanted it shut; ESC does
-        nothing when nothing is open, which fails harmlessly."""
+        a toggle would open it exactly when we wanted it shut. ESC with
+        nothing open brings up the pause menu, so it is pressed only when
+        the bridge reports a screen open (item 6)."""
         self.open()
         self.controller.inventory({"state": "open"})
+        self.screen = "inventory"
         self.controller.inventory({"state": "close"})
         self.assertIn("e", self.backend.downs())
         self.assertIn("esc", self.backend.downs())

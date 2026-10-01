@@ -240,6 +240,10 @@ class GuiWorld(TreeWorld):
 
     def inventory(self, params):
         if params.get("state") == "close":
+            if self.screen is None:          # the controller refuses (item 6)
+                return self._done("inventory_close", params, ok=False,
+                                  reason="no_screen",
+                                  error="No screen is open.")
             self._close()
         elif self.screen is None:
             self.screen = "inventory"

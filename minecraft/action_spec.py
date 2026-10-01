@@ -825,8 +825,10 @@ def parse_inventory(params: dict) -> HoldSpec:
 
     Opening uses E and closing uses ESC rather than E again: if the inventory
     is already shut, E opens it, so "close" implemented as E would toggle the
-    wrong way exactly when the state was misread. ESC closes and does nothing
-    when nothing is open, which fails in the harmless direction."""
+    wrong way exactly when the state was misread. ESC closes any screen --
+    but with none open it brings up the pause menu (pausing a single-player
+    game), so the controller presses it only when the bridge reports a
+    screen open at that moment, and refuses otherwise."""
     raw = str((params or {}).get("state", "open")).strip().lower()
     if raw in ("open", "opened", "show"):
         key, name = INVENTORY_KEY, "open"

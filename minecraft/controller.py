@@ -756,6 +756,15 @@ class MinecraftController:
                            f"pressed. Close it first (inventory close)."),
                 )
 
+        if action == "inventory_close":
+            problem = self._close_refusal()
+            if problem:
+                return ActionResult(
+                    ok=False, action=action, requested=requested,
+                    stopped_reason="no_screen", clamped=clamped,
+                    error_class="NoScreenOpen", error=problem,
+                )
+
         if expect_hostile:
             mismatch = self._entity_refusal()
             if mismatch:
@@ -935,6 +944,26 @@ class MinecraftController:
         except Exception:
             return ""
         return str(getattr(state, "screen", None) or "")
+
+    def _close_refusal(self) -> str:
+        """'' when the bridge reports a screen open now; otherwise why ESC
+        is not pressed. ESC with no screen open is not harmless: it opens
+        the pause menu. A screen it cannot see is not assumed."""
+        state = None
+        if self._gui_probe is not None:
+            try:
+                state = self._gui_probe()
+            except Exception:
+                state = None
+        if state is None:
+            return ("I cannot see whether a screen is open -- that needs the "
+                    "bridge mod -- and ESC with none open brings up the "
+                    "pause menu. Nothing was pressed.")
+        if not getattr(state, "screen", None):
+            return ("No screen is open, so there is nothing to close -- and "
+                    "ESC with none open brings up the pause menu. Nothing "
+                    "was pressed.")
+        return ""
 
     def _entity_refusal(self) -> str:
         """'' when the entity probe reports a hostile mob under the
