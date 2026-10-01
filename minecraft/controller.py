@@ -155,6 +155,14 @@ class ActionResult:
         return f"{self.action} did not happen: {self.error}"
 
 
+
+SCREEN_BLOCKED_ACTIONS = frozenset({"attack", "mine", "place", "interact",
+                                    "use_item", "eat", "drop"})
+"""Gameplay holds refused while the bridge reports a screen open: in a
+container screen their clicks and keys land in the GUI. The screen actions
+(gui_*) and `inventory` are what work inside one, and are not here."""
+
+
 class MinecraftController:
     """Drives Minecraft within a session, and stops on anything unexpected.
 
@@ -734,6 +742,20 @@ class MinecraftController:
         if self._aborted(epoch):
             return self._cancelled_result(action, requested, clamped)
 
+        if action in SCREEN_BLOCKED_ACTIONS:
+            screen = self._open_screen()
+            if screen:
+                return ActionResult(
+                    ok=False, action=action, requested=requested,
+                    stopped_reason="screen_open", clamped=clamped,
+                    error_class="ScreenOpen",
+                    error=(f"A {' '.join(str(screen).split('_'))} screen is "
+                           f"open, so a {action} now would land in the "
+                           f"screen, not the world -- a click moves a "
+                           f"stack, the drop key throws one. Nothing was "
+                           f"pressed. Close it first (inventory close)."),
+                )
+
         if expect_hostile:
             mismatch = self._entity_refusal()
             if mismatch:
@@ -902,6 +924,17 @@ class MinecraftController:
                 return (f"The crosshair is on the {seen_face} face of {want}, "
                         f"not the {face} face. Nothing was pressed.")
         return ""
+
+    def _open_screen(self) -> str:
+        """The kind of screen the bridge reports open, or ''. '' too when
+        there is no bridge reading: nothing is reported open."""
+        if self._gui_probe is None:
+            return ""
+        try:
+            state = self._gui_probe()
+        except Exception:
+            return ""
+        return str(getattr(state, "screen", None) or "")
 
     def _entity_refusal(self) -> str:
         """'' when the entity probe reports a hostile mob under the

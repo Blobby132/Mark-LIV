@@ -71,6 +71,7 @@ from minecraft import verification as verify_mod
 from minecraft import danger as danger_mod
 from minecraft import action_spec
 from minecraft import navigation as nav
+from minecraft import gui as gui_mod
 from minecraft.errors import InvalidAction
 from minecraft.controller import FOCUS_WAIT_SECONDS
 from minecraft.progress import ProgressMonitor
@@ -335,6 +336,14 @@ class TaskRunner:
     # ── the loop ─────────────────────────────────────────────────────────────
 
     def run(self, skill, max_steps: int = MAX_TASK_STEPS) -> TaskResult:
+        self._own_screen = ""
+        try:
+            return self._run(skill, max_steps)
+        except Exception:
+            self._close_own_screen()
+            raise
+
+    def _run(self, skill, max_steps: int) -> TaskResult:
         goal = getattr(skill, "goal", getattr(skill, "name", "task"))
         limit = self._resolve_limit(max_steps)
 
@@ -408,8 +417,10 @@ class TaskRunner:
             if problem:
                 return self._result(FAILED, goal, problem, records, state)
 
+            before = state
             record, state = self._execute(index, step, state)
             records.append(record)
+            self._track_screen(before, state)
             self._learn_the_mouse(record)
             self.progress.record(step.action, record.verification)
 
@@ -690,6 +701,36 @@ class TaskRunner:
             return f"the parameters for '{step.action}' were not a dictionary."
         return ""
 
+    def _track_screen(self, before, after) -> None:
+        """Remember an allowed screen this task opened -- not one that was
+        open before it -- until it is seen shut."""
+        kind = getattr(after, "screen", None)
+        if not kind:
+            self._own_screen = ""
+        elif kind in gui_mod.ALLOWED_SCREENS \
+                and not getattr(before, "screen", None):
+            self._own_screen = kind
+
+    def _close_own_screen(self) -> str:
+        """Close the screen this task opened, if it is still open. Returns
+        what to add to the report, or ''."""
+        kind, self._own_screen = getattr(self, "_own_screen", ""), ""
+        if not kind:
+            return ""
+        state = self._read_state()
+        if getattr(state, "screen", None) not in gui_mod.ALLOWED_SCREENS:
+            return ""
+        words = " ".join(str(kind).split("_"))
+        closer = getattr(self._controller, "inventory", None)
+        try:
+            result = closer({"state": "close"}) if callable(closer) else None
+        except Exception as e:                       # pragma: no cover
+            return f"The {words} screen I had opened is still open ({e})."
+        if result is not None and getattr(result, "ok", False):
+            return f"I closed the {words} screen I had opened."
+        why = getattr(result, "error", "") or "I could not press anything"
+        return f"The {words} screen I had opened is still open: {why}"
+
     def _result(self, status, goal, reason, records, state) -> TaskResult:
         # A task that does not stop for danger -- walking, which is how you
         # get AWAY from it -- still says what is close when it ends.
@@ -702,6 +743,13 @@ class TaskRunner:
         dusk = danger_mod.dusk_note(state)
         if dusk:
             reason = f"{reason.rstrip('.')}. Note: {dusk}."
+        # Ended by a cancel, the time or step limit, danger or an error with
+        # a screen it opened still up: close it, or the user's next keys go
+        # into it. A task that finished closed its own.
+        if status != COMPLETED:
+            closed = self._close_own_screen()
+            if closed:
+                reason = f"{reason.rstrip('.')}. {closed}"
         return TaskResult(
             status=status, goal=goal, reason=reason,
             steps_taken=len(records), max_steps=MAX_TASK_STEPS,
