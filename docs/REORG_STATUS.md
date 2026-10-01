@@ -27,7 +27,7 @@ part-way, the next one starts here.
 | 1 tests | done | 52cdfaf tests: drop the move's two fallbacks |
 | 2 docs | done | d840fd7 ARCHITECTURE.md: the tests and docs layout |
 | 3 oversized files | done | d57c8a0 ARCHITECTURE.md: the layering of minecraft/ |
-| 4 root and tools | | |
+| 4 root and tools | done | 9c0ebff Remove _log_total |
 | 5 guardrails | | |
 
 ## Test count rule
@@ -53,7 +53,13 @@ Expected after phase 3: 1514 collected (1501 + 13).
 
 ## Next
 
-Phase 4: root .bat files into tools/ (4a), vulture report (4b).
+Phase 5: tests/core/test_repo_hygiene.py (5a), "where new code goes" in
+ARCHITECTURE.md (5b), docs/proposals/ui-main-split.md, then delete this file
+and write the final report.
+
+4a: the .bat helpers stay at the root (two runtime messages name
+bridge_check.bat); documented in the readme. 4b: vulture's 59 findings at
+60%, only _log_total deleted.
 
 Left for the report: the MarkLivBridge.java comment still names
 docs/minecraft-gui.md (changing mod source would mean a jar rebuild); the
