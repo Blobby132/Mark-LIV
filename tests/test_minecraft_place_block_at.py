@@ -89,6 +89,15 @@ class PlacingTests(unittest.TestCase):
         self.assertEqual(world.presses, 0)
         self.assertIn("no longer looks empty", skill.done_reason)
 
+    def test_something_the_map_does_not_show_in_the_way(self):
+        """Aimed dead on, and the crosshair is on something else: it tries
+        once more from another spot rather than give up."""
+        world = BuildWorld({0: ("cobblestone", 5)},
+                           hidden=(((1, 65, 0), "stone"),))
+        skill, result = place(world, 2, 64, 0)
+        self.assertFalse(skill.failed, f"{skill.done_reason} / {result.reason}")
+        self.assertEqual(world.placed, [((2, 64, 0), "cobblestone")])
+
     def test_into_grass_the_game_replaces(self):
         world = BuildWorld({0: ("dirt", 3)},
                            plants=(((2, 64, 0), "short_grass"),))

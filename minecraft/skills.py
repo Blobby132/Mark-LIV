@@ -3720,6 +3720,24 @@ def _place_from(position, cell, ref) -> bool:
             <= aiming_mod.REACH - PLACE_REACH_MARGIN)
 
 
+def _in_view(local, position, cell, ref) -> bool:
+    """Does the map show nothing between the eye at `position` and the
+    face? A block placed a moment ago is in the map: a row is not built by
+    looking through its own first block."""
+    eye = (position[0], position[1] + aiming_mod.EYE_HEIGHT, position[2])
+    point = aiming_mod.target_point(ref.position, position, ref.face)
+    own = (math.floor(position[0]), math.floor(position[2]))
+    return local.sight_is_clear(
+        eye, point, skip=(own, (cell[0], cell[2]),
+                          (ref.position[0], ref.position[2])))
+
+
+def _can_place_here(state, cell, ref) -> bool:
+    if not _place_from(state.position, cell, ref):
+        return False
+    return _in_view(nav.LocalMap.from_state(state), state.position, cell, ref)
+
+
 def _stand_for(state, cell, ref, avoid=()):
     """The nearest column with a route to it from which `_place_from` holds
     and the map shows nothing between the eye and the face -- or None."""
@@ -3736,13 +3754,8 @@ def _stand_for(state, cell, ref, avoid=()):
             continue
         feet = (column[0] + 0.5, local.ground_at(*column) + 1,
                 column[1] + 0.5)
-        if not _place_from(feet, cell, ref):
-            continue
-        eye = (feet[0], feet[1] + aiming_mod.EYE_HEIGHT, feet[2])
-        point = aiming_mod.target_point(ref.position, feet, ref.face)
-        if not local.sight_is_clear(
-                eye, point, skip=(column, (cell[0], cell[2]),
-                                  (ref.position[0], ref.position[2]))):
+        if not _place_from(feet, cell, ref) \
+                or not _in_view(local, feet, cell, ref):
             continue
         cost = (abs(column[0] - here[0]) + abs(column[1] - here[2]),
                 column)
@@ -3808,6 +3821,7 @@ class PlaceBlockAt:
     _previous_slot: int | None = None
     _restored: bool = False
     _tried: tuple = ()
+    _fatal: bool = False         # no point trying another cell either
 
     @property
     def cell(self) -> tuple:
@@ -3839,11 +3853,26 @@ class PlaceBlockAt:
     def watch_health(self) -> bool:
         return not (self._fetch is not None and self._fetch.in_screen)
 
-    def _stop(self, reason, placed=False):
+    @property
+    def fatal(self) -> bool:
+        """Failed for a reason another cell would fail for too: nothing left
+        to place, or the item could not be brought to hand."""
+        return self._fatal
+
+    def _stop(self, reason, placed=False, fatal=False):
         self._reason = reason
         self._placed = placed
+        self._fatal = fatal
         self._phase = "restore"
         return None
+
+    @property
+    def finished(self) -> bool:
+        return self._phase == "done"
+
+    @property
+    def awaiting_verdict(self) -> bool:
+        return self._phase == "placed"
 
     def plan(self, state, step_index: int, history: tuple):
         last = history[-1] if history else None
@@ -3879,11 +3908,12 @@ class PlaceBlockAt:
             if self._fetch.failed:
                 return self._stop(f"The {_words(self.item)} is in the main "
                                   f"inventory and I could not move it to "
-                                  f"the hotbar: {self._fetch.done_reason}.")
+                                  f"the hotbar: {self._fetch.done_reason}.",
+                                  fatal=True)
         if self._phase == "check":
             problem = self._check(state)
             if problem:
-                return self._stop(problem)
+                return self._stop(problem, fatal=self._fatal)
             self._phase = "work"
             if self._previous_slot is None:
                 self._previous_slot = state.selected_slot
@@ -3894,14 +3924,13 @@ class PlaceBlockAt:
             failed = self._walker.failed
             why = self._walker.done_reason
             self._walker = None
-            if failed and not _place_from(state.position, self.cell,
-                                          self._ref):
+            if failed and not _can_place_here(state, self.cell, self._ref):
                 return self._stop(f"I could not get to a place to stand: "
                                   f"{why}")
         held = self._hold(state)
         if held is not None:
             return held
-        if not _place_from(state.position, self.cell, self._ref):
+        if not _can_place_here(state, self.cell, self._ref):
             return self._walk(state)
         return self._aim_or_place(state)
 
@@ -3920,6 +3949,7 @@ class PlaceBlockAt:
                     "without it I cannot see the cell, the crosshair's "
                     "block and face, or the inventory.")
         if verify_mod._count_of(state, {item}) <= 0:
+            self._fatal = True
             return f"There is no {_words(item)} in the inventory."
         local = nav.LocalMap.from_state(state)
         verdict, name = building_mod.what_is_at(local, state, self.cell,
@@ -3946,7 +3976,7 @@ class PlaceBlockAt:
             return (f"There is nothing solid I know of next to {self.cell} "
                     f"to place against -- a block cannot float.")
         for ref in refs:
-            if _place_from(state.position, self.cell, ref) \
+            if _can_place_here(state, self.cell, ref) \
                     or _stand_for(state, self.cell, ref) is not None:
                 self._ref = ref
                 return None
@@ -3983,8 +4013,10 @@ class PlaceBlockAt:
                 return step
             return self._stop(f"The {_words(self.item)} is only in the main "
                               f"inventory and I could not move it to the "
-                              f"hotbar: {self._fetch.done_reason}.")
-        return self._stop(f"There is no {_words(self.item)} left to hold.")
+                              f"hotbar: {self._fetch.done_reason}.",
+                              fatal=True)
+        return self._stop(f"There is no {_words(self.item)} left to hold.",
+                          fatal=True)
 
     # ── where to stand ───────────────────────────────────────────────────
 
@@ -4049,13 +4081,17 @@ class PlaceBlockAt:
                             count_proof=not creative),
                         note=(f"place {_words(self.item)} at {self.cell} "
                               f"against {_face_words(self._ref)}"))
-        if self._aims >= MAX_PLACE_AIMS:
-            return self._stop(self._missed_text(state))
-        self._aims += 1
         dx, dy, error = nav.aim_at(state.position, state.rotation,
                                    self._ref.position, face=self._ref.face)
-        if dx == 0 and dy == 0:
+        if self._aims >= MAX_PLACE_AIMS or (dx == 0 and dy == 0):
+            # Aimed as well as it can be and still not on the face:
+            # something the map did not show is in the way from here. Try
+            # once more from somewhere else.
+            if self._walks < MAX_PLACE_WALKS:
+                self._aims = 0
+                return self._walk(state)
             return self._stop(self._missed_text(state))
+        self._aims += 1
         return Step(action="look", params={"dx": dx, "dy": dy},
                     expectation=verify_mod.turned(min_degrees=0.3),
                     note=(f"aim at {_face_words(self._ref)} ({error:.1f}° "
@@ -4097,6 +4133,252 @@ class PlaceBlockAt:
         return self._stop(f"I pressed place once and could not prove a "
                           f"{_words(self.item)} went into {self.cell}: "
                           f"{reason} I did not press again.")
+
+
+# ── Several blocks ───────────────────────────────────────────────────────────
+
+MAX_LINE_BLOCKS = 16
+"""The longest build_line. A task's 45 steps place roughly fifteen."""
+
+MAX_FAILURES_IN_A_ROW = 3
+"""Cells failed one after another before a build gives up on the rest."""
+
+_LINE_DIRECTIONS = {"north": (0, 0, -1), "south": (0, 0, 1),
+                    "west": (-1, 0, 0), "east": (1, 0, 0), "up": (0, 1, 0)}
+
+
+def _cells_text(cells) -> str:
+    return ", ".join(str(tuple(c)) for c in cells) or "none"
+
+
+@dataclass
+class _Builder:
+    """Places a list of cells one at a time with PlaceBlockAt, sharing what
+    it has placed (`known`) so each block can be placed against the last.
+
+    A cell that fails is reported and the next is tried -- three failures
+    in a row, or one that would fail every cell (no blocks left), end it.
+    The report names every cell placed and every cell that failed, why, and
+    what the inventory says about the total. Subclasses give `_targets`
+    (the cells, in order) and may override `_next_cell`."""
+
+    item: str = ""
+
+    verifiable_with = ("target_block", "inventory")
+
+    _phase: str = "prepare"
+    _reason: str = ""
+    _cells: list = field(default_factory=list)
+    _done: set = field(default_factory=set)
+    _placed: list = field(default_factory=list)
+    _failed: list = field(default_factory=list)
+    _known: dict = field(default_factory=dict)
+    _current: object = None
+    _start_count: int | None = None
+    _creative: bool = False
+    _previous_slot: int | None = None
+    _restored: bool = False
+    _in_a_row: int = 0
+    _last_state: object = None
+    _stopped: str = ""
+
+    @property
+    def failed(self) -> bool:
+        return not self._cells or len(self._placed) < len(self._cells)
+
+    @property
+    def watch_hostiles(self) -> bool:
+        return not self._in_screen()
+
+    @property
+    def watch_health(self) -> bool:
+        return not self._in_screen()
+
+    def _in_screen(self) -> bool:
+        fetch = getattr(self._current, "_fetch", None)
+        return fetch is not None and fetch.in_screen
+
+    # ── the report ───────────────────────────────────────────────────────
+
+    @property
+    def done_reason(self) -> str:
+        if self._reason:
+            return self._reason
+        return self._report()
+
+    def _report(self) -> str:
+        total = len(self._cells)
+        text = (f"placed {len(self._placed)} of {total} "
+                f"{_words(self.item)}: {_cells_text(self._placed)}.")
+        if self._failed:
+            text += " Failed: " + "; ".join(
+                f"{tuple(c)} -- {why}" for c, why in self._failed) + "."
+        left = [c for c in self._cells if c not in self._done]
+        if left:
+            text += f" Not tried: {_cells_text(left)}."
+        if self._stopped:
+            text += f" {self._stopped}"
+        state = self._last_state
+        if self._start_count is not None and state is not None \
+                and getattr(state, "inventory", None) is not None:
+            now = verify_mod._count_of(state, {self.item})
+            text += (f" Counted in the inventory: {self.item} "
+                     f"{self._start_count} → {now}")
+            used = self._start_count - now
+            if self._creative:
+                text += " (creative: blocks are not used up)"
+            elif used != len(self._placed):
+                text += (f" -- {used} used, which does not match the "
+                         f"{len(self._placed)} I proved")
+            text += "."
+        return text
+
+    # ── the loop ─────────────────────────────────────────────────────────
+
+    def account_for(self, state, history) -> None:
+        """The runner stopped us (danger, the step limit) right after a
+        place: judge it, so the report counts it."""
+        self._last_state = state
+        current = self._current
+        if current is None or not current.awaiting_verdict or not history:
+            return
+        current.plan(state, len(history), tuple(history))
+        self._record(current)
+
+    def _record(self, current) -> None:
+        cell = current.cell
+        if cell in self._done:
+            return
+        self._done.add(cell)
+        if current.placed:
+            self._placed.append(cell)
+            self._known[cell] = self.item
+            self._in_a_row = 0
+        else:
+            self._failed.append((cell, current.done_reason))
+            self._in_a_row += 1
+
+    def plan(self, state, step_index: int, history: tuple):
+        self._last_state = state
+        if self._phase == "done":
+            return None
+        if self._phase == "restore":
+            return self._restore(state)
+        if self._phase == "prepare":
+            problem = self._prepare(state)
+            if problem:
+                self._reason = problem
+                self._phase = "done"
+                return None
+            self._phase = "build"
+        while True:
+            if self._current is not None:
+                step = self._current.plan(state, step_index, history)
+                if step is not None:
+                    return step
+                current, self._current = self._current, None
+                self._record(current)
+                if current.fatal:
+                    self._stopped = "I stopped there: no other cell would do better."
+                    return self._restore(state)
+                if self._in_a_row >= MAX_FAILURES_IN_A_ROW:
+                    self._stopped = (f"I stopped after {self._in_a_row} "
+                                     f"cells in a row failed.")
+                    return self._restore(state)
+            if step_index >= MAX_TASK_STEPS - 2:
+                self._stopped = ("I ran out of steps for this task; ask "
+                                 "again to carry on.")
+                return self._restore(state)
+            cell = self._next_cell(state)
+            if cell is None:
+                return self._restore(state)
+            self._current = PlaceBlockAt(x=cell[0], y=cell[1], z=cell[2],
+                                         item=self.item, known=self._known,
+                                         restore_slot=False)
+
+    def _prepare(self, state) -> str | None:
+        self.item = building_mod.short(self.item)
+        if self.item not in building_mod.BUILDING_BLOCKS:
+            return (f"I only build with plain blocks such as dirt, "
+                    f"cobblestone, stone or planks -- not "
+                    f"{_words(self.item) or 'nothing'}.")
+        if state.inventory is None or state.position is None:
+            return ("Building needs the bridge mod: without it I cannot see "
+                    "the inventory, the cells or the crosshair.")
+        problem = self._targets(state)
+        if isinstance(problem, str):
+            return problem
+        have = verify_mod._count_of(state, {self.item})
+        if have <= 0:
+            return f"There is no {_words(self.item)} in the inventory."
+        self._start_count = have
+        self._creative = getattr(state, "game_mode", None) == "creative"
+        self._previous_slot = state.selected_slot
+        return None
+
+    def _targets(self, state):
+        """Fill self._cells, or return why not."""
+        raise NotImplementedError
+
+    def _next_cell(self, state):
+        for cell in self._cells:
+            if cell not in self._done:
+                return cell
+        return None
+
+    def _restore(self, state):
+        self._phase = "done"
+        if self._restored or self._previous_slot is None \
+                or state.selected_slot == self._previous_slot:
+            return None
+        self._restored = True
+        self._phase = "restore"
+        slot = self._previous_slot + 1
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot),
+                    note=f"back to hotbar slot {slot}")
+
+
+@dataclass
+class BuildLine(_Builder):
+    """build_line: up to `count` blocks of `item` in a straight line from
+    (x, y, z) -- north, south, east, west, or up. Each one by
+    place_block_at, against the ground or the block before it.
+
+    Up is a column, and from the ground a column is two blocks high: the
+    third block goes on a top face above a standing player's eyes, which
+    cannot be seen without jumping (B4d). It says so, by cell."""
+
+    x: int = 0
+    y: int = 0
+    z: int = 0
+    direction: str = ""
+    count: int = 1
+
+    name = "build_line"
+
+    @property
+    def goal(self) -> str:
+        return (f"build a line of {self.count} {_words(self.item)} "
+                f"{self.direction} from {(self.x, self.y, self.z)}")
+
+    def _targets(self, state):
+        step = _LINE_DIRECTIONS.get(str(self.direction or "").strip().lower())
+        if step is None:
+            return (f"A line goes north, south, east, west or up -- not "
+                    f"{self.direction!r}.")
+        try:
+            count = int(self.count)
+        except (TypeError, ValueError):
+            count = 0
+        if not 1 <= count <= MAX_LINE_BLOCKS:
+            return (f"A line is 1 to {MAX_LINE_BLOCKS} blocks; ask for "
+                    f"{MAX_LINE_BLOCKS} or fewer at a time.")
+        start = (int(self.x), int(self.y), int(self.z))
+        self._cells = [building_mod.offset(start, (step[0] * i, step[1] * i,
+                                                   step[2] * i))
+                       for i in range(count)]
+        return None
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -4281,6 +4563,7 @@ BUILTIN_SKILLS = {
     "break_block": BreakBlock,
     "place_block": PlaceBlock,
     "place_block_at": PlaceBlockAt,
+    "build_line": BuildLine,
     "collect_logs": CollectLogs,
     "fell_tree": lambda **kwargs: CollectLogs(whole_tree=True, **kwargs),
     "collect_blocks": CollectBlocks,

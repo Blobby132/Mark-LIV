@@ -16,7 +16,8 @@ where a right-click places the held block the way the game does.
     a player standing there would occupy.
 
 Crude where crudeness is harmless: nothing falls, no entities block a
-placement.
+placement. `hidden` cells stand in for what the crosshair can hit and the
+scan cannot show -- in the game, a mob stepping in the way.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ NEED = 2
 
 class BuildWorld(GuiWorld):
 
-    def __init__(self, items, placed=(), plants=(), **kwargs):
+    def __init__(self, items, placed=(), plants=(), hidden=(), **kwargs):
         super().__init__(items, **kwargs)
         self.base = {column: block.y for column, block in self.ground.items()}
         self.base_name = {column: block.name
@@ -43,6 +44,9 @@ class BuildWorld(GuiWorld):
             self.blocks[tuple(cell)] = NearbyBlock(*cell, name, True)
         for cell, name in plants:
             self.blocks[tuple(cell)] = NearbyBlock(*cell, name, False)
+        self.hidden = {tuple(cell) for cell, _name in hidden}
+        for cell, name in hidden:
+            self.blocks[tuple(cell)] = NearbyBlock(*cell, name, True)
         self.placed = []
         self.presses = 0
         self.not_confirmed = 0
@@ -51,9 +55,14 @@ class BuildWorld(GuiWorld):
     # ── what is where ───────────────────────────────────────────────────
 
     def _name_at(self, cell):
+        if tuple(cell) in self.hidden:
+            return None
         block = self.blocks.get(tuple(cell))
         if block is not None:
             return block.name
+        for log in self.logs:
+            if log.position == tuple(cell):
+                return log.name
         base = self.base.get((cell[0], cell[2]))
         if base is not None and cell[1] <= base:
             return self.base_name[(cell[0], cell[2])] if cell[1] == base \
@@ -64,7 +73,7 @@ class BuildWorld(GuiWorld):
         """Has collision: a placed block, the ground -- not a plant, a
         bush or anything else added with solid=False."""
         block = self.blocks.get(tuple(cell))
-        if block is not None:
+        if block is not None and tuple(cell) not in self.hidden:
             return block.solid is not False
         return self._name_at(cell) is not None
 
@@ -73,7 +82,9 @@ class BuildWorld(GuiWorld):
         surface = []
         for (x, z), base in self.base.items():
             top = max([base] + [c[1] for c in self.blocks if (c[0], c[2])
-                                == (x, z)])
+                                == (x, z) and c not in self.hidden]
+                      + [log.y for log in self.logs if (log.x, log.z)
+                         == (x, z)])
             best = None
             for y in range(base, top + 1):
                 if not self._solid((x, y, z)):

@@ -731,7 +731,8 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
                 "count", "slot", "target", "item"):
         if key in params:
             options[key] = params[key]
-    if name in ("aim_at_block", "mine_block", "place_block_at"):
+    if name in ("aim_at_block", "mine_block", "place_block_at",
+                "build_line"):
         block = _block_from(params)
         if isinstance(block, str):
             return block
@@ -965,9 +966,9 @@ def _block_from(params: dict):
     try:
         return (int(params["x"]), int(params["y"]), int(params["z"]))
     except (KeyError, TypeError, ValueError):
-        return ("aim_at_block, mine_block and place_block_at need x, y and z "
-                "as whole numbers — a block that look_around or read_state "
-                "reported.")
+        return ("aim_at_block, mine_block, place_block_at and build_line need "
+                "x, y and z as whole numbers — a block that look_around or "
+                "read_state reported.")
 
 
 def _destination_from(params: dict):
@@ -1112,7 +1113,8 @@ TOOL = {
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
         "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
-        "craft_item, place_block_at, navigate_to, eat_food, aim_at_block, "
+        "craft_item, place_block_at, build_line, navigate_to, eat_food, "
+        "aim_at_block, "
         "mine_block. The mining tasks (break_block, collect_logs, fell_tree, "
         "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
         "slot back afterwards. When the tool that harvests the block -- or "
@@ -1194,6 +1196,13 @@ TOOL = {
         "game reports the crosshair on the right face, and proves the "
         "result twice: the block at that cell under the crosshair, and the "
         "stack one smaller. "
+        "build_line places up to 16 blocks in a straight line from x, y, z "
+        "(direction north | south | east | west | up, count, item), each "
+        "one the same way. Its report names every cell placed and every "
+        "cell that failed, with why, and the inventory count -- relay that, "
+        "not the count asked for. From the ground a column (up) is two "
+        "blocks high: it cannot jump and place yet. If it ran out of steps, "
+        "call it again from the next cell. "
         "eat_food eats until not hungry (count: how many items at most): it "
         "picks food that will not make you ill and does not waste golden "
         "apples, looks up first if a chest or door is under the crosshair, "
@@ -1236,7 +1245,9 @@ TOOL = {
             "direction": {
                 "type": "STRING",
                 "description": ("For move/move_and_jump/sneak/sprint: "
-                                "forward | back | left | right."),
+                                "forward | back | left | right. For "
+                                "run_task build_line: north | south | east "
+                                "| west | up."),
             },
             "duration": {
                 "type": "NUMBER",
@@ -1280,27 +1291,30 @@ TOOL = {
                 "description": ("For run_task: walk_forward | survey | "
                                 "find_block | break_block | place_block | "
                                 "collect_logs | fell_tree | collect_blocks | "
-                                "craft_item | place_block_at | navigate_to | "
-                                "eat_food | aim_at_block | mine_block."),
+                                "craft_item | place_block_at | build_line | "
+                                "navigate_to | eat_food | aim_at_block | "
+                                "mine_block."),
             },
             "x": {
                 "type": "INTEGER",
                 "description": ("For run_task navigate_to, aim_at_block, "
-                                "mine_block and place_block_at: the block's "
+                                "mine_block, place_block_at and build_line "
+                                "(the first cell): the block's "
                                 "x. Use a coordinate look_around or "
                                 "read_state actually reported, or one "
                                 "worked out from it; do not invent one."),
             },
             "y": {
                 "type": "INTEGER",
-                "description": ("For run_task aim_at_block, mine_block and "
-                                "place_block_at: the block's y."),
+                "description": ("For run_task aim_at_block, mine_block, "
+                                "place_block_at and build_line: the "
+                                "block's y."),
             },
             "z": {
                 "type": "INTEGER",
                 "description": ("For run_task navigate_to, aim_at_block, "
-                                "mine_block and place_block_at: the block's "
-                                "z. Needs x as well."),
+                                "mine_block, place_block_at and build_line: "
+                                "the block's z. Needs x as well."),
             },
             "target": {
                 "type": "STRING",
@@ -1318,13 +1332,14 @@ TOOL = {
                 "description": ("For craft_item: what to make — e.g. "
                                 "oak_planks, stick, crafting_table, "
                                 "wooden_pickaxe, stone_axe, furnace, torch, "
-                                "chest. For place_block_at: the block to "
-                                "place — e.g. cobblestone, dirt, "
-                                "oak_planks."),
+                                "chest. For place_block_at and build_line: "
+                                "the block to place — e.g. cobblestone, "
+                                "dirt, oak_planks."),
             },
             "count": {
                 "type": "INTEGER",
-                "description": ("For collect_logs and collect_blocks: how "
+                "description": ("For build_line: how many blocks (1 to "
+                                "16). For collect_logs and collect_blocks: how "
                                 "many logs or items to get. With "
                                 "the bridge mod they are counted in the "
                                 "inventory (collected); without it I can "
