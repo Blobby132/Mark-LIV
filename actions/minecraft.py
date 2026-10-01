@@ -1133,7 +1133,7 @@ TOOL = {
         "verifying between steps: walk_forward, survey, find_block, "
         "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
         "craft_item, place_block_at, build_line, build_blueprint, "
-        "navigate_to, flee, eat_food, aim_at_block, "
+        "navigate_to, flee, fight, eat_food, aim_at_block, "
         "mine_block. The mining tasks (break_block, collect_logs, fell_tree, "
         "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
         "slot back afterwards. When the tool that harvests the block -- or "
@@ -1175,6 +1175,15 @@ TOOL = {
         "stops it -- that is when to use it. Use it when the user says "
         "run, get away, or is being chased; tell them where the mob "
         "ended up.\n"
+        "fight is OPT-IN: start it only when the user asks to fight or "
+        "attack a mob, never on your own. It fights the nearest hostile mob "
+        "within 16 blocks (target: a kind, e.g. zombie): walks into reach, "
+        "aims at its body, and hits in short taps -- every swing refused "
+        "unless the game reports a hostile under the crosshair, so never a "
+        "player or an animal. It will not walk up to a creeper or a "
+        "warden (flee instead), retreats with flee below 8 health, and "
+        "stops after 20 seconds. The game does not report a mob's health: "
+        "'gone' means most likely killed, so say that, not 'killed'.\n"
         "navigate_to walks somewhere, routing round obstacles: give it "
         "either x and z, or target='log'|'stone'|'water'. It refuses a "
         "destination outside the scanned area instead of setting off "
@@ -1340,7 +1349,8 @@ TOOL = {
                                 "collect_logs | fell_tree | collect_blocks | "
                                 "craft_item | place_block_at | build_line | "
                                 "build_blueprint | navigate_to | flee | "
-                                "eat_food | aim_at_block | mine_block."),
+                                "fight | eat_food | aim_at_block | "
+                                "mine_block."),
             },
             "x": {
                 "type": "INTEGER",

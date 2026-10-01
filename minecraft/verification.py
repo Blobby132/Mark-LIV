@@ -426,6 +426,39 @@ def placed_block(cell, item: str, slot: int,
                        predicate=predicate)
 
 
+def knocked_back(name: str) -> Expectation:
+    """A swing landed on the `name` mob: it was knocked away from the
+    player, or it is gone.
+
+    The bridge does not report a mob's health, so a hit is judged by what
+    a hit does that can be seen -- Minecraft knocks the mob back about half
+    a block. A mob pressing in hard can hide that; a miss leaves it where
+    it was, or closer."""
+    def nearest(state):
+        mobs = [e for e in (state.nearby_entities or ())
+                if str(e.name or "").split(":")[-1] == name
+                and e.distance is not None]
+        return min(mobs, key=lambda e: e.distance) if mobs else None
+
+    def predicate(before, after):
+        if after.nearby_entities is None:
+            return None, "the mobs around cannot be seen."
+        was, now = nearest(before), nearest(after)
+        if was is None:
+            return None, f"no {name} was in sight before the swing."
+        if now is None:
+            return True, f"the {name} is gone."
+        if now.distance >= was.distance + 0.2:
+            return True, (f"the {name} was knocked back ({was.distance:.1f} "
+                          f"to {now.distance:.1f} blocks).")
+        return False, (f"the {name} did not move away ({was.distance:.1f} "
+                       f"to {now.distance:.1f} blocks): a miss, or it was "
+                       f"pressing in.")
+
+    return Expectation(name="knocked_back", goal=f"hit the {name}",
+                       fields=("nearby_entities",), predicate=predicate)
+
+
 def gui_effect(goal: str, check) -> Expectation:
     """A click's effect on the slots and the carried stack, judged by
     `check(before, after) -> (ok, detail)` from the mod's own report."""
@@ -688,5 +721,5 @@ __all__ = [
     "target_changed", "holding_slot", "collected", "unverifiable",
     "closer_to", "arrived_at", "block_gone", "broke_block_at",
     "screen_is", "screen_closed", "pointer_moved", "gui_effect",
-    "placed_block", "CAMERA_STEADY_DEG",
+    "placed_block", "knocked_back", "CAMERA_STEADY_DEG",
 ]

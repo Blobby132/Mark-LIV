@@ -5020,6 +5020,199 @@ class Flee:
                 f"{nearest.distance:.0f} blocks away.")
 
 
+# ── Fighting ─────────────────────────────────────────────────────────────────
+
+FIGHT_MAX_SECONDS = 20.0
+FIGHT_RETREAT_HEALTH = 8.0
+FIGHT_RANGE = 16.0
+"""Only mobs this close are fought."""
+ENTITY_REACH = 3.0
+"""How far a survival player can hit a mob."""
+ATTACK_TAP_S = 0.1
+AIM_ON_BODY_DEG = 4.0
+
+MOB_HEIGHTS = {
+    "zombie": 1.95, "husk": 1.95, "drowned": 1.95, "zombie_villager": 1.95,
+    "skeleton": 1.99, "stray": 1.99, "bogged": 1.99,
+    "wither_skeleton": 2.4, "spider": 0.9, "cave_spider": 0.5,
+    "enderman": 2.9, "witch": 1.95, "slime": 1.04, "magma_cube": 1.04,
+    "silverfish": 0.3, "endermite": 0.3, "pillager": 1.95,
+    "vindicator": 1.95, "evoker": 1.95, "piglin": 1.95,
+    "piglin_brute": 1.95, "zombified_piglin": 1.95, "blaze": 1.8,
+    "hoglin": 1.4, "zoglin": 1.4, "phantom": 0.5, "guardian": 0.85,
+    "breeze": 1.77,
+}
+"""Hit-box heights, to aim at the middle of the body, not the feet."""
+
+NEVER_MELEE = {"creeper": "it explodes when it is close -- flee instead",
+               "warden": "it is far stronger than anything I can hold -- "
+                         "flee instead"}
+
+
+@dataclass
+class Fight:
+    """fight -- opt-in: run only when the user asks to fight.
+
+    The nearest hostile mob within FIGHT_RANGE (or the nearest of the kind
+    named in `target`): walk into reach, aim at the middle of its body,
+    and attack in short taps, every other step -- Minecraft's attack
+    cooldown makes a swing at once after another a weak one.
+
+    WHAT IT NEVER HITS
+        Every swing carries `expect_hostile`: the controller presses
+        nothing unless the game reports a hostile mob under the crosshair
+        at that moment. A player or a passive mob is never chosen, and a
+        player or passive mob stepping in front is never hit. A creeper or
+        a warden is not walked up to at all.
+    WHEN IT STOPS
+        The mob is gone from sight (killed, most likely -- the bridge does
+        not report a mob's health, so that is not proven); health below
+        FIGHT_RETREAT_HEALTH, when it runs (flee); or FIGHT_MAX_SECONDS
+        (20) are up. The runner's danger watch is off for it: a mob close
+        by is the point, and it keeps its own health rule."""
+
+    target: str = ""
+    seconds: float = FIGHT_MAX_SECONDS
+
+    name = "fight"
+    verifiable_with = ("nearby_entities", "target_entity", "health")
+    watch_hostiles = False
+    watch_health = False
+
+    _start: float | None = None
+    _done: bool = False
+    _won: bool = False
+    _reason: str = ""
+    _swings: int = 0
+    _mob: object = None                  # EntityRef being fought
+    _retreat: object = None              # a Flee once health is low
+    _retreat_note: str = ""
+    _last_was_swing: bool = False
+
+    @property
+    def goal(self) -> str:
+        what = _words(self.target) if self.target else "the nearest hostile mob"
+        return f"fight {what}"
+
+    @property
+    def failed(self) -> bool:
+        return not self._won
+
+    @property
+    def done_reason(self) -> str:
+        if self._retreat is not None:
+            return f"{self._retreat_note} {self._retreat.done_reason}".strip()
+        return self._reason or "stopped before fighting"
+
+    def _stop(self, reason, won=False):
+        self._reason, self._won, self._done = reason, won, True
+        return None
+
+    def plan(self, state, step_index: int, history: tuple):
+        if self._done:
+            return None
+        last = history[-1] if history else None
+        if last is not None and last.step.get("action") == "attack" \
+                and last.action_result.get("ok", True):
+            self._swings += 1
+        if self._retreat is not None:
+            return self._retreat.plan(state, step_index, history)
+        if getattr(state, "nearby_entities", None) is None \
+                or state.position is None or state.rotation is None:
+            return self._stop("I cannot see the mobs or where I am facing -- "
+                              "that needs the bridge mod -- so I did not "
+                              "fight.")
+        health = getattr(state, "health", None)
+        if isinstance(health, (int, float)) and health < FIGHT_RETREAT_HEALTH:
+            self._retreat_note = (
+                f"I retreated at {health:.0f} health, after {self._swings} "
+                f"swing(s){self._at_mob()}:")
+            self._retreat = Flee(seconds=FIGHT_MAX_SECONDS)
+            return self._retreat.plan(state, step_index, history)
+        if self._start is None:
+            self._start = state.captured_at
+        limit = min(float(self.seconds or FIGHT_MAX_SECONDS),
+                    FIGHT_MAX_SECONDS)
+        if state.captured_at - self._start >= limit:
+            return self._stop(f"time is up ({limit:.0f}s, the most I fight "
+                              f"for): {self._swings} swing(s)"
+                              f"{self._at_mob()}, and it is still there.")
+        mob = self._choose(state)
+        if isinstance(mob, str):
+            return self._stop(mob, won=self._swings > 0)
+        self._mob = mob
+        if mob.distance > ENTITY_REACH - 0.3:
+            self._last_was_swing = False
+            column = (math.floor(mob.position[0]),
+                      math.floor(mob.position[2]))
+            walker = NavigateTo(destination=column, arrive_within=2.0)
+            step = walker.plan(state, 0, ())
+            if step is not None:
+                return step
+        point = (mob.position[0],
+                 mob.position[1] + MOB_HEIGHTS.get(_mob_key(mob), 1.8) / 2,
+                 mob.position[2])
+        dx, dy, error = aiming_mod.SHARED.delta_for(
+            state.rotation, aiming_mod.yaw_to(state.position, point),
+            aiming_mod.pitch_to(state.position, point))
+        seen = getattr(state, "target_entity", None)
+        on_it = (seen is not None and seen.category == "hostile"
+                 and _mob_key(seen) == _mob_key(mob))
+        if on_it and not self._last_was_swing:
+            self._last_was_swing = True
+            return Step(action="attack",
+                        params={"duration": ATTACK_TAP_S,
+                                "expect_hostile": True},
+                        expectation=verify_mod.knocked_back(_mob_key(mob)),
+                        note=f"hit the {_mob_words(mob)} "
+                             f"({mob.distance:.1f} blocks)")
+        self._last_was_swing = False
+        if dx == 0 and dy == 0:
+            dx = 1                     # a breath between swings, on target
+        return Step(action="look", params={"dx": dx, "dy": dy},
+                    expectation=verify_mod.turned(min_degrees=0.05),
+                    note=(f"aim at the {_mob_words(mob)}'s body "
+                          f"({error:.0f}° off)"))
+
+    def _at_mob(self) -> str:
+        return f" at the {_mob_words(self._mob)}" if self._mob else ""
+
+    def _choose(self, state):
+        """The mob to fight -- the one fought so far, if it is still here --
+        or why there is none."""
+        wanted = building_mod.short(self.target) if self.target else ""
+        mobs = [e for e in (state.nearby_entities or ())
+                if e.category == "hostile" and e.hostile is True
+                and e.position is not None and e.distance is not None
+                and e.distance <= FIGHT_RANGE
+                and (not wanted or _mob_key(e) == wanted)]
+        meleeable = [e for e in mobs if _mob_key(e) not in NEVER_MELEE]
+        if not meleeable:
+            if self._swings and self._mob is not None:
+                return (f"the {_mob_words(self._mob)} is gone after "
+                        f"{self._swings} swing(s) -- killed, most likely; "
+                        f"the game does not tell me a mob's health.")
+            if mobs:
+                worst = min(mobs, key=lambda e: e.distance)
+                return (f"the only hostile close by is a "
+                        f"{_mob_words(worst)}, and I will not walk up to it: "
+                        f"{NEVER_MELEE[_mob_key(worst)]}.")
+            return (f"there is no hostile mob "
+                    f"{'called ' + _words(wanted) + ' ' if wanted else ''}"
+                    f"within {FIGHT_RANGE:.0f} blocks to fight.")
+        if self._mob is not None:
+            same = [e for e in meleeable
+                    if _mob_key(e) == _mob_key(self._mob)]
+            if same:
+                return min(same, key=lambda e: math.dist(
+                    e.position, self._mob.position))
+        return min(meleeable, key=lambda e: e.distance)
+
+
+def _mob_key(entity) -> str:
+    return building_mod.short(getattr(entity, "name", "") or "")
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -5204,6 +5397,7 @@ BUILTIN_SKILLS = {
     "place_block_at": PlaceBlockAt,
     "build_line": BuildLine,
     "flee": Flee,
+    "fight": Fight,
     "build_blueprint": lambda plan="", **kwargs: BuildBlueprint(
         design=plan, **kwargs),
     "collect_logs": CollectLogs,
