@@ -915,7 +915,8 @@ class MinecraftController:
         except Exception:
             seen = None
         if not seen:
-            return "The crosshair is not on a mob. Nothing was pressed."
+            return ("The crosshair is not on a mob, and I only attack "
+                    "hostile mobs. Nothing was pressed.")
         name, category = (tuple(seen) + (None, None))[:2]
         if category != "hostile":
             what = category or "not known to be hostile"
@@ -1089,7 +1090,9 @@ class MinecraftController:
                                  spec.action, spec.as_dict(), spec.clamped)
 
     def attack(self, params: dict | None = None) -> ActionResult:
-        """Hold the attack button. Hits whatever is under the crosshair.
+        """Hold the attack button -- only with a hostile mob under the
+        crosshair, as the entity probe reports it at the moment of pressing.
+        Never a player, a pet, a villager, an animal, a block or nothing.
 
         Deliberately says nothing about whether anything broke — that is
         `minecraft/verification.py`'s job, and conflating the two is how an

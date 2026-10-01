@@ -110,11 +110,13 @@ class TestOneConfirmationCoversGameplay(unittest.TestCase):
         from minecraft.input_backend import FakeInputBackend
         from minecraft.session import SessionManager
         backend = FakeInputBackend()
-        # A block in hand: `place` refuses an unknown hand (A4).
+        # A block in hand: `place` refuses an unknown hand (A4). A zombie
+        # under the crosshair: `attack` hits only hostile mobs (item 1).
         return MinecraftController(
             backend=backend, locator=FakeLocator(), sessions=SessionManager(),
             process_module=FakeProcess(), start_watchers=False,
-            focus_wait_s=0.0, held_item_probe=lambda: "cobblestone"), backend
+            focus_wait_s=0.0, held_item_probe=lambda: "cobblestone",
+            entity_probe=lambda: ("zombie", "hostile")), backend
 
     GAMEPLAY = [
         ("move", {"direction": "forward", "duration": 0.05}),

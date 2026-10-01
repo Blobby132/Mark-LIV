@@ -39,7 +39,10 @@ class ControllerHoldTests(unittest.TestCase):
             backend=self.backend, locator=FakeLocator(),
             sessions=SessionManager(), process_module=FakeProcess(),
             start_watchers=False, focus_wait_s=0.0,
-            hazard_probe=hazard_probe)
+            hazard_probe=hazard_probe,
+            # A zombie under the crosshair: attack hits only hostiles now,
+            # and these tests are about the hazard check, not the target.
+            entity_probe=lambda: ("zombie", "hostile"))
         controller.start_session(duration_s=120)
         self.addCleanup(controller.stop, "test")
         return controller

@@ -40,12 +40,14 @@ class _Case(unittest.TestCase):
         self.backend = FakeInputBackend()
         self.locator = FakeLocator()
         self.sessions = SessionManager()
-        # A block in hand: `place` refuses an unknown hand (A4).
+        # A block in hand: `place` refuses an unknown hand (A4). A zombie
+        # under the crosshair: `attack` hits only hostile mobs (item 1).
         self.controller = MinecraftController(
             backend=self.backend, locator=self.locator,
             sessions=self.sessions, process_module=FakeProcess(),
             start_watchers=False, focus_wait_s=0.0,
-            held_item_probe=lambda: "cobblestone")
+            held_item_probe=lambda: "cobblestone",
+            entity_probe=lambda: ("zombie", "hostile"))
 
     def tearDown(self):
         try:

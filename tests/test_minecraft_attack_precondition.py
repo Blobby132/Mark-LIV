@@ -79,11 +79,13 @@ class AttackPreconditionTests(unittest.TestCase):
         self.assertEqual(result.stopped_reason, "target_not_confirmed")
         self.assertEqual(backend.button_downs(), [])
 
-    def test_without_the_precondition_attack_is_as_before(self):
+    def test_without_asking_the_precondition_is_on_anyway(self):
+        """Item 1 made it the default for every attack (it used to be
+        fight's alone, and a plain attack hit the cow)."""
         controller, backend = self.controller(lambda: ("cow", "passive"))
         result = controller.attack({"duration": 0.1})
-        self.assertTrue(result.ok, result.error)
-        self.assertEqual(backend.button_downs(), ["left"])
+        self.assertFalse(result.ok)
+        self.assertEqual(backend.button_downs(), [])
 
 
 class ParseTests(unittest.TestCase):

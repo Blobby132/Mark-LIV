@@ -5438,6 +5438,10 @@ NOT_YET_POSSIBLE = {
                  "What is missing is getting to iron that is NOT exposed, "
                  "which means digging a shaft, lighting it, and not falling "
                  "into lava — none of which is built.",
+    "attack_players_or_animals": "attack only ever hits a mob the game "
+                                 "calls hostile: never a player, a pet, a "
+                                 "villager or an animal. That is deliberate, "
+                                 "and hunting animals for food is not built.",
     "pillar_up_or_bridge": "building upwards past two blocks, or out over "
                            "a gap, needs a jump and a place timed inside "
                            "one hold, about 0.3s apart; the controller "

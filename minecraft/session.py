@@ -99,7 +99,8 @@ not a grant to talk to strangers on a server, start processes, or reach a
 command line, and none of those becomes available because a session is open."""
 
 GRANT_SUMMARY = (
-    "walk, jump, sprint, sneak, look around, attack, mine and break blocks, "
+    "walk, jump, sprint, sneak, look around, attack hostile mobs, mine and "
+    "break blocks, "
     "place blocks, use and drop items, select hotbar slots, open the "
     "inventory and move items inside the inventory and crafting-table "
     "screens (one click at a time, each only when the game reports the "

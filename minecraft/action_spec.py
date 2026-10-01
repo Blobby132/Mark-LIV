@@ -230,8 +230,9 @@ class HoldSpec:
     # never make it reach somewhere else.
     expect_target: tuple = None
     expect_face: str = None
-    # Attacking only: press nothing unless a hostile mob is under the
-    # crosshair. Another precondition: it can only refuse.
+    # Attacking: press nothing unless a hostile mob is under the crosshair.
+    # Always on for attack (parse_attack); a precondition, so it can only
+    # refuse.
     expect_hostile: bool = False
 
     @property
@@ -407,11 +408,17 @@ def _optional_direction(params: dict) -> str:
 
 
 def parse_attack(params: dict) -> HoldSpec:
-    """Hold the attack button for a bounded time.
+    """Hold the attack button for a bounded time -- at a hostile mob only.
 
     Takes no target. Minecraft attacks whatever is under the crosshair, so
     aiming is a `look` and hitting is this -- keeping them separate means the
-    planner has to observe between them, which is where verification lives."""
+    planner has to observe between them, which is where verification lives.
+
+    `expect_hostile` is always on: the controller presses nothing unless the
+    game reports a hostile mob under the crosshair. There is no opt-out --
+    nothing needs one (blocks are broken with `mine`), and none could ever
+    cover a player. Passing `expect_hostile: true` is accepted; anything
+    else for it is refused."""
     for unsupported in ("target", "block", "entity", "at", "position"):
         if unsupported in (params or {}):
             raise InvalidAction(
@@ -420,15 +427,13 @@ def parse_attack(params: dict) -> HoldSpec:
                 f"looking at with 'read_state', then attack."
             )
     duration, requested = _bounded_duration(params, 0.5, MAX_ATTACK_DURATION_S)
-    hostile = False
-    if "expect_hostile" in (params or {}):
-        if params["expect_hostile"] is not True:
-            raise InvalidAction("'expect_hostile' is a precondition: true, "
-                                "or leave it out.")
-        hostile = True
+    if "expect_hostile" in (params or {}) \
+            and params["expect_hostile"] is not True:
+        raise InvalidAction("Attacks only ever hit a hostile mob; that "
+                            "cannot be turned off.")
     return HoldSpec(action="attack", buttons=(ATTACK_BUTTON,),
                     duration=duration, requested_duration=requested,
-                    expect_hostile=hostile)
+                    expect_hostile=True)
 
 
 def parse_use_item(params: dict) -> HoldSpec:
