@@ -309,5 +309,5 @@ so. One file: `python -m pytest tests/minecraft/test_minecraft_fight.py`.
 The [readme](../readme.md) is what Jarvis is, installing and running it,
 and safety in brief. Everything else is in `docs/`, indexed by
 [docs/README.md](README.md); Minecraft has its own folder,
-[docs/minecraft/](minecraft/README.md). `tests/core/test_doc_links.py`
-fails on a relative link that does not resolve.
+[docs/minecraft/](minecraft/README.md). A test in `tests/core/` fails on
+a relative link that does not resolve.
