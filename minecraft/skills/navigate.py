@@ -1048,7 +1048,6 @@ class NavigateTo:
 
 def nav_target(position, name):
     """A minimal block reference: a position and a name, nothing invented."""
-    from minecraft.state import NearbyBlock
     return NearbyBlock(x=position[0], y=position[1], z=position[2],
                        name=str(name).split(":")[-1], solid=True)
 
