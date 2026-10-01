@@ -105,7 +105,7 @@ _FUNGI = ("crimson", "warped")
 LOG_BLOCKS = frozenset({f"{tree}_log" for tree in _TREES}
                        | {f"{fungus}_stem" for fungus in _FUNGI})
 """Natural tree trunks: what finding and felling a tree works on. The one
-definition -- skills.py uses this one. The Nether's huge fungi are trees too:
+definition -- the skills package uses this one. The Nether's huge fungi are trees too:
 without their stems, collect_logs in a crimson forest found none."""
 
 WOOD_BLOCKS = LOG_BLOCKS | frozenset(

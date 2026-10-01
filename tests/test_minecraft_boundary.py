@@ -76,7 +76,9 @@ FORBIDDEN = {
 
 
 def _module_files():
-    files = sorted(PACKAGE.glob("*.py"))
+    # Recursive: a subpackage (minecraft/skills/) is inside the boundary
+    # too. A flat glob would pass a forbidden import there without a look.
+    files = sorted(PACKAGE.rglob("*.py"))
     assert files, "no modules found in minecraft/ — is the path right?"
     return files + [ADAPTER]
 
@@ -102,6 +104,15 @@ def _root(name: str) -> str:
 
 
 class TestImportBoundary(unittest.TestCase):
+
+    def test_subpackages_are_checked_too(self):
+        """The skills were split into minecraft/skills/; every module there
+        is parsed like the rest."""
+        checked = set(_module_files())
+        for path in PACKAGE.rglob("*.py"):
+            self.assertIn(path, checked)
+        self.assertIn(PACKAGE / "skills" / "combat.py", checked)
+        self.assertIn(PACKAGE / "skills" / "__init__.py", checked)
 
     def test_no_forbidden_module_is_imported(self):
         offenders = []

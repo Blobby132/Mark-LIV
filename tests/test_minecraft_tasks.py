@@ -1,5 +1,5 @@
 """
-Tests for minecraft/task_runner.py and minecraft/skills.py.
+Tests for minecraft/task_runner.py and the minecraft/skills/ package.
 
 THE TWO THINGS THAT MUST HOLD
 
