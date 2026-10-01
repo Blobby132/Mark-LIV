@@ -26,7 +26,7 @@ part-way, the next one starts here.
 | 0c defects and lint | done | a01fdec skills/__init__.py: an explicit public API |
 | 1 tests | done | 52cdfaf tests: drop the move's two fallbacks |
 | 2 docs | done | d840fd7 ARCHITECTURE.md: the tests and docs layout |
-| 3 oversized files | | |
+| 3 oversized files | done | d57c8a0 ARCHITECTURE.md: the layering of minecraft/ |
 | 4 root and tools | | |
 | 5 guardrails | | |
 
@@ -46,13 +46,19 @@ Expected after phase 0: 1507 collected (1501 + 6).
 
 Expected after phase 2: 1511 collected (1501 + 10).
 
+- tests/minecraft/test_minecraft_boundary.py: 2 (text module scanned; it is inert data)
+- tests/minecraft/test_architecture_doc.py: 1 (adapter modules mapped)
+
+Expected after phase 3: 1514 collected (1501 + 13).
+
 ## Next
 
-Phase 3: oversized Minecraft files. 3c first: the import graph of minecraft/;
-then 3a (actions/minecraft.py probes and text) and 3b (collect.py) only as the
-graph allows.
+Phase 4: root .bat files into tools/ (4a), vulture report (4b).
 
 Left for the report: the MarkLivBridge.java comment still names
 docs/minecraft-gui.md (changing mod source would mean a jar rebuild); the
 plugins listed in docs/project-structure.md are not in this repository;
 test_install_mod.py is in tests/core per the brief but tests tools/install_mod.py.
+3a: the probes stayed in actions/minecraft.py (they read _get_state_source,
+which tests patch on actions.minecraft). The boundary test gained one narrow
+allowance, actions._minecraft_text, pinned as inert data by a new test.
