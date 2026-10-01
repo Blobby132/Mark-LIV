@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JARVIS Dashboard</title>
-  <script src="/static/crypto.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -146,7 +145,7 @@
   <header>
     <div class="logo"><em>J</em>ARVIS</div>
     <div class="pill" id="pill"><span class="dot"></span><span id="st">Connecting</span></div>
-    <div class="enc-badge" id="enc">AES-256</div>
+    <div class="enc-badge" id="enc">AES-GCM</div>
     <div class="spacer"></div>
     <div class="url">__IP__:__PORT__</div>
     <button class="btn-signout" id="signout-others" onclick="doSignOutOthers()"
@@ -177,38 +176,68 @@
       return fetch(url, opts);
     }
 
-    // ── AES-256-CBC encryption (CryptoJS) ────────────────────────────────────
-    const _AES_SALT = 'JARVIS-DASHBOARD-v1';
+    // ── AES-256-GCM (WebCrypto) ──────────────────────────────────────────────
+    // The key: PBKDF2-HMAC-SHA256 over the pairing key, with the salt and
+    // round count the server sent for THIS login. Each message: a fresh
+    // 12-byte nonce, sealed with the login token as associated data, so it
+    // is refused under any other login, altered, or replayed. WebCrypto
+    // exists only in a secure context (HTTPS): over plain HTTP nothing is
+    // encrypted, and the page says so rather than pretend.
+    const _AAD_PREFIX = 'jarvis-command|';
+    const _salt  = sessionStorage.getItem('jarvis_salt') || '';
+    const _iters = parseInt(sessionStorage.getItem('jarvis_iters') || '0', 10);
+    const _secure = !!(window.isSecureContext && window.crypto && crypto.subtle);
     let _aesKey = null;
 
-    function _initCrypto(key) {
-      if (typeof CryptoJS === 'undefined') return false;
-      _aesKey = CryptoJS.SHA256(key + _AES_SALT);
+    function _b64ToBytes(b64) {
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+
+    function _bytesToB64(bytes) {
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+
+    async function _initCrypto(key) {
+      if (!_secure || !key || !_salt || !_iters) return false;
+      const base = await crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(key), 'PBKDF2', false, ['deriveKey']);
+      _aesKey = await crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt: _b64ToBytes(_salt), iterations: _iters,
+          hash: 'SHA-256' },
+        base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
       return true;
     }
 
-    function _encrypt(plaintext) {
-      if (!_aesKey || typeof CryptoJS === 'undefined') return null;
-      try {
-        const iv  = CryptoJS.lib.WordArray.random(16);
-        const enc = CryptoJS.AES.encrypt(
-          CryptoJS.enc.Utf8.parse(plaintext), _aesKey,
-          { iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
-        );
-        const ivHex = iv.toString(CryptoJS.enc.Hex);
-        const ctHex = enc.ciphertext.toString(CryptoJS.enc.Hex);
-        const hex   = ivHex + ctHex;
-        const bytes = new Uint8Array(hex.length / 2);
-        for (let i = 0; i < bytes.length; i++)
-          bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-        return btoa(String.fromCharCode(...bytes));
-      } catch { return null; }
+    async function _encrypt(plaintext) {
+      if (!_aesKey) return null;
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const sealed = new Uint8Array(await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: nonce,
+          additionalData: new TextEncoder().encode(_AAD_PREFIX + _authToken) },
+        _aesKey, new TextEncoder().encode(plaintext)));
+      const out = new Uint8Array(nonce.length + sealed.length);
+      out.set(nonce, 0);
+      out.set(sealed, nonce.length);
+      return _bytesToB64(out);
     }
 
-    const _encReady = _sessionKey ? _initCrypto(_sessionKey) : false;
     const encBadge  = document.getElementById('enc');
-    if (_encReady) { encBadge.className = 'enc-badge on'; }
-    else           { encBadge.className = 'enc-badge off'; encBadge.textContent = 'NO ENC'; }
+    const _cryptoReady = _initCrypto(_sessionKey).catch(() => false);
+    _cryptoReady.then(ok => {
+      if (ok) { encBadge.className = 'enc-badge on'; encBadge.textContent = 'AES-GCM'; }
+      else    { encBadge.className = 'enc-badge off'; encBadge.textContent = 'NOT ENCRYPTED'; }
+      if (!_secure) {
+        sys('This connection is plain HTTP and NOT ENCRYPTED: anyone on this '
+            + 'network can read what you send, and use your login. JARVIS '
+            + 'serves HTTPS when the Python package "cryptography" is '
+            + 'installed — install it and open the https:// address instead.');
+      }
+    });
 
     // ── WebSocket ─────────────────────────────────────────────────────────────
     const feed  = document.getElementById('feed');
@@ -384,19 +413,33 @@
     });
 
     // ── Commands ──────────────────────────────────────────────────────────────
-    function doSend() {
+    async function doSend() {
       const inp = document.getElementById('inp');
       const txt = inp.value.trim();
       if (!txt) return;
       inp.value = '';
       append('user', txt);
-      const enc  = _encrypt(txt);
-      const body = enc ? { enc } : { text: txt };
-      _authFetch('/api/command', {
+      let body;
+      if (await _cryptoReady) {
+        body = { enc: await _encrypt(txt) };
+      } else if (_secure) {
+        // HTTPS, but this login carries no key material (an older login):
+        // the server refuses plaintext here, so say what to do instead.
+        sys('Not sent: this login has no encryption key. Sign in again.');
+        return;
+      } else {
+        body = { text: txt };                 // plain HTTP: see the notice
+      }
+      const r = await _authFetch('/api/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
+      if (!r.ok) {
+        let why = 'refused';
+        try { why = (await r.json()).error || why; } catch (_) {}
+        sys(`Not sent: ${why}`);
+      }
     }
 
     function doWake() {

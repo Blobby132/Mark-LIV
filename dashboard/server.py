@@ -1,16 +1,20 @@
 """
 dashboard/server.py — JARVIS Local HTTP Dashboard
 
-Plain HTTP on port 8000 (no SSL warnings, no firewall issues).
-Security at the application layer: AES-256-CBC with session-key-derived key.
-CryptoJS is auto-downloaded once and served locally — no CDN needed after that.
+HTTPS on port 8000 by default: a self-signed pair is made on first run
+whenever `cryptography` is installed (_ensure_certs). Commands from the page
+are also sealed at the application layer: AES-256-GCM, a fresh nonce per
+message, under a key from PBKDF2-HMAC-SHA256 over the pairing key with a
+random salt per login -- derived on the page with WebCrypto, which only
+exists in a secure context. Without `cryptography` there is neither TLS nor
+anything to decrypt with, and the page says plainly that nothing is
+encrypted rather than offering weaker crypto. Nothing is loaded from a CDN.
 
 Install deps:  pip install fastapi "uvicorn[standard]" cryptography
 """
 
 import asyncio
 import base64
-import hashlib
 import re
 import secrets
 import socket
@@ -156,31 +160,42 @@ def _too_many(retry_after: float) -> str:
     return (f"Too many wrong keys. Try again in {minutes} minute"
             f"{'s' if minutes != 1 else ''}.")
 
-# ── AES-256-CBC ───────────────────────────────────────────────────────────────
-_AES_SALT = b'JARVIS-DASHBOARD-v1'
+# ── AES-256-GCM, keyed by PBKDF2 ─────────────────────────────────────────────
+KDF_ITERATIONS = 600_000
+"""PBKDF2-HMAC-SHA256 rounds turning the pairing key into an AES key. The
+pairing key is 8 characters; one SHA-256 of it (the old key) let a captured
+message be brute-forced offline at hash speed. Sent to the page with the
+salt, so the page derives the same key with WebCrypto."""
+
+AAD_PREFIX = "jarvis-command|"
+"""Associated data is this plus the login token: a message sealed for one
+login is refused under another."""
+
+_NONCE_BYTES = 12
+_SEEN_NONCES = 1024
+"""Nonces remembered per login, so a captured message cannot be replayed."""
 
 
-def _derive_key(session_key: str) -> bytes:
-    """SHA-256(sessionKey‖salt) → 32-byte AES-256 key (microseconds, no PBKDF2 needed)."""
-    return hashlib.sha256(session_key.encode('utf-8') + _AES_SALT).digest()
+def _derive_aes_key(pairing_key: str, salt: bytes,
+                    iterations: int | None = None) -> bytes:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    return PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt,
+                      iterations=iterations or KDF_ITERATIONS
+                      ).derive(pairing_key.encode("utf-8"))
 
 
-def _decrypt_cbc(aes_key: bytes, enc_b64: str) -> str:
-    """Decrypt base64(IV[16] ‖ ciphertext) with AES-256-CBC + PKCS7."""
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.primitives import padding as sym_pad
-    raw      = base64.b64decode(enc_b64)
-    iv, ct   = raw[:16], raw[16:]
-    dec      = Cipher(algorithms.AES(aes_key), modes.CBC(iv)).decryptor()
-    padded   = dec.update(ct) + dec.finalize()
-    unpadder = sym_pad.PKCS7(128).unpadder()
-    return (unpadder.update(padded) + unpadder.finalize()).decode('utf-8')
-
-
-# ── CryptoJS (auto-download once, served locally) ─────────────────────────────
-_CRYPTOJS_CDN  = ("https://cdnjs.cloudflare.com/ajax/libs/"
-                  "crypto-js/4.2.0/crypto-js.min.js")
-_CRYPTOJS_FILE = STATIC_DIR / "crypto-js.min.js"
+def _open_gcm(aes_key: bytes, token: str, sealed_b64: str) -> tuple:
+    """(nonce, text) from base64(nonce[12] ‖ ciphertext ‖ tag). Raises on
+    anything tampered with, sealed under another key, or for another login."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    raw = base64.b64decode(sealed_b64, validate=True)
+    if len(raw) < _NONCE_BYTES + 16:
+        raise ValueError("too short")
+    nonce, sealed = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
+    text = AESGCM(aes_key).decrypt(nonce, sealed,
+                                   f"{AAD_PREFIX}{token}".encode("utf-8"))
+    return nonce, text.decode("utf-8")
 
 
 def _port_rule_name(port: int) -> str:
@@ -413,20 +428,6 @@ def _ensure_network_access(port: int) -> None:
         pass  # no iptables means firewall is probably off — nothing to do
 
 
-def _ensure_crypto_js() -> None:
-    if _CRYPTOJS_FILE.exists():
-        return
-    try:
-        import urllib.request
-        print("[Dashboard] Downloading CryptoJS (one-time setup)…")
-        urllib.request.urlretrieve(_CRYPTOJS_CDN, str(_CRYPTOJS_FILE))
-        print("[Dashboard] CryptoJS cached — will serve locally from now on.")
-    except Exception as e:
-        print(f"[Dashboard] CryptoJS download failed: {e}")
-        print(f"[Dashboard] Encryption will fall back to CDN load on client.")
-
-
-_ensure_crypto_js()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -567,7 +568,8 @@ class DashboardServer:
         self._now                         = time.time
         self._tickets: dict[str, tuple]   = {}   # ticket → (filename, expires)
         self._token_keys: dict[str, str]  = {}   # auth_token → session_key
-        self._aes_cache:  dict[str, bytes]= {}   # session_key → AES bytes
+        # auth_token → {"salt": bytes, "key": bytes | None, "seen": dict}
+        self._token_crypto: dict[str, dict] = {}
         self._clients: set[WebSocket]     = set()
         self._history: list[dict]         = []
         self._command_queue               = asyncio.Queue()
@@ -614,8 +616,17 @@ class DashboardServer:
         tok = secrets.token_urlsafe(32)
         self._tokens[tok] = self._now() + SESSION_TTL_S
         self._token_keys[tok] = session_key
-        self._aes_key(session_key)
+        # A salt per login. The key itself is derived on first use, off the
+        # event loop: KDF_ITERATIONS rounds take a noticeable moment.
+        self._token_crypto[tok] = {"salt": secrets.token_bytes(16),
+                                   "key": None, "seen": {}}
         return tok
+
+    def _kdf_params(self, tok: str) -> dict:
+        """What the page needs to derive this login's key."""
+        salt = self._token_crypto[tok]["salt"]
+        return {"salt": base64.b64encode(salt).decode("ascii"),
+                "iterations": KDF_ITERATIONS}
 
     def _token_ok(self, tok: str) -> bool:
         expires = self._tokens.get(tok or "")
@@ -629,6 +640,7 @@ class DashboardServer:
     def _drop_token(self, tok: str) -> None:
         self._tokens.pop(tok, None)
         self._token_keys.pop(tok, None)
+        self._token_crypto.pop(tok, None)
 
     def _prune(self) -> None:
         """Forget expired tokens and paired devices, and the keys only they
@@ -640,24 +652,43 @@ class DashboardServer:
         for dev, info in list(self._device_sessions.items()):
             if info.get("expires", 0) <= now:
                 del self._device_sessions[dev]
-        live = set(self._token_keys.values()) | {
-            info["session_key"] for info in self._device_sessions.values()}
-        self._aes_cache = {k: v for k, v in self._aes_cache.items()
-                           if k in live}
-
-    def _aes_key(self, session_key: str) -> bytes:
-        if session_key not in self._aes_cache:
-            self._aes_cache[session_key] = _derive_key(session_key)
-        return self._aes_cache[session_key]
 
     def _decrypt(self, token: str, enc_b64: str) -> str | None:
+        """The text of a sealed command, or None: wrong key, another
+        login's message, anything altered, or a nonce already seen. Blocking
+        (the first call derives the key) -- call it off the event loop."""
         sk = self._token_keys.get(token)
-        if not sk:
+        crypto = self._token_crypto.get(token)
+        if not sk or crypto is None:
             return None
         try:
-            return _decrypt_cbc(self._aes_key(sk), enc_b64)
+            if crypto["key"] is None:
+                crypto["key"] = _derive_aes_key(sk, crypto["salt"])
+            nonce, text = _open_gcm(crypto["key"], token, enc_b64)
         except Exception:
             return None
+        seen = crypto["seen"]
+        if nonce in seen:
+            return None                                   # a replay
+        seen[nonce] = True
+        while len(seen) > _SEEN_NONCES:
+            del seen[next(iter(seen))]
+        return text
+
+    async def _command_text(self, token: str, payload: dict):
+        """(text, error). Sealed commands are opened; a plaintext one is
+        accepted only over plain HTTP, where the page cannot seal (WebCrypto
+        needs a secure context) and says so. Under HTTPS a token alone --
+        leaked from a log, say -- cannot send a command."""
+        enc = payload.get("enc", "")
+        if enc:
+            text = await asyncio.to_thread(self._decrypt, token, enc)
+            if text is None:
+                return None, "Decryption failed"
+            return text.strip(), None
+        if self._ssl_enabled():
+            return None, "Commands must be encrypted over HTTPS"
+        return (payload.get("text") or "").strip(), None
 
     # ── callbacks ────────────────────────────────────────────────────────
 
@@ -689,15 +720,6 @@ class DashboardServer:
         def _auth(req: Request) -> bool:
             tok = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
             return self._token_ok(tok)
-
-        # serve CryptoJS from local cache, fallback to CDN redirect
-        @app.get("/static/crypto.js")
-        async def serve_crypto():
-            if _CRYPTOJS_FILE.exists():
-                return FileResponse(str(_CRYPTOJS_FILE),
-                                    media_type="application/javascript")
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(_CRYPTOJS_CDN)
 
         @app.get("/login", response_class=HTMLResponse)
         async def login_page():
@@ -738,7 +760,8 @@ class DashboardServer:
                     {"type": "sys", "text": "Remote connection established."}
                 ))
                 # Bearer token in response body — no cookies needed (works on any browser/HTTP)
-                return JSONResponse({"ok": True, "token": tok})
+                return JSONResponse({"ok": True, "token": tok,
+                                     **self._kdf_params(tok)})
             self._throttle.failed(address)
             return JSONResponse({"ok": False, "error": "Invalid or expired key"},
                                 status_code=401)
@@ -767,6 +790,7 @@ class DashboardServer:
             del self._pending_keys[key]
             self._throttle.succeeded(address)
             tok     = self._issue_token(key)
+            kdf     = self._kdf_params(tok)
             dev_tok = secrets.token_urlsafe(32)
             self._device_sessions[dev_tok] = {
                 "session_key": key, "expires": self._now() + DEVICE_TTL_S}
@@ -788,6 +812,8 @@ class DashboardServer:
 <script>
   sessionStorage.setItem('jarvis_token','{tok}');
   sessionStorage.setItem('jarvis_key','{key}');
+  sessionStorage.setItem('jarvis_salt','{kdf["salt"]}');
+  sessionStorage.setItem('jarvis_iters','{kdf["iterations"]}');
   localStorage.setItem('jarvis_device_token','{dev_tok}');
   setTimeout(function(){{location.replace('/')}},400);
 </script>
@@ -818,7 +844,8 @@ class DashboardServer:
             asyncio.create_task(self.broadcast(
                 {"type": "sys", "text": "Known device reconnected automatically."}
             ))
-            return JSONResponse({"ok": True, "token": tok, "key": session_key})
+            return JSONResponse({"ok": True, "token": tok, "key": session_key,
+                                 **self._kdf_params(tok)})
 
         @app.post("/api/revoke-devices")
         async def revoke_devices(req: Request):
@@ -843,13 +870,9 @@ class DashboardServer:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
             body  = await req.json()
             token = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
-            enc   = body.get("enc", "")
-            if enc:
-                text = self._decrypt(token, enc)
-                if text is None:
-                    return JSONResponse({"error": "Decryption failed"}, status_code=400)
-            else:
-                text = (body.get("text") or "").strip()
+            text, error = await self._command_text(token, body)
+            if error:
+                return JSONResponse({"error": error}, status_code=400)
             if text:
                 await self._command_queue.put(text)
                 if self._wake_callback:
@@ -1035,8 +1058,7 @@ class DashboardServer:
                 while True:
                     data = await websocket.receive_json()
                     if data.get("type") == "command":
-                        enc = data.get("enc", "")
-                        t   = self._decrypt(tok, enc) if enc else (data.get("text") or "").strip()
+                        t, _error = await self._command_text(tok, data)
                         if t:
                             await self._command_queue.put(t)
                             if self._wake_callback:

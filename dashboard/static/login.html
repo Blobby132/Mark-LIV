@@ -168,6 +168,8 @@
         if (d.ok && d.token) {
           sessionStorage.setItem('jarvis_key', d.key);
           sessionStorage.setItem('jarvis_token', d.token);
+          sessionStorage.setItem('jarvis_salt', d.salt || '');
+          sessionStorage.setItem('jarvis_iters', String(d.iterations || ''));
           location.replace('/');
           return;
         }
@@ -205,6 +207,8 @@
       if (data.ok && data.token) {
         sessionStorage.setItem('jarvis_key', key);
         sessionStorage.setItem('jarvis_token', data.token);
+        sessionStorage.setItem('jarvis_salt', data.salt || '');
+        sessionStorage.setItem('jarvis_iters', String(data.iterations || ''));
         location.href = '/';
       } else {
         inp.value = '';

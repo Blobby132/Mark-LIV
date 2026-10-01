@@ -164,8 +164,8 @@ class TransportTests(unittest.TestCase):
     The second is already so -- pinned here so it stays so. serve() makes a
     self-signed pair on first run (_ensure_certs) whenever `cryptography`
     is installed, and serves HTTPS whenever a pair exists; the AES layer
-    needs that same package to decrypt at all, so the unauthenticated CBC
-    layer only ever runs inside TLS."""
+    needs that same package to decrypt at all. (The CBC layer this once
+    described is AES-GCM since A8; see test_dashboard_crypto.py.)"""
 
     def test_serve_makes_certs_before_choosing_the_scheme(self):
         body = SOURCE[SOURCE.index("async def serve(self)"):]
@@ -215,7 +215,8 @@ class TokenLifetimeTests(unittest.TestCase):
         self.clock.t += server.SESSION_TTL_S + 1
         self.login()
         self.assertEqual(len(self.srv._tokens), 1)
-        self.assertEqual(len(self.srv._aes_cache), 1)
+        # Key material is per login (A8) and goes with its token.
+        self.assertEqual(len(self.srv._token_crypto), 1)
 
     def test_a_paired_device_expires(self):
         key = self.srv.new_key()
