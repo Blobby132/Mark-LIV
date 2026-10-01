@@ -5,7 +5,12 @@ Mark LIV/
 ├── main.py                   # Core loop — Gemini Live session, audio I/O, viseme extraction, tool dispatch
 ├── ui.py                     # PyQt6 HUD — avatar canvas, waveform, log panel, settings drawer, camera feed
 ├── setup.py                  # OS-aware installer (skips wrong-OS dependencies, checks your Python)
+├── run_jarvis.bat            # Windows launcher — finds Python, installs what is missing, runs the doctor on a crash
+├── install_mod.bat           # Copies the Minecraft bridge mod into your mods folder
+├── doctor.bat, bridge_check.bat, gameplay_check.bat   # Windows shortcuts to the scripts in tools/
+├── pyproject.toml            # Test and lint settings only (no packaging)
 ├── .gitignore                # Keeps your API key, TLS key and memories out of the repository
+├── .gitattributes            # Line endings: LF in the repository, CRLF for .bat files
 ├── plugins/
 │   ├── quiz.py               # Interactive quiz — JARVIS writes the questions, you answer on screen
 │   ├── document_review.py    # Contracts and policies in plain language, ordered by what matters
@@ -51,7 +56,21 @@ Mark LIV/
 │   ├── audio_devices.py      # Microphone / speaker list — filtered, measured, resolved by name
 │   ├── plugin_loader.py      # Plugin engine — discovery, validation, crash isolation
 │   ├── action_loader.py      # Bundled-action engine — the built-in twin of plugin_loader
+│   ├── capabilities.py       # The one permission table: every capability and its verdict
+│   ├── permissions.py        # The broker that applies it to every tool call
+│   ├── audit.py              # What was allowed, refused or confirmed, and why
+│   ├── exec_safe.py          # The only way anything here starts a process
+│   ├── safe_path.py          # Which paths file actions may touch
+│   ├── voice_diagnostics.py  # Where your speech went: the `voice check` timeline
 │   └── wake_word.py          # Local "Hey Jarvis" detector — own thread, offline, opt-in
+├── minecraft/                # Plays Minecraft Java inside a bounded session — see docs/ARCHITECTURE.md
+│   └── skills/               # What a Minecraft task does: navigate, collect, eat, craft, build, combat
+├── dashboard/                # The phone dashboard (HTTPS, encrypted)
+├── tools/                    # Doctor, bridge and gameplay checks, the mod installer
+├── fabric-mod/               # Source of the read-only Minecraft bridge mod
+├── mods/                     # The built bridge mod jar, committed so nobody needs a JDK
+├── docs/                     # Everything not in the readme — start at docs/README.md
+├── tests/                    # minecraft/, bridge/, core/, voice/, dashboard/, and support/ for shared fixtures
 └── config/
     ├── api_keys.json         # API key, name, voice, colour, toggles — created on first launch (git-ignored)
     └── certs/                # Self-signed TLS pair for the phone dashboard — generated locally (git-ignored)
