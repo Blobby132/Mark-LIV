@@ -21,8 +21,8 @@ part-way, the next one starts here.
 
 | Phase | State | Last commit |
 |---|---|---|
-| 0a line endings | in progress | |
-| 0b pyproject | | |
+| 0a line endings | done | normalise line endings, no content change |
+| 0b pyproject | done | pyproject.toml and a lint test |
 | 0c defects and lint | | |
 | 1 tests | | |
 | 2 docs | | |
@@ -30,6 +30,13 @@ part-way, the next one starts here.
 | 4 root and tools | | |
 | 5 guardrails | | |
 
+## Test count rule
+
+The 1501 baseline tests must all still be collected and pass or skip as
+before. Tests this reorganisation adds are counted on top, listed here:
+
+- tests/test_lint.py: 1 (skips without pyflakes)
+
 ## Next
 
-Phase 0a: normalise line endings in one isolated commit.
+Phase 0c: the defects, one commit each.

@@ -28,6 +28,8 @@ build/
 dist/
 *.egg-info/
 .eggs/
+.pytest_cache/
+.ruff_cache/
 
 # ── Virtual environments ──────────────────────────────────────────────────────
 .venv/

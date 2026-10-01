@@ -1,0 +1,20 @@
+# Tool settings only. This is not a package build file: setup.py is the
+# installer script (`python setup.py`), and the app's dependencies stay in
+# requirements.txt. Nothing here is needed to run Jarvis.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The repository root. Shared test helpers are imported as a package
+# (`from tests.support.gui_world import GuiWorld`), which resolves the same
+# way under pytest and under `python -m unittest discover -s tests -t .`.
+# A bare `tests/support` entry would let an import work under pytest and
+# fail under unittest, so it is deliberately not added.
+pythonpath = ["."]
+
+[tool.ruff]
+extend-exclude = ["fabric-mod"]
+
+[tool.ruff.lint]
+# The pyflakes rules: undefined names, unused imports and locals,
+# f-strings without placeholders, redefinitions.
+select = ["F"]
