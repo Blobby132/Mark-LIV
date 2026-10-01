@@ -15,6 +15,11 @@ it grows.
    (http, https, mailto) are not fetched, and a fragment (`#section`) is
    not checked -- only that the file it points into exists. Links inside
    fenced code blocks are not links, and are skipped.
+5. Every path in docs/project-structure.md's tree exists. The tree is
+   generated from `git ls-files`; its format is one path per line, nested
+   with the box-drawing prefixes, comments after `#`. A line in a tree
+   block that does not follow it -- several names on a line, `...` -- fails
+   too, so the check cannot be quietly sidestepped.
 """
 
 from __future__ import annotations
@@ -204,6 +209,57 @@ class ImportCycleTests(unittest.TestCase):
 
     def test_minecraft_has_no_import_cycle(self):
         self.assertEqual(minecraft_import_cycles(), [])
+
+
+STRUCTURE_DOC = REPO_ROOT / "docs" / "project-structure.md"
+TREE_ENTRY = re.compile(r"^((?:│   |    )*)(?:├── |└── )(\S+?)(?:\s+#.*)?$")
+
+
+def tree_paths(path):
+    """(line number, repository path or a parse error) for every entry of
+    every fenced tree block -- a fence whose lines draw a tree."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    blocks, current = [], None
+    for number, line in enumerate(lines, 1):
+        if line.lstrip().startswith("```"):
+            if current is None:
+                current = []
+            else:
+                blocks.append(current)
+                current = None
+            continue
+        if current is not None:
+            current.append((number, line))
+    out = []
+    for block in blocks:
+        if not any("├── " in l or "└── " in l for _n, l in block):
+            continue                          # code, not a tree
+        stack = []
+        for number, line in block:
+            if not line.strip() or (not stack and line.rstrip().endswith("/")
+                                    and "── " not in line):
+                continue                      # blank, or the root line
+            match = TREE_ENTRY.match(line)
+            if not match or match.group(2) in ("...", "…") or "," in match.group(2):
+                out.append((number, f"not one path per line: {line.strip()!r}"))
+                continue
+            depth = len(match.group(1)) // 4
+            del stack[depth:]
+            stack.append(match.group(2).rstrip("/"))
+            out.append((number, "/".join(stack)))
+    return out
+
+
+class StructureDocTests(unittest.TestCase):
+
+    def test_the_tree_has_entries(self):
+        """If the parser finds nothing, the test below passes for nothing."""
+        self.assertGreater(len(tree_paths(STRUCTURE_DOC)), 50)
+
+    def test_every_path_in_the_tree_exists(self):
+        missing = [f"line {n}: {p}" for n, p in tree_paths(STRUCTURE_DOC)
+                   if not (REPO_ROOT / p).exists()]
+        self.assertEqual(missing, [])
 
 
 class DocLinkTests(unittest.TestCase):

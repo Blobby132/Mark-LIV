@@ -21,7 +21,7 @@ part-way, the next one starts here.
 
 | Item | State | Commit |
 |---|---|---|
-| 1 project-structure doc | | |
+| 1 project-structure doc | done | (this commit) |
 | 2 move test_install_mod | | |
 | 3 two readme lines | | |
 | 4 unused public names | | |
@@ -31,4 +31,4 @@ part-way, the next one starts here.
 
 ## Next
 
-Item 1.
+Item 2.
