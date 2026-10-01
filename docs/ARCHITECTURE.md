@@ -94,7 +94,10 @@ widen what the session allows.
 | `base.py` | — | The `Skill` protocol; shared constants and crosshair helpers; the food tables; the check for blocks a right-click would use instead; inventory-screen helpers. |
 | `hotbar.py` | — | `HotbarFetch`: an item from the main inventory into the hotbar through the inventory screen. Used by collect, eat and place_build. |
 | `navigate.py` | `walk_forward`, `survey`, `find_block`, `navigate_to` | |
-| `collect.py` | `break_block`, `collect_logs`, `fell_tree`, `collect_blocks`, `aim_at_block`, `mine_block` | `_HoldsTheRightTool`: the best tool before each swing, the slot put back after. |
+| `collect.py` | `break_block` | What the gathering skills share: `_HoldsTheRightTool` (the best tool before each swing, the slot put back after), `_Gatherer` (walk, aim, break, pick up the drop), and the tree and drop helpers. |
+| `collect_logs.py` | `collect_logs`, `fell_tree` | On `_Gatherer`. |
+| `collect_blocks.py` | `collect_blocks` | On `_Gatherer`; only exposed blocks it is safe to break. |
+| `aim.py` | `aim_at_block`, `mine_block` | Uses `collect_logs` for the mining hold. |
 | `eat.py` | `eat_food` | |
 | `craft.py` | `craft_item` | |
 | `place_build.py` | `place_block`, `place_block_at`, `build_line`, `build_blueprint` | The blueprint memory that lets "carry on" resume. |

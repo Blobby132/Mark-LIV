@@ -13,8 +13,10 @@ WHERE THINGS ARE
         base         the Skill protocol and what several modules share
         hotbar       HotbarFetch: an item from the main inventory to the hotbar
         navigate     walk_forward, survey, find_block, navigate_to
-        collect      break_block, collect_logs, fell_tree, collect_blocks,
-                     aim_at_block, mine_block
+        collect      break_block, and what the gathering skills share
+        collect_logs collect_logs, fell_tree
+        collect_blocks collect_blocks
+        aim          aim_at_block, mine_block
         eat          eat_food
         craft        craft_item
         place_build  place_block, place_block_at, build_line, build_blueprint
@@ -63,9 +65,10 @@ from __future__ import annotations
 
 from minecraft.skills.base import FOODS, LOG_BLOCKS, MIN_USEFUL_MINE_S, Skill
 from minecraft.skills.navigate import FindBlock, NavigateTo, Survey, WalkForward
-from minecraft.skills.collect import (
-    AimAtBlock, BreakBlock, CollectBlocks, CollectLogs, _mine_block,
-)
+from minecraft.skills.collect import BreakBlock
+from minecraft.skills.collect_logs import CollectLogs
+from minecraft.skills.collect_blocks import CollectBlocks
+from minecraft.skills.aim import AimAtBlock, _mine_block
 from minecraft.skills.eat import EatFood
 from minecraft.skills.place_build import (
     BuildBlueprint, BuildLine, PlaceBlock, PlaceBlockAt,

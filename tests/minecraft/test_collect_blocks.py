@@ -20,6 +20,7 @@ from minecraft import mining as mining_mod                           # noqa: E40
 from minecraft import navigation as nav                              # noqa: E402
 from minecraft import skills                                         # noqa: E402
 from minecraft.skills import collect as skills_collect                  # noqa: E402
+from minecraft.skills import collect_blocks as skills_collect_blocks    # noqa: E402
 from minecraft.state import (                                        # noqa: E402
     BlockRef, EXACT, EntityRef, ItemStack, NearbyBlock, WorldState)
 from minecraft.task_runner import TaskRunner                         # noqa: E402
@@ -246,11 +247,11 @@ class TargetChoiceTests(unittest.TestCase):
         surface = [NearbyBlock(b.x, 64, b.z, b.name, True, 4)
                    if b.x >= 3 else b for b in surface]
         ore = NearbyBlock(3, 64, 1, "iron_ore", True)
-        exposed = skills_collect.exposed(nav.LocalMap.from_state(state(surface)),
+        exposed = skills_collect_blocks.exposed(nav.LocalMap.from_state(state(surface)),
                                  ore)
         self.assertTrue(exposed)
         buried = NearbyBlock(4, 62, 1, "iron_ore", True)
-        self.assertFalse(skills_collect.exposed(
+        self.assertFalse(skills_collect_blocks.exposed(
             nav.LocalMap.from_state(state(surface)), buried))
 
 
