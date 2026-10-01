@@ -9,8 +9,8 @@ The controller now takes an injected `hazard_probe(action)`, like
 `progress_probe`: asked once per hold, it returns a check to call while the
 keys are down (or None for no check). A non-empty answer lets go, and the
 result says why. The game rules -- how close, how hurt, which actions --
-live in actions/minecraft.py, and walking keeps its looser threshold,
-because walking is how you get away.
+live in actions/minecraft.py, and walking has no check at all, because
+walking is how you get away.
 """
 
 from __future__ import annotations
@@ -135,12 +135,13 @@ class HazardPolicyTests(unittest.TestCase):
     def test_mining_stops_for_a_lost_heart(self):
         self.assertIn("taking damage", self.check("mine", seen(health=18)))
 
-    def test_walking_is_looser(self):
-        self.assertIsNone(self.check("move", seen(mob_at=2.5)),
-                          "walking away was stopped by the mob it escapes")
-        self.assertIsNone(self.check("move", seen(health=18)))
-        self.assertIsNotNone(self.check("move", seen(mob_at=1.2)))
-        self.assertIsNotNone(self.check("move", seen(health=15)))
+    def test_walking_is_never_stopped(self):
+        """Walking is how you get away. The old "looser" check stopped a
+        move for a mob at 1.2 blocks or health at 15 -- refusing the step
+        back from a zombie exactly when it was needed."""
+        for action in ("move", "move_and_jump", "sprint", "sneak"):
+            with self.subTest(action=action):
+                self.assertIsNone(self.mc._hazard_probe(action))
 
     def test_fighting_is_not_stopped_for_the_fight(self):
         self.assertIsNone(self.mc._hazard_probe("attack"))
@@ -150,6 +151,49 @@ class HazardPolicyTests(unittest.TestCase):
         import inspect
         source = inspect.getsource(self.mc._get_controller)
         self.assertIn("hazard_probe=_hazard_probe", source)
+
+
+class WalkingAwayEndToEndTests(unittest.TestCase):
+    """The real controller with the real _hazard_probe, and a zombie at
+    arm's length: stepping back must press the keys; mining must not."""
+
+    def setUp(self):
+        from actions import minecraft as mc_actions
+        self.mc = mc_actions
+        zombie = seen(mob_at=1.0)
+
+        class Source:
+            def read(inner):
+                return zombie
+
+        original = mc_actions._get_state_source
+        mc_actions._get_state_source = lambda: Source()
+        self.addCleanup(setattr, mc_actions, "_get_state_source", original)
+        self.backend = FakeInputBackend()
+        self.controller = MinecraftController(
+            backend=self.backend, locator=FakeLocator(),
+            sessions=SessionManager(), process_module=FakeProcess(),
+            start_watchers=False, focus_wait_s=0.0,
+            hazard_probe=mc_actions._hazard_probe)
+        self.controller.start_session(duration_s=60)
+        self.addCleanup(self.controller.stop, "test")
+
+    def test_stepping_back_from_an_adjacent_zombie_is_pressed(self):
+        result = self.controller.move({"direction": "back", "duration": 0.3})
+        self.assertTrue(result.ok, result.error)
+        self.assertNotEqual(result.stopped_reason, "danger")
+        self.assertTrue(self.backend.events, "nothing was pressed")
+        self.assertEqual(self.backend.held, set())
+
+    def test_sprinting_away_is_pressed(self):
+        result = self.controller.sprint({"direction": "back",
+                                         "duration": 0.3})
+        self.assertTrue(result.ok, result.error)
+
+    def test_mining_next_to_it_still_is_not(self):
+        result = self.controller.mine({"duration": 1.0})
+        self.assertEqual(result.stopped_reason, "danger")
+        self.assertEqual(self.backend.events, [])
 
 
 if __name__ == "__main__":

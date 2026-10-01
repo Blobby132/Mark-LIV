@@ -289,7 +289,7 @@ JARVIS can observe and play Minecraft Java Edition, inside a bounded, revocable 
 
 **Eating.** `eat_food` eats from the hotbar: food that will not make you ill, the most filling that does not overshoot what is missing, never a golden apple. With a chest, door or campfire under the crosshair it looks up first — right-clicking would use that instead — and it puts your held slot back afterwards. Food elsewhere in the inventory it names and asks you to move.
 
-**It looks up from the job.** Between every step, a task checks your health and the mobs around you. Losing a heart, or a hostile mob within five blocks at your level, stops the task and says which — before it starts, too. Walking is the exception, because walking is how you get away: `navigate_to` keeps going and ends with a note of anything close. It does not fight or flee on its own; that is your call.
+**It looks up from the job.** Between every step, a task checks your health and the mobs around you. Losing a heart, or a hostile mob within five blocks at your level, stops the task and says which — before it starts, too. Walking is the exception, because walking is how you get away: `navigate_to` keeps going and ends with a note of anything close, and a single move, sprint or sneak is never stopped by a mob or by damage — not even with a zombie at arm's length. Working holds (mining, eating, using or placing a block) also let go mid-hold for a hostile within three blocks or a heart lost. It does not fight or flee on its own; that is your call.
 
 **Perception.** The mod is authoritative. When it cannot say, a colour/texture classifier gives a *labelled guess* — `visual_high_confidence` or `visual_low_confidence` — which can steer the camera but can never authorise breaking anything.
 

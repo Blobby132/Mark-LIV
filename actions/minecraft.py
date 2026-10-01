@@ -100,15 +100,17 @@ def _target_probe():
 
 # Danger inside a hold, per kind of action: (hostile radius, health lost).
 # Working holds -- mining for up to ten seconds, eating, using a block --
-# let go for a zombie three blocks off or a heart lost. Walking is looser,
-# because walking is how you get AWAY: only a mob right on top of you, or
-# two hearts gone, stops a stride. Attacking and using an item (a shield, a
-# bow) are how you fight, so the mob being there is the point: no check.
+# let go for a zombie three blocks off or a heart lost.
+#
+# Movement (move, move_and_jump, sprint, sneak) has NO check, and that is
+# the point: walking is how you get away. A "looser" check here refused the
+# step back from a zombie at arm's length -- exactly when it was needed --
+# and cut navigate_to off the same way, since it is built from moves.
+# Attacking and using an item (a shield, a bow) are how you fight, so the
+# mob being there is the point: no check either.
 _HAZARD_THRESHOLDS = {
     "mine": (3.0, 2.0), "eat": (3.0, 2.0), "interact": (3.0, 2.0),
     "place": (3.0, 2.0),
-    "move": (1.5, 4.0), "move_and_jump": (1.5, 4.0), "sprint": (1.5, 4.0),
-    "sneak": (1.5, 4.0),
 }
 
 
@@ -1042,7 +1044,9 @@ TOOL = {
         "damage or a hostile mob is within 5 blocks, and says which: tell "
         "the user straight away, since they may need to fight or run. "
         "navigate_to is the exception — walking is how to get away — so it "
-        "keeps going and ends with a note of any mob close by. Only one runs at a time, and while it runs the other "
+        "keeps going and ends with a note of any mob close by; for the same "
+        "reason move, sprint and sneak are never stopped by a mob or by "
+        "damage. Only one runs at a time, and while it runs the other "
         "gameplay actions are refused; task_status says how it is going.\n"
         "STOPPING: if the user says stop, halt or cancel while a task or "
         "action is running, it is stopped at once and every key released "
