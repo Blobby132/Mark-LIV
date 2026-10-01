@@ -1,7 +1,8 @@
 """
-docs/ARCHITECTURE.md maps every module in minecraft/ and minecraft/skills/
-and names the safety layers. A module added without a line there, or a
-layer dropped from it, fails here rather than leaving the map quietly wrong.
+docs/ARCHITECTURE.md maps every module in minecraft/ and minecraft/skills/,
+names the safety layers, and describes the tests/ layout. A module, a tests
+folder or a support module added without a line there, or a layer dropped
+from it, fails here rather than leaving the map quietly wrong.
 """
 
 from __future__ import annotations
@@ -38,6 +39,19 @@ class ArchitectureDocTests(unittest.TestCase):
         for name in skills.available():
             with self.subTest(skill=name):
                 self.assertIn(f"`{name}`", self.text)
+
+    def test_every_tests_folder_is_described(self):
+        for path in sorted((ROOT / "tests").iterdir()):
+            if (path / "__init__.py").is_file():
+                with self.subTest(folder=path.name):
+                    self.assertIn(f"`tests/{path.name}/`", self.text)
+
+    def test_every_support_module_is_described(self):
+        for path in sorted((ROOT / "tests" / "support").glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            with self.subTest(module=path.name):
+                self.assertIn(f"`{path.name}`", self.text)
 
     def test_the_safety_layers_are_there(self):
         for layer in LAYERS:

@@ -229,3 +229,47 @@ precondition can only refuse; it never redirects.
   under `/4`, and the reader rejects unknown versions.
   `test_bridge_jar_is_current.py` keeps the shipped jar in step with
   the source.
+
+## Tests
+
+`tests/` mirrors the code. Each folder is a package, so unittest discovery
+walks into it:
+
+| Folder | What it tests |
+|---|---|
+| `tests/minecraft/` | The agent: `minecraft/`, `minecraft/skills/` and `actions/minecraft.py` |
+| `tests/bridge/` | The bridge mod and its reader: the jar, its payload, reading it |
+| `tests/core/` | Permissions, capabilities, audit, safe paths, safe exec, confirmation, enforcement, vulnerabilities, installers, lint, doc links |
+| `tests/voice/` | The voice pipeline, diagnostics, and `main.py`'s voice methods |
+| `tests/dashboard/` | The phone dashboard |
+| `tests/support/` | What several tests share; nothing here is a test |
+
+`tests/support/` holds the simulated worlds (`sim_world.py`, `mob_world.py`,
+`regression_worlds.py`, `gui_world.py`, `build_world.py`), fakes
+(`fakes.py`), payload and fixture data (`bridge_payloads.py`,
+`held_items.py`, `voice_paths.py`), the Java harness the bridge tests
+compile against the mod's source (`java/`), and `paths.py`, which says
+where the repository is. Tests import shared code from `tests.support`,
+never from another test module, and find files through
+`tests.support.paths`, never from their own location or the working
+directory.
+
+Run everything from the repository root:
+
+```
+python -m pytest
+python -m unittest discover -s tests -t .
+```
+
+`-t .` matters: `tests/minecraft`, `tests/core` and `tests/dashboard` share
+their names with app packages, and started from `tests/` alone unittest
+would import them under those names. Their `__init__.py` refuses, saying
+so. One file: `python -m pytest tests/minecraft/test_minecraft_fight.py`.
+
+## Docs
+
+The [readme](../readme.md) is what Jarvis is, installing and running it,
+and safety in brief. Everything else is in `docs/`, indexed by
+[docs/README.md](README.md); Minecraft has its own folder,
+[docs/minecraft/](minecraft/README.md). `tests/core/test_doc_links.py`
+fails on a relative link that does not resolve.
