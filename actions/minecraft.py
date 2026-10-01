@@ -148,11 +148,40 @@ def _hazard_probe(action):
     return check
 
 
+def _held_item():
+    """The controller's `held_item_probe`: what is in the main hand.
+
+    The held item's name, "" for an empty hand, or None when it cannot be
+    read -- which `place` treats as a refusal. Bridge only: nothing else
+    can see the hand. The mod reports held_item as null for an empty hand,
+    so an absent one is resolved from the selected slot and the inventory,
+    which tell "empty" from "unknown"."""
+    try:
+        source = _get_state_source()
+        if not isinstance(source, ModBridgeStateSource):
+            return None
+        state = source.read()
+    except Exception:
+        return None
+    held = getattr(state, "held_item", None)
+    if held is not None and getattr(held, "name", None):
+        return held.name
+    slot = getattr(state, "selected_slot", None)
+    inventory = getattr(state, "inventory", None)
+    if slot is None or inventory is None:
+        return None
+    for stack in inventory:
+        if stack.slot == slot and (stack.count or 0) > 0:
+            return stack.name
+    return ""
+
+
 def _get_controller() -> MinecraftController:
     global _controller, _observer
     if _controller is None:
         _controller = MinecraftController(progress_probe=_target_probe,
-                                          hazard_probe=_hazard_probe)
+                                          hazard_probe=_hazard_probe,
+                                          held_item_probe=_held_item)
         _observer = Observer(_controller._locator)
     return _controller
 
@@ -1040,8 +1069,10 @@ TOOL = {
         "particular block use run_task aim_at_block instead), jump, sneak "
         "and sprint (up to 2s), attack (up to 2s), mine (one continuous hold "
         "of up to 10s that lets go when the bridge sees the block change), "
-        "place, interact (up to 1s), use_item (up to 2s), eat (up to 3s), "
-        "drop (one "
+        "place (refused, before anything is pressed, unless the hand holds a "
+        "block: never a bucket, flint and steel, TNT, a spawn egg, a pearl, a "
+        "potion, a bow or a tool -- and never when the hand cannot be seen), "
+        "interact (up to 1s), use_item (up to 2s), eat (up to 3s), drop (one "
         "item), hotbar_select (slot 1-9), inventory (state=open|close), "
         "stop. Longer durations are shortened to the limit, not refused.\n"
         "TASKS: run_task does a bounded multi-step job, observing and "

@@ -40,10 +40,12 @@ class _Case(unittest.TestCase):
         self.backend = FakeInputBackend()
         self.locator = FakeLocator()
         self.sessions = SessionManager()
+        # A block in hand: `place` refuses an unknown hand (A4).
         self.controller = MinecraftController(
             backend=self.backend, locator=self.locator,
             sessions=self.sessions, process_module=FakeProcess(),
-            start_watchers=False, focus_wait_s=0.0)
+            start_watchers=False, focus_wait_s=0.0,
+            held_item_probe=lambda: "cobblestone")
 
     def tearDown(self):
         try:

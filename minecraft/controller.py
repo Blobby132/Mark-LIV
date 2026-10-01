@@ -158,7 +158,8 @@ class MinecraftController:
     def __init__(self, backend=None, locator=None, sessions=None,
                  process_module=None, emergency=None, start_watchers=True,
                  focus_wait_s: float = FOCUS_WAIT_SECONDS,
-                 progress_probe=None, hazard_probe=None, clock=None):
+                 progress_probe=None, hazard_probe=None, clock=None,
+                 held_item_probe=None):
         self._backend = backend if backend is not None else create_backend()
         self._locator = locator if locator is not None else Locator()
         self._sessions = sessions if sessions is not None else SessionManager()
@@ -212,6 +213,10 @@ class MinecraftController:
         # None for no check. Injected for the same reason: the controller
         # lets go, the caller decides what danger is.
         self._hazard_probe = hazard_probe
+        # Asked before `place`: the held item's name, "" for an empty hand,
+        # None when it cannot be read. Injected like the others; without it,
+        # `place` refuses, because it cannot see what it would right-click.
+        self._held_item_probe = held_item_probe
 
         self._sessions.on_end(self._on_session_end)
 
@@ -959,8 +964,36 @@ class MinecraftController:
                                  expect_target=spec.expect_target)
 
     def place(self, params: dict | None = None) -> ActionResult:
-        return self._gameplay(core_caps.MINECRAFT_BUILD, "place",
-                              action_spec.parse_place, params)
+        """One tap of the use button -- which does what the held item does.
+
+        So the held item is checked first, through the injected
+        `held_item_probe`: a lava bucket, flint and steel, an ender pearl or
+        anything else on action_spec's deny-list is refused before anything
+        is pressed, and so is a hand that cannot be read. Authorisation and
+        parameters are checked first, in the same order as every action."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_BUILD, "place")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_place(params or {})
+        problem = action_spec.place_refusal(self._held_item())
+        if problem:
+            return ActionResult(
+                ok=False, action="place", requested=spec.as_dict(),
+                actual_duration_ms=0, stopped_reason="held_item",
+                error_class="HeldItemRefused", error=problem)
+        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                 "place", spec.as_dict(), spec.clamped)
+
+    def _held_item(self):
+        """The held item's name, "" for an empty hand, None if unknown.
+        Never raises: a probe that fails is an unknown hand."""
+        if self._held_item_probe is None:
+            return None
+        try:
+            held = self._held_item_probe()
+        except Exception:
+            return None
+        return None if held is None else str(held)
 
     def interact(self, params: dict | None = None) -> ActionResult:
         return self._gameplay(core_caps.MINECRAFT_INTERACT, "interact",

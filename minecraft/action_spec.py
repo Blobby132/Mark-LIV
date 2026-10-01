@@ -533,6 +533,64 @@ def parse_place(params: dict) -> HoldSpec:
                     duration=PLACE_TAP_S, requested_duration=PLACE_TAP_S)
 
 
+# What `place` must never right-click with. Placing is a tap of the use
+# button, and the use button does what the held item does. Matched by name:
+# exact names, then name endings. Each says what the click would do instead.
+_PLACE_DENIED = {
+    "bucket": "scoop up whatever liquid it is aimed at",
+    "flint_and_steel": "start a fire",
+    "fire_charge": "start a fire",
+    "tnt": "place live explosives",
+    "tnt_minecart": "place live explosives",
+    "end_crystal": "place an end crystal, which explodes when hit",
+    "ender_pearl": "throw it and teleport you",
+    "ender_eye": "throw it",
+    "splash_potion": "throw it", "lingering_potion": "throw it",
+    "experience_bottle": "throw it", "snowball": "throw it",
+    "egg": "throw it", "blue_egg": "throw it", "brown_egg": "throw it",
+    "wind_charge": "throw it", "trident": "throw it",
+    "potion": "drink it",
+    "bow": "draw it", "crossbow": "load or fire it",
+    "firework_rocket": "launch a firework",
+    "fishing_rod": "cast it",
+    "shears": "shear or carve what it is aimed at",
+    "brush": "brush away a suspicious block and its loot",
+    "bone_meal": "grow whatever it is aimed at",
+}
+_PLACE_DENIED_ENDINGS = {
+    "_bucket": "pour it out, or release what is in it",
+    "_spawn_egg": "spawn a mob",
+    "_axe": "strip the log or bark it is aimed at",
+    "_shovel": "flatten grass into a path, or put out a campfire",
+    "_hoe": "till the ground it is aimed at",
+}
+
+
+def place_refusal(held) -> str | None:
+    """Why `place` must not right-click with `held`, or None when it may.
+
+    `held` is the held item's name, "" for an empty hand, or None when it
+    could not be read -- and not knowing is a refusal too: placing uses
+    whatever is held, and that could be a lava bucket."""
+    if held is None:
+        return ("I cannot see what is in your hand, so I did not place: "
+                "placing right-clicks with whatever is held, and that could "
+                "be a lava bucket or flint and steel. Seeing the hand needs "
+                "the bridge mod running.")
+    name = str(held).split(":")[-1].strip().lower()
+    if not name or name == "air":
+        return "Your hand is empty, so there is nothing to place."
+    what = _PLACE_DENIED.get(name)
+    if what is None:
+        what = next((why for ending, why in _PLACE_DENIED_ENDINGS.items()
+                     if name.endswith(ending)), None)
+    if what is None:
+        return None
+    return (f"You are holding {' '.join(name.split('_'))}. Right-clicking "
+            f"with it would {what}, not place a block, so I did not. Select "
+            f"a block first.")
+
+
 def parse_interact(params: dict) -> HoldSpec:
     """Right-click a block or entity: open a door, a chest, a crafting table."""
     duration, requested = _bounded_duration(params, 0.1,
@@ -615,7 +673,7 @@ __all__ = [
     "HopSpec", "MAX_HOP_DURATION_S", "parse_attack",
     "parse_use_item", "parse_sneak", "parse_sprint", "parse_hotbar",
     "parse_mine", "parse_place", "parse_interact", "parse_eat", "parse_drop",
-    "parse_inventory", "limits",
+    "parse_inventory", "limits", "place_refusal",
     "MAX_MOVE_DURATION_S", "MIN_MOVE_DURATION_S", "MAX_LOOK_DELTA_PX",
     "MAX_ATTACK_DURATION_S", "MAX_USE_DURATION_S", "MAX_SNEAK_DURATION_S",
     "MAX_SPRINT_DURATION_S", "HOTBAR_SLOTS", "MAX_MINE_DURATION_S",
