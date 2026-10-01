@@ -1120,7 +1120,7 @@ TOOL = {
         "verifying between steps: walk_forward, survey, find_block, "
         "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
         "craft_item, place_block_at, build_line, build_blueprint, "
-        "navigate_to, eat_food, aim_at_block, "
+        "navigate_to, flee, eat_food, aim_at_block, "
         "mine_block. The mining tasks (break_block, collect_logs, fell_tree, "
         "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
         "slot back afterwards. When the tool that harvests the block -- or "
@@ -1154,6 +1154,14 @@ TOOL = {
         "breaks it and checks that the block at that coordinate is gone. "
         "Neither mines anything if the aim cannot be confirmed, and neither "
         "walks: if the block is out of reach, navigate_to first.\n"
+        "flee gets away from hostile mobs: it runs -- sprinting on clear "
+        "straight ground -- to the place it can reach that is furthest "
+        "from every hostile it sees, keeping clear of them on the way, "
+        "until the nearest is over 12 blocks off (seconds: how long to "
+        "keep trying, 30 by default). A mob close by or damage never "
+        "stops it -- that is when to use it. Use it when the user says "
+        "run, get away, or is being chased; tell them where the mob "
+        "ended up.\n"
         "navigate_to walks somewhere, routing round obstacles: give it "
         "either x and z, or target='log'|'stone'|'water'. It refuses a "
         "destination outside the scanned area instead of setting off "
@@ -1318,8 +1326,8 @@ TOOL = {
                                 "find_block | break_block | place_block | "
                                 "collect_logs | fell_tree | collect_blocks | "
                                 "craft_item | place_block_at | build_line | "
-                                "build_blueprint | navigate_to | eat_food | "
-                                "aim_at_block | mine_block."),
+                                "build_blueprint | navigate_to | flee | "
+                                "eat_food | aim_at_block | mine_block."),
             },
             "x": {
                 "type": "INTEGER",

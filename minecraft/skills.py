@@ -679,6 +679,13 @@ forward on an empty map is not navigation, it is guessing with extra steps."""
 # correctness.
 WALK_BLOCKS_PER_S = 4.3
 
+SPRINT_BLOCKS_PER_S = 5.6
+"""Minecraft's sprint, for sizing a sprint step."""
+
+SPRINT_FROM_BLOCKS = 3.0
+"""A straight, clear stretch at least this long is sprinted, when the walk
+asks for sprinting (flee). Shorter, and a sprint's run-up is not worth it."""
+
 # How far off the desired heading before turning is worth a step of its own.
 # Minecraft movement is forgiving; correcting a 5 degree error every step
 # would spend the whole budget turning.
@@ -774,6 +781,8 @@ class NavigateTo:
     keep_off: frozenset = frozenset()
     """(x, z) columns never routed through -- a structure being built,
     whose wall tops are walkable but are no place to be."""
+    sprint: bool = False
+    """Sprint the long, clear, straight stretches (flee)."""
 
     name = "navigate_to"
     verifiable_with = ("position", "surface")
@@ -1161,6 +1170,15 @@ class NavigateTo:
                 note=("back to the middle of this block: from the edge the "
                       "way on scrapes a wall"))
         self._walked = max(self._walked + 1, self._skip_to + 1)
+        if self.sprint and ahead is None and gap >= SPRINT_FROM_BLOCKS:
+            return Step(
+                action="sprint",
+                params={"direction": "forward",
+                        "duration": min(action_spec.MAX_SPRINT_DURATION_S,
+                                        gap / SPRINT_BLOCKS_PER_S)},
+                expectation=verify_mod.moved(min_distance=0.5),
+                note=(f"sprint to ({waypoint[0]:.0f}, {waypoint[2]:.0f}) — "
+                      f"{gap:.0f} blocks of clear ground"))
         return Step(
             action="move",
             params={"direction": "forward",
@@ -4847,6 +4865,161 @@ class BuildBlueprint(_Builder):
         return key
 
 
+# ── Getting away ─────────────────────────────────────────────────────────────
+
+FLEE_SAFE_DISTANCE = 12.0
+"""Run until the nearest hostile mob is further than this."""
+
+FLEE_KEEP_CLEAR = 2
+"""Columns kept clear round each hostile mob on the way."""
+
+FLEE_REPLAN_EVERY = 4
+"""Steps on one leg before choosing again: the mobs move too."""
+
+MAX_FLEE_SECONDS = 60.0
+
+
+def _hostiles(state):
+    return [e for e in (getattr(state, "nearby_entities", None) or ())
+            if e.hostile is True and e.distance is not None
+            and e.position is not None]
+
+
+def _mob_words(entity) -> str:
+    return _words(str(entity.name or "hostile mob").split(":")[-1])
+
+
+@dataclass
+class Flee:
+    """flee: get away from hostile mobs.
+
+    Walks -- sprinting where the ground ahead is straight and clear -- to
+    the reachable column of the scan furthest from every hostile it can
+    see, on a route that keeps two columns clear of each, and chooses again
+    every few steps as they move. Done when the nearest is further than
+    FLEE_SAFE_DISTANCE, or when `seconds` run out.
+
+    NEVER STOPPED BY A MOB OR BY DAMAGE
+        A mob close by and health going down are why it runs. The runner's
+        danger watch is off for it (watch_hostiles, watch_health), and the
+        controller has no hazard check on movement (A1)."""
+
+    seconds: float = 30.0
+
+    name = "flee"
+    verifiable_with = ("position", "nearby_entities")
+    watch_hostiles = False
+    watch_health = False
+
+    _start: float | None = None
+    _walker: object = None
+    _leg_steps: int = 0
+    _reason: str = ""
+    _safe: bool = False
+    _done: bool = False
+    _last: object = None            # the nearest hostile at the last look
+    _reached: set = field(default_factory=set)
+
+    @property
+    def goal(self) -> str:
+        return (f"get more than {FLEE_SAFE_DISTANCE:.0f} blocks from hostile "
+                f"mobs")
+
+    @property
+    def failed(self) -> bool:
+        return not self._safe
+
+    @property
+    def done_reason(self) -> str:
+        if self._reason:
+            return self._reason
+        if self._last is not None:
+            return (f"still running: a {_mob_words(self._last)} is "
+                    f"{self._last.distance:.0f} blocks away")
+        return "stopped before getting clear"
+
+    def _stop(self, reason, safe=False):
+        self._reason, self._safe, self._done = reason, safe, True
+        return None
+
+    def plan(self, state, step_index: int, history: tuple):
+        if self._done:
+            return None
+        if getattr(state, "nearby_entities", None) is None:
+            return self._stop("I cannot see the mobs around me -- that "
+                              "needs the bridge mod -- so I cannot tell "
+                              "which way is away.")
+        hostiles = _hostiles(state)
+        if not hostiles:
+            return self._stop("there is no hostile mob in sight.", safe=True)
+        nearest = min(hostiles, key=lambda e: e.distance)
+        self._last = nearest
+        if nearest.distance > FLEE_SAFE_DISTANCE:
+            return self._stop(
+                f"clear: the nearest hostile, a {_mob_words(nearest)}, is "
+                f"{nearest.distance:.0f} blocks away -- more than "
+                f"{FLEE_SAFE_DISTANCE:.0f}.", safe=True)
+        if self._start is None:
+            self._start = state.captured_at
+        limit = min(float(self.seconds or 30.0), MAX_FLEE_SECONDS)
+        if state.captured_at - self._start >= limit:
+            return self._stop(
+                f"time ran out after {limit:.0f}s: a {_mob_words(nearest)} "
+                f"is still {nearest.distance:.0f} blocks away.")
+        for _attempt in range(2):
+            if self._walker is None or self._leg_steps >= FLEE_REPLAN_EVERY:
+                walker = self._leg(state, hostiles)
+                if isinstance(walker, str):
+                    return self._stop(walker)
+                self._walker, self._leg_steps = walker, 0
+            step = self._walker.plan(state, step_index, history)
+            if step is not None:
+                self._leg_steps += 1
+                return step
+            # Arrived, or that way is shut: choose again, once.
+            self._reached.add(self._walker._destination)
+            self._walker = None
+        return self._stop(
+            f"there is nowhere further to run within what I can see: a "
+            f"{_mob_words(nearest)} is {nearest.distance:.0f} blocks away.")
+
+    def _leg(self, state, hostiles):
+        """A NavigateTo to the best place to be, or why there is none."""
+        local = nav.LocalMap.from_state(state)
+        here = (math.floor(state.position[0]), math.floor(state.position[2]))
+        mobs = [(e.position[0], e.position[2]) for e in hostiles]
+        now = min(math.dist((state.position[0], state.position[2]), m)
+                  for m in mobs)
+        # Two columns clear of each mob -- less when one is closer than
+        # that already, or the clear ring would wall the player in with it.
+        ring = max(0.5, min(float(FLEE_KEEP_CLEAR), now - 1.0))
+        keep = frozenset(
+            (math.floor(mx) + dx, math.floor(mz) + dz)
+            for mx, mz in mobs
+            for dx in range(-FLEE_KEEP_CLEAR, FLEE_KEEP_CLEAR + 1)
+            for dz in range(-FLEE_KEEP_CLEAR, FLEE_KEEP_CLEAR + 1)
+            if math.dist((math.floor(mx) + dx + 0.5,
+                          math.floor(mz) + dz + 0.5), (mx, mz)) <= ring)
+
+        def clearance(column):
+            centre = (column[0] + 0.5, column[1] + 0.5)
+            return min(math.dist(centre, m) for m in mobs)
+        candidates = sorted(
+            (c for c in nav.reachable_columns(local)
+             if c not in keep and c != here and c not in self._reached
+             and local.standable(*c) and clearance(c) > now + 1.0),
+            key=lambda c: (-clearance(c), abs(c[0] - here[0])
+                           + abs(c[1] - here[1]), c))
+        for column in candidates[:6]:
+            if nav.find_path(state, column, avoid=set(keep)).found:
+                return NavigateTo(destination=column, arrive_within=1.0,
+                                  keep_off=keep, sprint=True)
+        nearest = min(hostiles, key=lambda e: e.distance)
+        return (f"there is no reachable ground further from the "
+                f"{_mob_words(nearest)} within what I can see; it is "
+                f"{nearest.distance:.0f} blocks away.")
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -5030,6 +5203,7 @@ BUILTIN_SKILLS = {
     "place_block": PlaceBlock,
     "place_block_at": PlaceBlockAt,
     "build_line": BuildLine,
+    "flee": Flee,
     "build_blueprint": lambda plan="", **kwargs: BuildBlueprint(
         design=plan, **kwargs),
     "collect_logs": CollectLogs,
