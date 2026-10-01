@@ -87,6 +87,33 @@ widen what the session allows.
 | `task_runner.py` | The bounded loop: at most 45 steps and 120 seconds, a verified result per step, the danger watch, and closing a screen the task opened if it ends early. |
 | `skills/` | What a task does: below. |
 
+## How the modules layer
+
+The import graph of `minecraft/` has no cycle (module-level imports, and
+lazy ones inside functions too). Each module imports only from layers below
+its own; a layer is the longest chain of imports beneath it:
+
+| Layer | Modules |
+|---|---|
+| 0 | `aiming` `building` `capabilities` `danger` `emergency` `errors` `gui` `ledger` `mining` `process` `recipes` `session` `state` |
+| 1 | `action_spec` `debug_overlay` `input_backend` `mod_bridge` `navigation` `perception` `task_slot` `verification` `window` |
+| 2 | `controller` `observation` `progress` `stuck` `skills.base` |
+| 3 | `task_runner` |
+| 4 | `skills.hotbar` `skills.navigate` |
+| 5 | `skills.collect` `skills.combat` `skills.eat` `skills.place_build` |
+| 6 | `skills.collect_blocks` `skills.collect_logs` `skills.craft` |
+| 7 | `skills.aim` |
+| 8 | `skills` (the registry) |
+
+The 28 top-level modules stay in one folder, on purpose. Grouped by role
+-- control, perception, rules, tasks, as the tables above do -- the groups
+would import each other in a circle: `controller` uses `gui` (the click
+gate, a rule), `verification` (a rule) reads `state` (perception), and
+`observation` (perception) uses `window` (control). Subpackages would
+either carry that cycle or split modules that belong together, so the
+layering is written down here instead, and a new module goes in the layer
+its imports put it in.
+
 ## The skills package, `minecraft/skills/`
 
 | Module | Skills | Notes |
