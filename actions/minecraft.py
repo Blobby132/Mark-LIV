@@ -119,19 +119,32 @@ def _hazard_probe(action):
 
     The check compares against the health at the start of the hold, so
     damage taken before it started -- already reported by the task's own
-    danger watch -- does not stop it."""
+    danger watch -- does not stop it.
+
+    Only with the mod's bridge, resolved once per hold. The check runs
+    inside the hold loop, between the 40ms focus-guard ticks: the bridge is
+    one small file read, but the OCR route is a screenshot and OCR -- 300ms
+    and more, with keys down and the guard waiting -- and the overlay
+    reports no health or mobs, so the check could never have fired there."""
     thresholds = _HAZARD_THRESHOLDS.get(str(action))
     if thresholds is None:
         return None
+    try:
+        source = _get_state_source()
+    except Exception:
+        return None
+    if not isinstance(source, ModBridgeStateSource):
+        return None
+    read = source.read
     radius, hurt_by = thresholds
     watch = mc_danger.DangerWatch(hostile_radius=radius, hurt_by=hurt_by)
     try:
-        watch.check(_get_state_source().read())       # the starting health
+        watch.check(read())                             # the starting health
     except Exception:
         return None
 
     def check():
-        return watch.check(_get_state_source().read())
+        return watch.check(read())
     return check
 
 

@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from minecraft.controller import MinecraftController                   # noqa: E402
+from minecraft.mod_bridge import ModBridgeStateSource                  # noqa: E402
 from minecraft.input_backend import FakeInputBackend                   # noqa: E402
 from minecraft.session import SessionManager                           # noqa: E402
 from minecraft.state import EntityRef, EXACT, WorldState               # noqa: E402
@@ -113,7 +114,10 @@ class HazardPolicyTests(unittest.TestCase):
         self.states = [seen()]
         self.original = mc_actions._get_state_source
 
-        class Source:
+        class Source(ModBridgeStateSource):
+            def __init__(inner):
+                pass
+
             def read(inner):
                 return self.states[0]
 
@@ -162,7 +166,10 @@ class WalkingAwayEndToEndTests(unittest.TestCase):
         self.mc = mc_actions
         zombie = seen(mob_at=1.0)
 
-        class Source:
+        class Source(ModBridgeStateSource):
+            def __init__(inner):
+                pass
+
             def read(inner):
                 return zombie
 
@@ -194,6 +201,79 @@ class WalkingAwayEndToEndTests(unittest.TestCase):
         result = self.controller.mine({"duration": 1.0})
         self.assertEqual(result.stopped_reason, "danger")
         self.assertEqual(self.backend.events, [])
+
+
+class ProbeCostTests(unittest.TestCase):
+    """A2: the check read _get_state_source() every 100ms inside the hold.
+    On the OCR route that is a screenshot and OCR -- 300ms here -- which
+    held up the 40ms focus-guard tick while keys were down, and the overlay
+    reports no health or mobs, so the check could never fire there."""
+
+    def setUp(self):
+        from actions import minecraft as mc_actions
+        self.mc = mc_actions
+        original = mc_actions._get_state_source
+        self.addCleanup(setattr, mc_actions, "_get_state_source", original)
+
+    def use(self, source):
+        self.resolved = 0
+
+        def resolve():
+            self.resolved += 1
+            return source
+        self.mc._get_state_source = resolve
+
+    def test_no_check_without_the_bridge(self):
+        class Overlay:
+            def read(inner):
+                time.sleep(0.3)
+                return seen()
+        self.use(Overlay())
+        self.assertIsNone(self.mc._hazard_probe("mine"))
+
+    def test_a_slow_source_does_not_delay_guard_ticks(self):
+        class Overlay:
+            def read(inner):
+                time.sleep(0.3)
+                return seen()
+        self.use(Overlay())
+
+        class Timed(FakeLocator):
+            times: list = []
+
+            def probe(inner):
+                inner.times.append(time.monotonic())
+                return FakeLocator.probe(inner)
+
+        locator = Timed()
+        controller = MinecraftController(
+            backend=FakeInputBackend(), locator=locator,
+            sessions=SessionManager(), process_module=FakeProcess(),
+            start_watchers=False, focus_wait_s=0.0,
+            hazard_probe=self.mc._hazard_probe)
+        controller.start_session(duration_s=60)
+        self.addCleanup(controller.stop, "test")
+        locator.times = []
+        controller.mine({"duration": 0.8})
+        gaps = [b - a for a, b in zip(locator.times, locator.times[1:])]
+        self.assertLess(max(gaps), 0.15,
+                        f"a guard tick waited {max(gaps) * 1000:.0f}ms")
+
+    def test_the_bridge_is_resolved_once_per_hold(self):
+        from minecraft.mod_bridge import ModBridgeStateSource
+
+        class Bridge(ModBridgeStateSource):
+            def __init__(inner):
+                pass
+
+            def read(inner):
+                return seen()
+        self.use(Bridge())
+        check = self.mc._hazard_probe("mine")
+        self.assertIsNotNone(check)
+        for _ in range(5):
+            check()
+        self.assertEqual(self.resolved, 1)
 
 
 if __name__ == "__main__":
