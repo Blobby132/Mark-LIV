@@ -477,6 +477,76 @@ def parse_hotbar(params: dict) -> HotbarSpec:
     return HotbarSpec(slot=slot, key=str(slot))
 
 
+MAX_GUI_STEP_PX = 400
+"""Largest pointer move in one gui_point, like look's bound."""
+
+GUI_TAP_S = 0.08
+"""A click in a screen is a tap. A hold drags, and a drag spreads a stack."""
+
+
+def parse_gui_point(params: dict) -> LookSpec:
+    """Move the pointer inside an open screen by (dx, dy) pixels.
+
+    The same relative move `look` sends -- inside a screen it moves the
+    pointer, not the view -- with the same bound."""
+    params = params or {}
+    requested_dx = _as_int(params.get("dx", 0), "dx")
+    requested_dy = _as_int(params.get("dy", 0), "dy")
+    if requested_dx == 0 and requested_dy == 0:
+        raise InvalidAction("dx and dy are both zero — that would do nothing.")
+
+    def _clamp(value: int) -> int:
+        return max(-MAX_GUI_STEP_PX, min(value, MAX_GUI_STEP_PX))
+
+    return LookSpec(dx=_clamp(requested_dx), dy=_clamp(requested_dy),
+                    requested_dx=requested_dx, requested_dy=requested_dy)
+
+
+def _gui_slot(params: dict) -> int:
+    if "slot" not in (params or {}):
+        raise InvalidAction("Which slot? A click in a screen names the slot "
+                            "it means, by the index the game reports.")
+    slot = _as_int(params.get("slot"), "slot")
+    if slot < 0:
+        raise InvalidAction(f"There is no slot {slot}.")
+    return slot
+
+
+def parse_gui_click(params: dict) -> HoldSpec:
+    """One click on a named slot: left or right button, shift optional.
+
+    The slot is not a position -- it is the slot the pointer must already
+    be over, which the controller checks against the game's own report
+    before pressing. Shift is sneak's key, already allowed."""
+    params = params or {}
+    slot = _gui_slot(params)
+    button = str(params.get("button", "left")).strip().lower()
+    if button not in (ATTACK_BUTTON, USE_BUTTON):
+        raise InvalidAction(f"'{button}' is not a mouse button. Use left or "
+                            f"right.")
+    shift = params.get("shift", False)
+    if not isinstance(shift, bool):
+        raise InvalidAction("'shift' is true or false.")
+    return HoldSpec(action="gui_click",
+                    keys=(SNEAK_KEY,) if shift else (),
+                    buttons=(button,), duration=GUI_TAP_S,
+                    requested_duration=GUI_TAP_S,
+                    detail={"slot": slot, "button": button, "shift": shift})
+
+
+def parse_gui_swap(params: dict) -> HoldSpec:
+    """Swap a named slot with a hotbar slot: a number key over the slot."""
+    params = params or {}
+    slot = _gui_slot(params)
+    hotbar = _as_int(params.get("hotbar", 0), "hotbar")
+    if hotbar not in HOTBAR_SLOTS:
+        raise InvalidAction(f"There is no hotbar slot {hotbar}. The hotbar "
+                            f"is {HOTBAR_SLOTS[0]} to {HOTBAR_SLOTS[-1]}.")
+    return HoldSpec(action="gui_swap", keys=(str(hotbar),),
+                    duration=GUI_TAP_S, requested_duration=GUI_TAP_S,
+                    detail={"slot": slot, "hotbar": hotbar})
+
+
 def parse_mine(params: dict) -> HoldSpec:
     """Hold the attack button against a block.
 
@@ -674,6 +744,8 @@ __all__ = [
     "parse_use_item", "parse_sneak", "parse_sprint", "parse_hotbar",
     "parse_mine", "parse_place", "parse_interact", "parse_eat", "parse_drop",
     "parse_inventory", "limits", "place_refusal",
+    "parse_gui_point", "parse_gui_click", "parse_gui_swap",
+    "MAX_GUI_STEP_PX", "GUI_TAP_S",
     "MAX_MOVE_DURATION_S", "MIN_MOVE_DURATION_S", "MAX_LOOK_DELTA_PX",
     "MAX_ATTACK_DURATION_S", "MAX_USE_DURATION_S", "MAX_SNEAK_DURATION_S",
     "MAX_SPRINT_DURATION_S", "HOTBAR_SLOTS", "MAX_MINE_DURATION_S",

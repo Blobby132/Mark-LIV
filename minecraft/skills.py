@@ -3003,9 +3003,10 @@ def available() -> tuple:
 # Named here rather than in prose so the tool description, the status report
 # and the manual check all quote the same list.
 NOT_YET_POSSIBLE = {
-    "craft_item": "the bridge mod reports the inventory but not the crafting "
-                  "grid, and clicking recipe slots needs absolute mouse "
-                  "positioning that is not built.",
+    "craft_item": "the screen layer is built -- the bridge reports the "
+                  "open screen, its slots and the pointer, and every click "
+                  "is gated on the game's own report (docs/minecraft-gui.md)"
+                  " -- but the recipes and the craft_item task are not yet.",
     "find_iron": "the scan now reports ores it can see, so iron already "
                  "exposed in a cave wall within the scan radius is findable. "
                  "What is missing is getting to iron that is NOT exposed, "

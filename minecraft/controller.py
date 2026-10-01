@@ -42,6 +42,7 @@ import time
 from dataclasses import dataclass, field
 
 from minecraft import action_spec, process as mc_process
+from minecraft import gui as gui_mod
 from minecraft.emergency import EmergencyStopWatcher
 from core import capabilities as core_caps
 from minecraft.errors import (
@@ -165,7 +166,7 @@ class MinecraftController:
                  process_module=None, emergency=None, start_watchers=True,
                  focus_wait_s: float = FOCUS_WAIT_SECONDS,
                  progress_probe=None, hazard_probe=None, clock=None,
-                 held_item_probe=None):
+                 held_item_probe=None, gui_probe=None):
         self._backend = backend if backend is not None else create_backend()
         self._locator = locator if locator is not None else Locator()
         self._sessions = sessions if sessions is not None else SessionManager()
@@ -224,6 +225,11 @@ class MinecraftController:
         # None when it cannot be read. Injected like the others; without it,
         # `place` refuses, because it cannot see what it would right-click.
         self._held_item_probe = held_item_probe
+        # Asked before every pointer move and click in a screen: a fresh
+        # bridge reading (screen, slots, pointer, health, mobs), or None.
+        # minecraft/gui.py's rules decide from it; without it, no click.
+        self._gui_probe = gui_probe
+        self._gui_health_peak = None
 
         self._sessions.on_end(self._on_session_end)
 
@@ -1053,14 +1059,106 @@ class MinecraftController:
 
     def hotbar_select(self, params: dict | None = None) -> ActionResult:
         """Tap a number key. The shortest action there is, and still guarded:
-        a number key delivered to the wrong window types a digit into it."""
+        a number key delivered to the wrong window types a digit into it --
+        and one pressed while a screen is open, with the pointer over a slot,
+        swaps that slot with the hotbar. So not while a screen is open."""
         refusal = self._require_authorized(core_caps.MINECRAFT_ITEMS,
                                            "hotbar_select")
         if refusal is not None:
             return refusal
         spec = action_spec.parse_hotbar(params or {})
+        state = self._gui_state() if self._gui_probe is not None else None
+        if state is not None and getattr(state, "screen", None):
+            return self._gui_refused(
+                "hotbar_select", spec.as_dict(),
+                f"a screen is open ({state.screen}), and a number key there "
+                f"would move items, not select a slot")
         return self._hold_inputs((spec.key,), (), action_spec.JUMP_TAP_S,
                                  "hotbar_select", spec.as_dict(), spec.clamped)
+
+    # ── inside a screen ──────────────────────────────────────────────────────
+
+    def _gui_state(self):
+        """A fresh reading for the screen rules, or None. Never raises. Also
+        keeps the best health seen since the screen opened, for the rule
+        that health must not drop while clicking."""
+        if self._gui_probe is None:
+            return None
+        try:
+            state = self._gui_probe()
+        except Exception:
+            return None
+        if state is None or not getattr(state, "screen", None):
+            self._gui_health_peak = None
+            return state
+        health = getattr(state, "health", None)
+        if isinstance(health, (int, float)):
+            if self._gui_health_peak is None or health > self._gui_health_peak:
+                self._gui_health_peak = float(health)
+        return state
+
+    @staticmethod
+    def _gui_refused(action, requested, why) -> ActionResult:
+        return ActionResult(ok=False, action=action, requested=requested,
+                            actual_duration_ms=0, stopped_reason="gui_gate",
+                            error_class="GuiRefused",
+                            error=f"I did not press anything: {why}.")
+
+    def gui_point(self, params: dict | None = None) -> ActionResult:
+        """Move the pointer inside an open, allowed screen. Nothing else:
+        it does not click, and outside an allowed screen it does nothing."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_INVENTORY,
+                                           "gui_point")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_gui_point(params or {})
+        state = self._gui_state()
+        problem = gui_mod.screen_refusal(state) if state is not None else \
+            "I cannot read the screen (no bridge reading)"
+        if problem:
+            return self._gui_refused("gui_point", spec.as_dict(), problem)
+        if not self._input_slot.acquire(blocking=False):
+            return self._busy_result("gui_point", spec.as_dict(),
+                                     spec.clamped)
+        try:
+            return self._look_owned(spec, "gui_point")
+        finally:
+            self._input_slot.release()
+
+    def gui_click(self, params: dict | None = None) -> ActionResult:
+        """One click on a NAMED slot, only when the game reports the pointer
+        over it -- and every other rule in minecraft/gui.py -- from a
+        reading taken immediately before pressing."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_INVENTORY,
+                                           "gui_click")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_gui_click(params or {})
+        return self._gui_press(spec, spec.detail["slot"])
+
+    def gui_swap(self, params: dict | None = None) -> ActionResult:
+        """A number key over a named slot: swaps it with that hotbar slot.
+        The same gate as a click -- the key acts on the slot under the
+        pointer, so the pointer must be on the slot meant."""
+        refusal = self._require_authorized(core_caps.MINECRAFT_INVENTORY,
+                                           "gui_swap")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_gui_swap(params or {})
+        return self._gui_press(spec, spec.detail["slot"])
+
+    def _gui_press(self, spec, slot) -> ActionResult:
+        state = self._gui_state()
+        if state is None:
+            return self._gui_refused(spec.action, spec.as_dict(),
+                                     "I cannot read the screen (no bridge "
+                                     "reading)")
+        problem = gui_mod.click_refusal(state, slot,
+                                        health_floor=self._gui_health_peak)
+        if problem:
+            return self._gui_refused(spec.action, spec.as_dict(), problem)
+        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                 spec.action, spec.as_dict(), spec.clamped)
 
     def toggle_debug_overlay(self) -> ActionResult:
         """Tap F3.
@@ -1093,8 +1191,8 @@ class MinecraftController:
         finally:
             self._input_slot.release()
 
-    def _look_owned(self, spec) -> ActionResult:
-        """`look`, once this thread owns the input slot."""
+    def _look_owned(self, spec, action: str = "look") -> ActionResult:
+        """`look` (or `gui_point`), once this thread owns the input slot."""
         started = time.monotonic()
         epoch = self._abort_epoch
 
@@ -1104,27 +1202,27 @@ class MinecraftController:
             self._require_ready()
         except Exception as e:
             return ActionResult(
-                ok=False, action="look", requested=spec.as_dict(),
+                ok=False, action=action, requested=spec.as_dict(),
                 stopped_reason=_reason_for(e), clamped=spec.clamped,
                 error_class=type(e).__name__, error=str(e),
             )
 
         if self._aborted(epoch):
-            return self._cancelled_result("look", spec.as_dict(),
+            return self._cancelled_result(action, spec.as_dict(),
                                           spec.clamped)
 
         try:
             self._ledger.move_mouse(spec.dx, spec.dy)
         except Exception as e:
             return ActionResult(
-                ok=False, action="look", requested=spec.as_dict(),
+                ok=False, action=action, requested=spec.as_dict(),
                 actual_duration_ms=int((time.monotonic() - started) * 1000),
                 stopped_reason="input_unavailable", clamped=spec.clamped,
                 error_class=type(e).__name__, error=str(e),
             )
 
         return ActionResult(
-            ok=True, action="look", requested=spec.as_dict(),
+            ok=True, action=action, requested=spec.as_dict(),
             actual_duration_ms=int((time.monotonic() - started) * 1000),
             window_focused_throughout=True, clamped=spec.clamped,
         )
@@ -1139,6 +1237,8 @@ class MinecraftController:
         "place": "place", "interact": "interact",
         "use_item": "use_item", "eat": "eat", "drop": "drop",
         "hotbar_select": "hotbar_select", "inventory": "inventory",
+        "gui_point": "gui_point", "gui_click": "gui_click",
+        "gui_swap": "gui_swap",
     }
     """Every gameplay primitive, by name. The complete list.
 

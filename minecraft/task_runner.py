@@ -164,6 +164,11 @@ DISPATCH = {
     "drop":           "drop",
     "hotbar_select":  "hotbar_select",
     "inventory":      "inventory",
+    # Inside a screen: only through minecraft/gui.py's gate, and only from a
+    # task -- the tool refuses them one at a time.
+    "gui_point":      "gui_point",
+    "gui_click":      "gui_click",
+    "gui_swap":       "gui_swap",
 }
 
 ALLOWED_ACTIONS = tuple(sorted(DISPATCH))

@@ -176,12 +176,25 @@ def _held_item():
     return ""
 
 
+def _gui_state():
+    """The controller's `gui_probe`: a fresh bridge reading for the screen
+    rules, or None. Bridge only -- nothing else reports the screen."""
+    try:
+        source = _get_state_source()
+        if not isinstance(source, ModBridgeStateSource):
+            return None
+        return source.read()
+    except Exception:
+        return None
+
+
 def _get_controller() -> MinecraftController:
     global _controller, _observer
     if _controller is None:
         _controller = MinecraftController(progress_probe=_target_probe,
                                           hazard_probe=_hazard_probe,
-                                          held_item_probe=_held_item)
+                                          held_item_probe=_held_item,
+                                          gui_probe=_gui_state)
         _observer = Observer(_controller._locator)
     return _controller
 
@@ -337,6 +350,12 @@ _CAPABILITY_BY_ACTION = {
     "drop":          capabilities.MINECRAFT_ITEMS,
     "hotbar_select": capabilities.MINECRAFT_ITEMS,
     "inventory":     capabilities.MINECRAFT_INVENTORY,
+    # Moving items inside the inventory and crafting-table screens. Part of
+    # "use the inventory"; the tool still refuses them one at a time below,
+    # and every click passes minecraft/gui.py's gate in the controller.
+    "gui_point":     capabilities.MINECRAFT_INVENTORY,
+    "gui_click":     capabilities.MINECRAFT_INVENTORY,
+    "gui_swap":      capabilities.MINECRAFT_INVENTORY,
     "run_task":      capabilities.MINECRAFT_TASK,
     # About the background task. Status is a read; cancelling is a stop, and
     # like every stop it is never refused.
@@ -401,7 +420,10 @@ def _mc_guard(params: dict) -> dict:
             f"Mining and placing change your world and I cannot undo them, so "
             f"use a world you do not mind changing.\n\n"
             f"This does NOT let me type in chat, run slash commands, or touch "
-            f"anything outside Minecraft."
+            f"anything outside Minecraft. Inside screens I only ever click in "
+            f"your inventory and a crafting table -- never a chest, a "
+            f"furnace or the creative inventory -- and only when the game "
+            f"reports the pointer over the slot I mean."
         ),
     }
 
@@ -635,6 +657,15 @@ def minecraft_control(parameters: dict = None, player=None,
 
         if action == "sprint":
             return _result_line(controller.sprint(params), player)
+
+        if action in ("gui_point", "gui_click", "gui_swap"):
+            # Not one at a time: a click is only ever part of a task that
+            # knows what every click is for. The controller would gate a
+            # single click anyway; this keeps the model from steering the
+            # pointer by hand.
+            return (f"{action} is not something to do step by step. To "
+                    f"craft, use run_task craft_item; it moves the pointer "
+                    f"and clicks itself, each click checked against the game.")
 
         if action == "run_task":
             return _run_task(controller, params, player, speak)
