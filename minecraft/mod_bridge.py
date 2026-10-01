@@ -89,6 +89,9 @@ ENV_OVERRIDE = "MARKLIV_STATE_FILE"
 """Point this at the state file to override the default location."""
 
 _MAX_BYTES = 512 * 1024
+"""Refuse to read anything larger. The real payload is a few kilobytes; a huge
+file means something other than the mod wrote here, and parsing it is not this
+module's job."""
 
 READ_ATTEMPTS = 3
 """Reads of the file before a failure counts. The mod replaces the file with
@@ -101,9 +104,6 @@ LAST_GOOD_SECONDS = 1.0
 """A failed read within this long of a good one returns the good one. The
 snapshot's own age is still checked against MAX_AGE_SECONDS, so this only
 bridges a hiccup; it cannot make a closed game look open."""
-"""Refuse to read anything larger. The real payload is a few kilobytes; a huge
-file means something other than the mod wrote here, and parsing it is not this
-module's job."""
 
 
 def state_file_path() -> str:

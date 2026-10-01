@@ -208,3 +208,32 @@ class StickySelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ModuleLayoutTests(unittest.TestCase):
+
+    def test_every_docstring_sits_under_its_constant(self):
+        """A7: the retry constants were added between _MAX_BYTES and its
+        docstring, which then sat under LAST_GOOD_SECONDS as a stray string
+        -- two string expressions in a row."""
+        import ast
+        tree = ast.parse(Path(mod_bridge.__file__).read_text(encoding="utf-8"))
+        body = tree.body
+        for before, after in zip(body, body[1:]):
+            both = all(isinstance(n, ast.Expr)
+                       and isinstance(getattr(n, "value", None), ast.Constant)
+                       and isinstance(n.value.value, str)
+                       for n in (before, after))
+            self.assertFalse(both, f"a stray string at line {after.lineno}")
+        self.assertIn("Refuse to read anything larger",
+                      _docstring_after(body, "_MAX_BYTES"))
+
+
+def _docstring_after(body, name):
+    import ast
+    for node, nxt in zip(body, body[1:]):
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == name for t in node.targets):
+            if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant):
+                return nxt.value.value
+    return ""
