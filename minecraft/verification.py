@@ -346,6 +346,53 @@ def _count_of(state: WorldState, names) -> int:
     return total
 
 
+def screen_is(kind: str) -> Expectation:
+    """The open screen is `kind` -- what opening the inventory or using a
+    crafting table should have done."""
+    def predicate(before, after):
+        if after.screen == kind:
+            return True, f"the {' '.join(kind.split('_'))} screen is open."
+        return False, (f"the screen is {after.screen or 'closed'}, not "
+                       f"{' '.join(kind.split('_'))}.")
+
+    # game_mode is reported always, so a closed screen reads as closed
+    # rather than as unknown.
+    return Expectation(name="screen_is", goal=f"open the {kind} screen",
+                       fields=("game_mode",), predicate=predicate)
+
+
+def screen_closed() -> Expectation:
+    def predicate(before, after):
+        if after.screen is None:
+            return True, "no screen is open."
+        return False, f"the {after.screen} screen is still open."
+
+    return Expectation(name="screen_closed", goal="close the screen",
+                       fields=("game_mode",), predicate=predicate)
+
+
+def pointer_moved() -> Expectation:
+    """The pointer moved at all. Where to is the next step's business: it
+    measures the move and corrects."""
+    def predicate(before, after):
+        if before.gui is None or after.gui is None:
+            return None, "no pointer reading on one side."
+        if tuple(after.gui.cursor_px) != tuple(before.gui.cursor_px):
+            return True, (f"the pointer moved to {after.gui.cursor_px[0]:.0f}, "
+                          f"{after.gui.cursor_px[1]:.0f}.")
+        return False, "the pointer did not move."
+
+    return Expectation(name="pointer_moved", goal="move the pointer",
+                       fields=("gui",), predicate=predicate)
+
+
+def gui_effect(goal: str, check) -> Expectation:
+    """A click's effect on the slots and the carried stack, judged by
+    `check(before, after) -> (ok, detail)` from the mod's own report."""
+    return Expectation(name="gui_effect", goal=goal, fields=("slots",),
+                       predicate=check)
+
+
 def ate(item: str) -> Expectation:
     """One `item` fewer in the inventory: it was eaten.
 
@@ -600,5 +647,6 @@ __all__ = [
     "moved", "stayed_within", "turned", "block_broken", "looking_at",
     "target_changed", "holding_slot", "collected", "unverifiable",
     "closer_to", "arrived_at", "block_gone", "broke_block_at",
+    "screen_is", "screen_closed", "pointer_moved", "gui_effect",
     "CAMERA_STEADY_DEG",
 ]

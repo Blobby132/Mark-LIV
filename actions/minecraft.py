@@ -726,7 +726,7 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
 
     options = {}
     for key in ("seconds", "direction", "expected", "swings", "steps",
-                "count", "slot", "target"):
+                "count", "slot", "target", "item"):
         if key in params:
             options[key] = params[key]
     if name in ("aim_at_block", "mine_block"):
@@ -1109,7 +1109,7 @@ TOOL = {
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
         "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
-        "navigate_to, eat_food, aim_at_block, "
+        "craft_item, navigate_to, eat_food, aim_at_block, "
         "mine_block. The mining tasks (break_block, collect_logs, fell_tree, "
         "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
         "slot back afterwards; they refuse, before swinging, a block nothing "
@@ -1168,6 +1168,17 @@ TOOL = {
         "touching water or lava. break_block only breaks "
         "whatever the crosshair is on right now — it does not aim or walk — "
         "so for 'break a log' use collect_logs.\n"
+        "craft_item makes `count` of `item` by clicking in the crafting grid "
+        "-- the inventory's 2x2, or a crafting table's 3x3 within reach for "
+        "pickaxes, axes, swords, shovels, hoes, furnaces and chests. It "
+        "knows planks (any log), stick, crafting_table, wooden_ and stone_ "
+        "tools, furnace, torch and chest. It checks the ingredients first "
+        "and says what is missing; it never clicks anywhere the game does "
+        "not report the pointer over the slot it means, closes the screen "
+        "and stops if a hostile comes within 8 blocks or you are hurt, and "
+        "proves the result from the inventory (output up, ingredients "
+        "down). No crafting table near for a 3x3 recipe: it says so -- "
+        "craft_item crafting_table makes one. "
         "eat_food eats from the HOTBAR until not hungry (count: how many "
         "items at most): it picks food that will not make you ill and does "
         "not waste golden apples, looks up first if a chest or door is "
@@ -1253,8 +1264,8 @@ TOOL = {
                 "description": ("For run_task: walk_forward | survey | "
                                 "find_block | break_block | place_block | "
                                 "collect_logs | fell_tree | collect_blocks | "
-                                "navigate_to | eat_food | aim_at_block | "
-                                "mine_block."),
+                                "craft_item | navigate_to | eat_food | "
+                                "aim_at_block | mine_block."),
             },
             "x": {
                 "type": "INTEGER",
@@ -1284,6 +1295,13 @@ TOOL = {
                                 "what to collect — stone, dirt, sand, "
                                 "red_sand, gravel, deepslate, coal, iron or "
                                 "copper."),
+            },
+            "item": {
+                "type": "STRING",
+                "description": ("For craft_item: what to make — e.g. "
+                                "oak_planks, stick, crafting_table, "
+                                "wooden_pickaxe, stone_axe, furnace, torch, "
+                                "chest."),
             },
             "count": {
                 "type": "INTEGER",

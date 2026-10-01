@@ -149,27 +149,51 @@ def _clamp(value: float) -> int:
     return int(max(-MAX_GUI_STEP_PX, min(MAX_GUI_STEP_PX, round(value))))
 
 
+_SIZE_STEPS = (16, 64, 160)
+"""Move sizes (pixels, the larger axis) at which the gain is learned
+separately. Acceleration makes a long move go proportionally further than
+a short one, so one gain for every size overshoots the long moves and
+undershoots the short ones."""
+
+
+def _size_class(pixels: float) -> int:
+    return sum(1 for step in _SIZE_STEPS if abs(pixels) > step)
+
+
 @dataclass
 class Pointer:
     """Brings the pointer to one slot after another, closed loop.
 
     Each move is a relative delta; the next reading says where the pointer
     really went, and the gain -- window pixels per pixel sent -- is
-    measured from that and smoothed. It is not assumed: inside a screen the
-    OS applies pointer acceleration, so a long move goes proportionally
-    further than a short one."""
+    measured from that, per size of move, and smoothed. It is not assumed:
+    inside a screen the OS applies pointer acceleration, so a long move
+    goes proportionally further than a short one."""
 
-    gain_x: float = 1.0
-    gain_y: float = 1.0
     corrections: int = 0
+    gains: dict = None            # size class -> [gain x, gain y]
 
     @property
     def gave_up(self) -> bool:
         return self.corrections >= MAX_CORRECTIONS
 
     def aim_at(self, slot) -> None:
-        """A new target: a fresh budget of corrections, the gain kept."""
+        """A new target: a fresh budget of corrections, the gains kept."""
         self.corrections = 0
+
+    def _gain(self, size_class: int, axis: int) -> float:
+        """The gain learned for this size of move, or the nearest size's,
+        or 1.0 before anything is known."""
+        gains = self.gains or {}
+        known = sorted(gains, key=lambda k: abs(k - size_class))
+        return gains[known[0]][axis] if known else 1.0
+
+    def _send_for(self, error: float, axis: int) -> int:
+        """Pixels to send to travel `error`, under the gain for the size of
+        move that will take -- found by refining once."""
+        send = error / self._gain(_size_class(error), axis)
+        send = error / self._gain(_size_class(send), axis)
+        return _clamp(send)
 
     def next_move(self, state, slot):
         """(dx, dy) to send, or None: arrived, or out of corrections (the
@@ -178,7 +202,7 @@ class Pointer:
             return None
         cx, cy = state.gui.cursor_px
         ex, ey = slot.x - cx, slot.y - cy
-        dx, dy = _clamp(ex / self.gain_x), _clamp(ey / self.gain_y)
+        dx, dy = self._send_for(ex, 0), self._send_for(ey, 1)
         # Never a zero move while still outside: at least one pixel.
         if dx == 0 and abs(ex) >= 0.5:
             dx = 1 if ex > 0 else -1
@@ -188,20 +212,25 @@ class Pointer:
         return dx, dy
 
     def observe(self, sent, before, after) -> None:
-        """Learn the gain from one move: where the pointer went for what
-        was sent. Small or vanishing moves teach nothing and are skipped."""
+        """Learn the gain from one move: where the pointer went for what was
+        sent, filed under the size of the move. Small or vanishing moves
+        teach nothing and are skipped."""
+        if self.gains is None:
+            self.gains = {}
+        size_class = _size_class(max(abs(sent[0]), abs(sent[1])))
+        current = self.gains.get(size_class)
         for axis in (0, 1):
             if abs(sent[axis]) < 3:
                 continue
-            moved = after[axis] - before[axis]
-            measured = moved / sent[axis]
+            measured = (after[axis] - before[axis]) / sent[axis]
             if measured <= 0.05 or math.isnan(measured):
                 continue
             measured = max(0.2, min(5.0, measured))
-            if axis == 0:
-                self.gain_x = 0.5 * self.gain_x + 0.5 * measured
+            if current is None:
+                current = [measured, measured]
+                self.gains[size_class] = current
             else:
-                self.gain_y = 0.5 * self.gain_y + 0.5 * measured
+                current[axis] = 0.3 * current[axis] + 0.7 * measured
 
 
 __all__ = ["ALLOWED_SCREENS", "CLICKABLE_MODES", "MAX_CORRECTIONS",
