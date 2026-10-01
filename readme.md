@@ -54,6 +54,20 @@ It imports what `main.py` imports, in the same order, and reports the first thin
 
 The doctor never reads or prints your API key — only whether one is saved.
 
+### The Windows helpers
+
+Each `.bat` file in the project folder finds a supported Python, works from
+its own folder (so double-clicking works from anywhere), and runs one script
+in `tools/`:
+
+| File | What it does |
+|---|---|
+| `run_jarvis.bat` | Starts Jarvis; installs what is missing; runs the doctor if it crashes |
+| `doctor.bat` | Checks the setup (`tools\doctor.py`) |
+| `install_mod.bat` | Installs the Minecraft bridge mod (`tools\install_mod.py`) |
+| `bridge_check.bat` | Checks whether Jarvis can see Minecraft (`tools\bridge_check.py`) |
+| `gameplay_check.bat` | The interactive Minecraft gameplay check (`tools\minecraft_gameplay_check.py`) — see [Minecraft](docs/minecraft/README.md) |
+
 ---
 
 ## 📋 Requirements
