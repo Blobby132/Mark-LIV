@@ -363,6 +363,15 @@ class SimWorld:
         while travelled < distance - 1e-9:
             stride = min(self.STRIDE, distance - travelled)
             nx, nz = self.x + ux * stride, self.z + uz * stride
+            if getattr(self, "SLIDE", False) and not self._fits_at(
+                    nx, nz, jumping and not rose):
+                # Minecraft resolves collision one axis at a time: walking
+                # into a wall at an angle slides along it. Opt-in, so the
+                # worlds written before this keep their stricter rule.
+                if self._fits_at(nx, self.z, jumping and not rose):
+                    nz = self.z
+                elif self._fits_at(self.x, nz, jumping and not rose):
+                    nx = self.x
             # The body is 0.6 wide. A shoulder hits a wall a centre-line
             # misses, so every corner of the footprint has to fit.
             for ox in (-self.HALF_WIDTH, self.HALF_WIDTH):
@@ -372,8 +381,11 @@ class SimWorld:
                     if other is None:
                         self.blocked += 1
                         return
-                    if (other.y + 1) - self.y > self.STEP_HEIGHT \
-                            and not (jumping and not rose):
+                    lift = (other.y + 1) - self.y
+                    # A jump clears one block, not two: a shoulder against
+                    # a two-high wall stops the move, jumping or not.
+                    if lift > self.STEP_HEIGHT and not (
+                            jumping and not rose and lift <= 1.0 + 1e-9):
                         self.blocked += 1
                         return
             column = (math.floor(nx), math.floor(nz))
@@ -393,8 +405,32 @@ class SimWorld:
                         return
                     rose = True
                 self.y = float(block.y + 1)
+            if getattr(self, "SLIDE", False):
+                # Held up by the highest block under any part of the body,
+                # as in the game: walking off a wall top you stay on it
+                # until the whole body is clear, then drop -- never into a
+                # spot where a shoulder is inside the wall.
+                support = max(self.ground[(math.floor(nx + ox),
+                                           math.floor(nz + oz))].y + 1
+                              for ox in (-self.HALF_WIDTH, self.HALF_WIDTH)
+                              for oz in (-self.HALF_WIDTH, self.HALF_WIDTH))
+                self.y = float(support)
             self.x, self.z = nx, nz
             travelled += stride
+
+    def _fits_at(self, nx, nz, may_rise) -> bool:
+        """Could the body's four corners stand at (nx, nz)?"""
+        for ox in (-self.HALF_WIDTH, self.HALF_WIDTH):
+            for oz in (-self.HALF_WIDTH, self.HALF_WIDTH):
+                other = self.ground.get((math.floor(nx + ox),
+                                         math.floor(nz + oz)))
+                if other is None:
+                    return False
+                lift = (other.y + 1) - self.y
+                if lift > self.STEP_HEIGHT and not (
+                        may_rise and lift <= 1.0 + 1e-9):
+                    return False
+        return True
 
     def jump(self, params):
         # A jump on the spot goes up and comes straight back down: no

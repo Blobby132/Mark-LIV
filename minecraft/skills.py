@@ -735,6 +735,12 @@ forward a third time has never once fixed it."""
 
 MAX_STALLS = 4
 
+MAX_HOPS_ONTO = 3
+"""Hops onto the same column before giving up. A hop onto a lone block can
+carry past it, the walk turns round and hops back past it the other way --
+every hop moves, so no stall is ever counted, and it went on until the
+task's step limit."""
+
 
 @dataclass
 class NavigateTo:
@@ -765,6 +771,9 @@ class NavigateTo:
     target: str = ""
     arrive_within: float = 1.5
     max_stalls: int = MAX_STALLS
+    keep_off: frozenset = frozenset()
+    """(x, z) columns never routed through -- a structure being built,
+    whose wall tops are walkable but are no place to be."""
 
     name = "navigate_to"
     verifiable_with = ("position", "surface")
@@ -778,6 +787,7 @@ class NavigateTo:
     _destination: tuple | None = None
     _path: object = None
     _walked: int = 0
+    _hops: dict = field(default_factory=dict)   # column -> hops onto it
     _stalls: int = 0
     _hopped: bool = False
     _reroutes: int = 0
@@ -1050,12 +1060,14 @@ class NavigateTo:
     def _follow_path(self, state, local):
         if self._needs_new_path(state, local):
             self._path = nav.find_path(state, self._destination,
-                                       avoid=set(self._avoid))
+                                       avoid=set(self._avoid)
+                                       | set(self.keep_off))
             if not self._path.found and self._avoid:
                 # Avoiding the mob's column leaves no way at all: the mob is
                 # standing in the only way. Take it anyway -- it may move --
                 # and if it does not, say that rather than "impassable".
-                direct = nav.find_path(state, self._destination)
+                direct = nav.find_path(state, self._destination,
+                                       avoid=set(self.keep_off))
                 if direct.found:
                     self._blocked_by = self._blocker_name or "mob"
                     self._path = direct
@@ -1071,6 +1083,10 @@ class NavigateTo:
         waypoint = self._next_waypoint(local, state)
         if waypoint is None:
             return None
+        recentring = False
+        middle = self._recentre(local, state, waypoint)
+        if middle is not None:
+            waypoint, recentring = middle, True
 
         here = state.position
         # The CENTRE of the waypoint's column. Waypoints are block
@@ -1120,10 +1136,12 @@ class NavigateTo:
         gap = self._gap_to(here, target)
         ahead = self._look_ahead(local, here, target)
 
-        if ahead == "climb":
+        if ahead == "climb" and not recentring:
             # The route steps up a full block. Walking into it first and
             # THEN deciding to jump costs a step and a failed move every
             # time; the map already says it is there. Hop straight up.
+            if self._hop_spent((int(waypoint[0]), int(waypoint[2]))):
+                return None
             self._walked = max(self._walked + 1, self._skip_to + 1)
             return Step(
                 action="move_and_jump",
@@ -1134,6 +1152,14 @@ class NavigateTo:
                 note=(f"hop up onto ({waypoint[0]:.0f}, {waypoint[2]:.0f})"),
             )
 
+        if recentring:
+            return Step(
+                action="move",
+                params={"direction": "forward",
+                        "duration": self._step_seconds(gap, cautious=True)},
+                expectation=verify_mod.moved(min_distance=0.05),
+                note=("back to the middle of this block: from the edge the "
+                      "way on scrapes a wall"))
         self._walked = max(self._walked + 1, self._skip_to + 1)
         return Step(
             action="move",
@@ -1194,6 +1220,11 @@ class NavigateTo:
         self._obstacle = diagnosis.obstacle
 
         if diagnosis.recovery == stuck_mod.HOP:
+            column = getattr(diagnosis.obstacle, "column", None)
+            if column is not None and not self._hopped \
+                    and self._hop_spent(tuple(column)[:2] if len(column) == 2
+                                        else (column[0], column[-1])):
+                return None
             if not self._hopped:
                 # One block, with room to land on it. Walking and jumping
                 # TOGETHER is the only thing that works: jump on the spot and
@@ -1295,6 +1326,40 @@ class NavigateTo:
             if self._avoid[column] <= 0:
                 del self._avoid[column]
 
+    def _hop_spent(self, column) -> bool:
+        """Count a hop at `column`; True (and stopped, saying why) when
+        there have been MAX_HOPS_ONTO already."""
+        hops = self._hops.get(column, 0)
+        if hops >= MAX_HOPS_ONTO:
+            self._stopped = (
+                f"I hopped at the block at ({column[0]}, {column[1]}) "
+                f"{hops} times and kept landing past it or short of it -- a "
+                f"single raised block is hard to land on.")
+            return True
+        self._hops[column] = hops + 1
+        return False
+
+    @staticmethod
+    def _recentre(local, state, waypoint):
+        """The column the player is in, as a waypoint, when they stand off
+        its middle and the straight line from where they really are to the
+        next waypoint is not walkable -- a shoulder over the corner of a
+        wall, which a route between column centres never meets. Else None.
+        Walking to the middle first does not count as reaching anything."""
+        try:
+            x, _y, z = (float(v) for v in state.position)
+        except (TypeError, ValueError):
+            return None
+        mine = (math.floor(x), math.floor(z))
+        if math.dist((x, z), (mine[0] + 0.5, mine[1] + 0.5)) < 0.15:
+            return None
+        ahead = (waypoint[0] + 0.5, waypoint[2] + 0.5)
+        if (math.floor(ahead[0]), math.floor(ahead[1])) == mine \
+                or local.first_blocked((x, z), ahead,
+                                       allow_climb=True) is None:
+            return None                 # clear, or only a step up to hop
+        return (mine[0], waypoint[1], mine[1])
+
     def _needs_new_path(self, state, local) -> bool:
         """Re-plan when the plan is old, gone, or no longer true."""
         if self._path is None or not self._path.found:
@@ -1356,7 +1421,8 @@ class NavigateTo:
 
         far, far_index = nav.furthest_clear(local, here,
                                             self._path.waypoints, index,
-                                            avoid=set(self._avoid))
+                                            avoid=set(self._avoid)
+                                            | set(self.keep_off))
         if far is None:
             return self._path.waypoints[index]
         # Remember how many waypoints this move consumes, so the next call
