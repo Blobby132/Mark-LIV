@@ -5094,6 +5094,10 @@ class Flee:
 
 FIGHT_MAX_SECONDS = 20.0
 FIGHT_RETREAT_HEALTH = 8.0
+FIGHT_START_HEALTH = 12.0
+"""Below this a fight does not start: it costs health, and starting lower
+leaves next to nothing to spend before FIGHT_RETREAT_HEALTH."""
+FIGHT_WEAPON_SELECTS = 2
 FIGHT_RANGE = 16.0
 """Only mobs this close are fought."""
 ENTITY_REACH = 3.0
@@ -5114,9 +5118,59 @@ MOB_HEIGHTS = {
 }
 """Hit-box heights, to aim at the middle of the body, not the feet."""
 
-NEVER_MELEE = {"creeper": "it explodes when it is close -- flee instead",
-               "warden": "it is far stronger than anything I can hold -- "
-                         "flee instead"}
+NEVER_MELEE = {
+    "creeper": "it explodes when it is close -- flee instead",
+    "warden": "it is far stronger than anything I can hold -- flee instead",
+    "enderman": "it leaves you alone until it is hit or looked at, then "
+                "teleports about and hits hard -- leave it be",
+    "zombified_piglin": "hitting one turns every one nearby against you",
+    "piglin": "hitting one turns the whole group against you",
+    "piglin_brute": "it hits far harder than I can trade blows with",
+    "ravager": "it has far more health than I can wear down, and hits hard",
+    "wither": "it is a boss: it explodes as it forms and fires wither skulls",
+    "ender_dragon": "it is a boss, mostly out of reach in the air, and "
+                    "knocks you flying",
+    "ghast": "it flies out of reach and fires explosive fireballs",
+    "elder_guardian": "it lives under water, saps your mining, and lasers "
+                      "you from out of reach",
+    "guardian": "it lives under water and lasers you from out of reach",
+    "shulker": "it hides in its shell, and its bullets make you float up",
+    "evoker": "it summons fangs and vexes from where it stands",
+    "vex": "it flies through walls; I cannot keep it in reach",
+    "hoglin": "it throws you into the air -- off a ledge, often",
+    "zoglin": "it throws you into the air and goes for anything near",
+    "blaze": "it flies and shoots fireballs from out of reach",
+    "wither_skeleton": "its hits wither you, and it outreaches a skeleton",
+}
+"""Hostile mobs fight never walks up to, each with the reason it says."""
+
+
+def best_hotbar_weapon(state):
+    """(slot, item) of the best sword in the hotbar -- or, with no sword,
+    the best axe -- by material; what is held already wins a tie. None
+    when there is neither, or the inventory cannot be read.
+
+    A sword before any axe: an axe hits harder once, but recovers so
+    slowly that the sword's taps, every other step, do more."""
+    inventory = getattr(state, "inventory", None)
+    if inventory is None:
+        return None
+    current = getattr(state, "selected_slot", None)
+    best = None
+    for stack in inventory:
+        slot = getattr(stack, "slot", None)
+        if slot not in mining_mod.HOTBAR_SLOTS \
+                or not (getattr(stack, "count", 0) or 0):
+            continue
+        item = building_mod.short(stack.name)
+        tool = mining_mod.tool_from_item(item)
+        if tool.kind not in (mining_mod.SWORD, mining_mod.AXE):
+            continue
+        rank = (tool.kind == mining_mod.SWORD, tool.tier, slot == current,
+                -slot)
+        if best is None or rank > best[0]:
+            best = (rank, slot, item)
+    return None if best is None else (best[1], best[2])
 
 
 @dataclass
@@ -5132,8 +5186,18 @@ class Fight:
         Every swing carries `expect_hostile`: the controller presses
         nothing unless the game reports a hostile mob under the crosshair
         at that moment. A player or a passive mob is never chosen, and a
-        player or passive mob stepping in front is never hit. A creeper or
-        a warden is not walked up to at all.
+        player or passive mob stepping in front is never hit. A mob in
+        NEVER_MELEE -- a creeper, a warden, an enderman, a piglin, a
+        ghast, a boss and the like -- is not walked up to at all, and the
+        refusal says why.
+    WHEN IT DOES NOT START
+        Health below FIGHT_START_HEALTH (12), or health it cannot read.
+    THE WEAPON
+        Before the first swing it takes up the best sword in the hotbar,
+        else the best axe (best_hotbar_weapon), and puts the old slot back
+        when it ends -- after a win, a retreat or a refusal alike, the way
+        mining puts its tool slot back. No sword or axe: it says so, and
+        fights with what is in hand.
     WHEN IT STOPS
         The mob is gone from sight (killed, most likely -- the bridge does
         not report a mob's health, so that is not proven); health below
@@ -5158,6 +5222,12 @@ class Fight:
     _retreat: object = None              # a Flee once health is low
     _retreat_note: str = ""
     _last_was_swing: bool = False
+    _weapon_done: bool = False
+    _weapon_tries: int = 0
+    _weapon_note: str = ""
+    _slot_before: int | None = None      # the slot to go back to
+    _slot_restored: bool = False
+    _finished: bool = False
 
     @property
     def goal(self) -> str:
@@ -5171,14 +5241,70 @@ class Fight:
     @property
     def done_reason(self) -> str:
         if self._retreat is not None:
-            return f"{self._retreat_note} {self._retreat.done_reason}".strip()
-        return self._reason or "stopped before fighting"
+            text = f"{self._retreat_note} {self._retreat.done_reason}"
+        else:
+            text = self._reason or "stopped before fighting"
+        return f"{text} {self._weapon_note}".strip()
 
     def _stop(self, reason, won=False):
         self._reason, self._won, self._done = reason, won, True
         return None
 
     def plan(self, state, step_index: int, history: tuple):
+        """The fight's next step; once it has none, the step putting the
+        old hotbar slot back -- once -- then nothing."""
+        if self._finished:
+            return None
+        step = self._plan(state, step_index, history)
+        if step is not None:
+            return step
+        self._finished = True
+        if self._slot_before is None or self._slot_restored \
+                or getattr(state, "selected_slot", None) == self._slot_before:
+            return None
+        self._slot_restored = True
+        slot = self._slot_before + 1
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot),
+                    note=f"back to hotbar slot {slot}")
+
+    def _take_up_weapon(self, state):
+        """A hotbar_select to the best weapon, once, before the first
+        swing; None when it is held already, or there is none to take."""
+        if self._weapon_done:
+            return None
+        if getattr(state, "inventory", None) is None:
+            self._weapon_done = True
+            self._weapon_note = ("(I could not read the hotbar, so I fought "
+                                 "with whatever was in hand.)")
+            return None
+        choice = best_hotbar_weapon(state)
+        if choice is None:
+            self._weapon_done = True
+            self._weapon_note = ("(There was no sword or axe in the hotbar, "
+                                 "so I fought with whatever was in hand.)")
+            return None
+        slot, item = choice
+        current = getattr(state, "selected_slot", None)
+        words = " ".join(item.split("_"))
+        if current == slot:
+            self._weapon_done = True
+            return None
+        if self._weapon_tries >= FIGHT_WEAPON_SELECTS:
+            self._weapon_done = True
+            self._weapon_note = (
+                f"(I selected hotbar slot {slot + 1} for the {words} "
+                f"{self._weapon_tries} times and the game did not show it, "
+                f"so I fought with whatever was in hand.)")
+            return None
+        self._weapon_tries += 1
+        if self._slot_before is None and current is not None:
+            self._slot_before = current
+        return Step(action="hotbar_select", params={"slot": slot + 1},
+                    expectation=verify_mod.holding_slot(slot + 1),
+                    note=f"take up the {words} (hotbar slot {slot + 1})")
+
+    def _plan(self, state, step_index: int, history: tuple):
         if self._done:
             return None
         last = history[-1] if history else None
@@ -5193,6 +5319,15 @@ class Fight:
                               "that needs the bridge mod -- so I did not "
                               "fight.")
         health = getattr(state, "health", None)
+        if self._start is None:
+            if not isinstance(health, (int, float)):
+                return self._stop("I cannot read my health, so I did not "
+                                  "start a fight.")
+            if health < FIGHT_START_HEALTH:
+                return self._stop(
+                    f"I have {health:.0f} health, and I start a fight only "
+                    f"at {FIGHT_START_HEALTH:.0f} or more -- eat or get "
+                    f"away first. I did not fight.")
         if isinstance(health, (int, float)) and health < FIGHT_RETREAT_HEALTH:
             self._retreat_note = (
                 f"I retreated at {health:.0f} health, after {self._swings} "
@@ -5211,6 +5346,9 @@ class Fight:
         if isinstance(mob, str):
             return self._stop(mob, won=self._swings > 0)
         self._mob = mob
+        weapon = self._take_up_weapon(state)
+        if weapon is not None:
+            return weapon
         if mob.distance > ENTITY_REACH - 0.3:
             self._last_was_swing = False
             column = (math.floor(mob.position[0]),
