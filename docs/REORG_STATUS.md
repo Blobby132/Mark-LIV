@@ -25,7 +25,7 @@ part-way, the next one starts here.
 | 0b pyproject | done | pyproject.toml and a lint test |
 | 0c defects and lint | done | a01fdec skills/__init__.py: an explicit public API |
 | 1 tests | done | 52cdfaf tests: drop the move's two fallbacks |
-| 2 docs | | |
+| 2 docs | done | d840fd7 ARCHITECTURE.md: the tests and docs layout |
 | 3 oversized files | | |
 | 4 root and tools | | |
 | 5 guardrails | | |
@@ -41,12 +41,18 @@ before. Tests this reorganisation adds are counted on top, listed here:
 
 Expected after phase 0: 1507 collected (1501 + 6).
 
+- tests/core/test_doc_links.py: 2 (phase 2)
+- tests/minecraft/test_architecture_doc.py: 2 more (tests folders, support modules)
+
+Expected after phase 2: 1511 collected (1501 + 10).
+
 ## Next
 
-Phase 2: docs (2a shrink readme, docs/minecraft/; 2b index and link test;
-2c ARCHITECTURE).
+Phase 3: oversized Minecraft files. 3c first: the import graph of minecraft/;
+then 3a (actions/minecraft.py probes and text) and 3b (collect.py) only as the
+graph allows.
 
-Phase 1 proof (1e): test names (file::class::method, path ignored) are
-identical before and after -- unittest on 3.11/3.12/3.13 and pytest, 1507
-each, zero differences. Counts: pytest 3.11 1494 passed / 13 skipped,
-3.12 and 3.13 1470 / 37; unittest 1507 run, 13 / 37 / 37 skipped.
+Left for the report: the MarkLivBridge.java comment still names
+docs/minecraft-gui.md (changing mod source would mean a jar rebuild); the
+plugins listed in docs/project-structure.md are not in this repository;
+test_install_mod.py is in tests/core per the brief but tests tools/install_mod.py.
