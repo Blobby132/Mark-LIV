@@ -23,7 +23,7 @@ part-way, the next one starts here.
 |---|---|---|
 | 0a line endings | done | normalise line endings, no content change |
 | 0b pyproject | done | pyproject.toml and a lint test |
-| 0c defects and lint | | |
+| 0c defects and lint | done | a01fdec skills/__init__.py: an explicit public API |
 | 1 tests | | |
 | 2 docs | | |
 | 3 oversized files | | |
@@ -35,8 +35,12 @@ part-way, the next one starts here.
 The 1501 baseline tests must all still be collected and pass or skip as
 before. Tests this reorganisation adds are counted on top, listed here:
 
-- tests/test_lint.py: 1 (skips without pyflakes)
+- tests/test_lint.py: 2 (skip without pyflakes)
+- tests/test_minecraft_navigation.py: test_the_arithmetic_has_one_owner
+- tests/test_minecraft_tasks.py: SkillsPublicNamesTests, 3
+
+Expected after phase 0: 1507 collected (1501 + 6).
 
 ## Next
 
-Phase 0c: the defects, one commit each.
+Phase 1: tests into subfolders (1a-1e).
