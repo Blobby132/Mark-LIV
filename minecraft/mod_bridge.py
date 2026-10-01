@@ -61,8 +61,8 @@ import time
 from dataclasses import replace as _copy_with
 
 from minecraft.state import (
-    BlockRef, EXACT, EntityRef, ItemStack, NearbyBlock, WorldState,
-    empty_state,
+    BlockRef, EXACT, EntityRef, GuiSlot, GuiView, ItemStack, NearbyBlock,
+    WorldState, empty_state,
 )
 
 SCHEMA = "markliv.minecraft.state/4"
@@ -343,6 +343,11 @@ class ModBridgeStateSource:
             surface=_surface(payload.get("surface"), payload.get("schema")),
             notable_blocks=_blocks(payload.get("notable_blocks")),
             mouse_sensitivity=_number(payload.get("mouse_sensitivity")),
+            screen=_screen_kind(payload.get("screen")),
+            gui=_gui_view(payload.get("gui")),
+            slots=_gui_slots(payload.get("slots")),
+            carried=_carried(payload.get("carried")),
+            game_mode=_text(payload.get("game_mode")),
             on_ground=(payload["on_ground"]
                        if isinstance(payload.get("on_ground"), bool) else None),
             scan_radius=_integer((payload.get("scan") or {}).get("radius")
@@ -597,6 +602,54 @@ def _blocks(value):
         return None
     return tuple(b for b in (_terrain_block(v) for v in value)
                  if b is not None)
+
+
+def _screen_kind(value):
+    if not isinstance(value, dict):
+        return None
+    return _text(value.get("kind"))
+
+
+def _gui_view(value):
+    if not isinstance(value, dict):
+        return None
+    scale = _number(value.get("scale"))
+    size = _pair(value.get("window_px"))
+    cursor = _pair(value.get("cursor_px"))
+    if scale is None or size is None or cursor is None or scale <= 0:
+        return None
+    return GuiView(scale=scale, window_px=size, cursor_px=cursor)
+
+
+def _gui_slots(value):
+    """The slots of an open screen. One that is not the documented shape is
+    dropped -- a half-read slot is a click in the wrong place."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    out = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("i")
+        x, y = _number(entry.get("x")), _number(entry.get("y"))
+        if not isinstance(index, int) or isinstance(index, bool) \
+                or x is None or y is None:
+            continue
+        item = _short_name(entry.get("item"))
+        count = _integer(entry.get("count"))
+        out.append(GuiSlot(i=index, role=_text(entry.get("role")) or "other",
+                           x=x, y=y, item=item,
+                           count=(count or 0) if item else 0))
+    return tuple(out)
+
+
+def _carried(value):
+    if not isinstance(value, dict):
+        return None
+    name = _short_name(value.get("name"))
+    if name is None:
+        return None
+    return ItemStack(name=name, count=_integer(value.get("count")))
 
 
 def _entities(value):

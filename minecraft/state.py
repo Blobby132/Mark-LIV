@@ -160,6 +160,37 @@ class ItemStack:
 
 
 @dataclass(frozen=True)
+class GuiSlot:
+    """One slot of an open inventory-like screen, as the bridge reports it.
+
+    `i` is the slot index a click addresses; `x`, `y` its centre in window
+    pixels -- the same coordinates as the pointer -- and `role` what it is
+    for: craft_in, craft_out, inventory, hotbar, armor, offhand, other."""
+    i: int
+    role: str = "other"
+    x: float = 0.0
+    y: float = 0.0
+    item: str | None = None
+    count: int = 0
+
+    def as_dict(self) -> dict:
+        return {"i": self.i, "role": self.role, "x": self.x, "y": self.y,
+                "item": self.item, "count": self.count}
+
+
+@dataclass(frozen=True)
+class GuiView:
+    """Where the pointer is, in window pixels, and how big a GUI unit is."""
+    scale: float
+    window_px: tuple                       # (width, height)
+    cursor_px: tuple                       # (x, y)
+
+    def as_dict(self) -> dict:
+        return {"scale": self.scale, "window_px": list(self.window_px),
+                "cursor_px": list(self.cursor_px)}
+
+
+@dataclass(frozen=True)
 class WorldState:
     """Everything the agent believes about the game right now.
 
@@ -201,6 +232,13 @@ class WorldState:
     notable_blocks: tuple | None = None    # tuple[NearbyBlock, ...]
     scan_radius: int | None = None         # how far the scan reached
 
+    # An open screen, from the bridge only (see docs/minecraft-gui.md).
+    screen: str | None = None              # inventory / crafting_table / ...
+    gui: GuiView | None = None
+    slots: tuple | None = None             # tuple[GuiSlot, ...]
+    carried: ItemStack | None = None       # the stack on the pointer
+    game_mode: str | None = None           # survival / creative / ...
+
     # Provenance — never None, because "where did this come from" always has
     # an answer even when every value is missing.
     source: str = "none"
@@ -219,7 +257,8 @@ class WorldState:
                "target_entity", "dimension", "biome", "weather",
                "time_of_day", "light_level", "nearby_entities",
                "surface", "notable_blocks", "scan_radius",
-               "mouse_sensitivity", "on_ground")
+               "mouse_sensitivity", "on_ground",
+               "screen", "gui", "slots", "carried", "game_mode")
 
     def __post_init__(self):
         """Normalise provenance, then freeze it.

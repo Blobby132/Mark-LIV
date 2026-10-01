@@ -7,6 +7,7 @@
   "authors": ["MARK LIV"],
   "license": "MIT",
   "environment": "client",
+  "accessWidener": "markliv-bridge.accesswidener",
   "entrypoints": {
     "client": ["com.markliv.bridge.MarkLivBridge"]
   },

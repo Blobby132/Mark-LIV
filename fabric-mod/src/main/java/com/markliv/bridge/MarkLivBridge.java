@@ -311,6 +311,7 @@ public class MarkLivBridge implements ClientModInitializer {
         out.raw("target_block", targetBlockJson(client));
         out.raw("target_entity", targetEntityJson(client));
         out.raw("nearby_entities", nearbyJson(client, player));
+        writeScreen(out, client);
 
         out.raw("scan", Json.object(
                 "radius", Integer.toString(SCAN_RADIUS),
@@ -605,6 +606,91 @@ public class MarkLivBridge implements ClientModInitializer {
         } catch (Throwable ignored) {
             return "other";
         }
+    }
+
+    /**
+     * The open screen, and for an inventory-like screen its slots and the
+     * pointer -- what a click inside it would land on. Additive fields, sent
+     * only while a screen is open; see docs/minecraft-gui.md. The game mode
+     * is sent always, because "never click in creative" needs it.
+     */
+    private void writeScreen(Json out, Minecraft client) {
+        if (client.gameMode != null) {
+            var mode = client.gameMode.getPlayerMode();
+            if (mode != null) {
+                out.raw("game_mode", Json.quote(mode.getName()));
+            }
+        }
+        var screen = client.gui.screen();
+        if (screen == null) {
+            return;
+        }
+        out.raw("screen", Gui.screen(screenKind(screen)));
+        if (!(screen instanceof net.minecraft.client.gui.screens.inventory
+                .AbstractContainerScreen<?> container)) {
+            return;
+        }
+        var window = client.getWindow();
+        double scale = window.getGuiScaledWidth() > 0
+                ? (double) window.getScreenWidth() / window.getGuiScaledWidth()
+                : window.getGuiScale();
+        out.raw("gui", Gui.view(scale, window.getScreenWidth(),
+                window.getScreenHeight(), client.mouseHandler.xpos(),
+                client.mouseHandler.ypos()));
+        List<String> slots = new ArrayList<>();
+        for (net.minecraft.world.inventory.Slot slot
+                : container.getMenu().slots) {
+            if (slots.size() >= Gui.MAX_SLOTS) {
+                break;
+            }
+            ItemStack stack = slot.getItem();
+            String item = stack == null || stack.isEmpty() ? null
+                    : BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+            boolean mine = slot.container instanceof Inventory;
+            slots.add(Gui.slot(slot.index,
+                    Gui.role(slot instanceof net.minecraft.world.inventory
+                                    .ResultSlot,
+                             slot.container instanceof net.minecraft.world
+                                    .inventory.CraftingContainer,
+                             mine, mine ? slot.getContainerSlot() : -1),
+                    Gui.centre(container.leftPos, slot.x, scale),
+                    Gui.centre(container.topPos, slot.y, scale),
+                    item, item == null ? 0 : stack.getCount()));
+        }
+        out.raw("slots", Json.array(slots.toArray(new String[0])));
+        ItemStack carried = container.getMenu().getCarried();
+        out.raw("carried", carried == null || carried.isEmpty() ? "null"
+                : Gui.carried(BuiltInRegistries.ITEM
+                        .getKey(carried.getItem()).toString(),
+                        carried.getCount()));
+    }
+
+    /** Which kind of screen, by class: only two of these are ever clicked. */
+    private static String screenKind(Object screen) {
+        if (screen instanceof net.minecraft.client.gui.screens.inventory
+                .CreativeModeInventoryScreen) {
+            return "other";
+        }
+        if (screen instanceof net.minecraft.client.gui.screens.inventory
+                .InventoryScreen) {
+            return "inventory";
+        }
+        if (screen instanceof net.minecraft.client.gui.screens.inventory
+                .CraftingScreen) {
+            return "crafting_table";
+        }
+        if (screen instanceof net.minecraft.client.gui.screens.inventory
+                .AbstractFurnaceScreen<?>) {
+            return "furnace";
+        }
+        if (screen instanceof net.minecraft.client.gui.screens.inventory
+                .ContainerScreen) {
+            return "chest";
+        }
+        if (screen instanceof net.minecraft.client.gui.screens.PauseScreen) {
+            return "pause";
+        }
+        return "other";
     }
 
     private String inventoryJson(Inventory inventory) {

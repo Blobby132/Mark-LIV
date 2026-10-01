@@ -1,0 +1,5 @@
+accessWidener v2 named
+# Where a container screen is drawn, so slot positions can be reported in
+# window pixels. Read only: nothing is written through these.
+accessible field net/minecraft/client/gui/screens/inventory/AbstractContainerScreen leftPos I
+accessible field net/minecraft/client/gui/screens/inventory/AbstractContainerScreen topPos I

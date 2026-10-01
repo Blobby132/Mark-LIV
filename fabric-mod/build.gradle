@@ -24,6 +24,11 @@ dependencies {
     // and one fewer version to keep in step with the game.
 }
 
+loom {
+    // AbstractContainerScreen.leftPos/topPos, to report slot positions.
+    accessWidenerPath = file("src/main/resources/markliv-bridge.accesswidener")
+}
+
 processResources {
     inputs.property 'version', project.version
     filesMatching('fabric.mod.json') {
