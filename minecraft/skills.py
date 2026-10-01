@@ -391,8 +391,77 @@ class FindBlock:
         )
 
 
+class _HoldsTheRightTool:
+    """Hold the best hotbar tool before each swing, and put the slot back
+    once the skill has finished -- the way EatFood._restore does.
+
+    Nothing chose a tool before: a log was chopped with whatever was held,
+    and stone was held at for ten seconds by hand, breaking it eventually
+    and dropping nothing. A skill using this implements `_plan` instead of
+    `plan`, and asks `_tool_for` before each mine step."""
+
+    MAX_TOOL_SELECTS = 2
+    _tool_slot_before = None      # the slot to go back to, once we switched
+    _tool_restoring = False
+    _plan_done = False
+    _tool_tries = None            # {(block, slot): selects asked for}
+
+    def plan(self, state, step_index: int, history: tuple):
+        if self._plan_done:
+            return None
+        step = self._plan(state, step_index, history)
+        if step is None:
+            return self._finish(state)
+        return step
+
+    def _finish(self, state):
+        """The skill is done: put the slot back once, then nothing more.
+        Its own plan is not asked again -- it might start over."""
+        self._plan_done = True
+        if self._tool_restoring or self._tool_slot_before is None \
+                or getattr(state, "selected_slot", None) \
+                == self._tool_slot_before:
+            return None
+        self._tool_restoring = True
+        slot = self._tool_slot_before + 1
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot),
+                    note=f"back to hotbar slot {slot}")
+
+    def _tool_for(self, state, block):
+        """None when ready to swing; a hotbar_select Step to take up the
+        better tool first; or a sentence: why not to swing at all."""
+        choice = mining_mod.best_hotbar_tool(state, block)
+        if choice.refusal:
+            return choice.refusal
+        if choice.slot is None:
+            return None
+        item = " ".join((choice.item or "tool").split("_"))
+        tries = self._tool_tries if self._tool_tries is not None else {}
+        self._tool_tries = tries
+        key = (choice.block, choice.slot)
+        if tries.get(key, 0) >= self.MAX_TOOL_SELECTS:
+            current = getattr(state, "selected_slot", None)
+            shown = "?" if current is None else current + 1
+            return (f"I selected hotbar slot {choice.slot + 1} for the {item} "
+                    f"{tries[key]} times and the game still shows slot "
+                    f"{shown}; I stopped rather than mine {choice.block} "
+                    f"with the wrong tool.")
+        tries[key] = tries.get(key, 0) + 1
+        if self._tool_slot_before is None \
+                and getattr(state, "selected_slot", None) is not None:
+            self._tool_slot_before = state.selected_slot
+        slot = choice.slot + 1
+        note = f"hold the {item} for the {choice.block} (hotbar slot {slot})"
+        if choice.better_in_inventory:
+            note += (f"; a {' '.join(choice.better_in_inventory.split('_'))} "
+                     f"in the main inventory would be faster")
+        return Step(action="hotbar_select", params={"slot": slot},
+                    expectation=verify_mod.holding_slot(slot), note=note)
+
+
 @dataclass
-class BreakBlock:
+class BreakBlock(_HoldsTheRightTool):
     """Attack whatever is under the crosshair until it is gone.
 
     THE POINT OF THIS SKILL
@@ -433,7 +502,7 @@ class BreakBlock:
     _reason: str = ""
     _broken: bool = False
 
-    def plan(self, state, step_index: int, history: tuple):
+    def _plan(self, state, step_index: int, history: tuple):
         block = state.target_block
         name = getattr(block, "name", None) if block else None
 
@@ -471,9 +540,18 @@ class BreakBlock:
                             f"the wrong block")
             return None
 
-        if step_index >= self.swings:
+        # Swings, not steps: taking up a tool is a step and not a swing.
+        if len(mines) >= self.swings:
             self._reason = "ran out of swings"
             return None
+
+        if name:
+            ready = self._tool_for(state, name)
+            if isinstance(ready, str):
+                self._reason = ready
+                return None
+            if ready is not None:
+                return ready
 
         return Step(
             action="mine",
@@ -1313,7 +1391,7 @@ def block_label(block) -> str:
 
 
 @dataclass
-class CollectLogs:
+class CollectLogs(_HoldsTheRightTool):
     """Find a tree, get to it, mine it, repeat. The first genuinely useful goal.
 
     HOW IT LOOKS FOR A TREE DEPENDS ON WHAT IT CAN SEE
@@ -1475,7 +1553,7 @@ class CollectLogs:
 
     # ── planning ─────────────────────────────────────────────────────────
 
-    def plan(self, state, step_index: int, history: tuple):
+    def _plan(self, state, step_index: int, history: tuple):
         local = nav.LocalMap.from_state(state)
         crosshair_readable = state.confidence_of("target_block") != UNKNOWN
 
@@ -1744,6 +1822,12 @@ class CollectLogs:
             return None
         if not aiming_mod.SHARED.within_reach(state.position, position):
             return None
+        # The tool first, before anything below counts this leaf as cleared.
+        ready = self._tool_for(state, name)
+        if isinstance(ready, str):
+            return None
+        if ready is not None:
+            return ready
         # In the way means NEARER than the log. A leaf behind it would mean
         # the aim is off, and breaking it would fix nothing.
         try:
@@ -1801,7 +1885,14 @@ class CollectLogs:
         return nav_target(position, target.name)
 
     def _mine(self, state, target):
-        """Hold attack on a block the crosshair is CONFIRMED to be on."""
+        """Hold attack on a block the crosshair is CONFIRMED to be on --
+        with the best hotbar tool for it in hand first."""
+        ready = self._tool_for(state, target.name)
+        if isinstance(ready, str):
+            self._walk_failed = ready
+            return None
+        if ready is not None:
+            return ready
         self._last_target = target.name
         estimate = mining_mod.estimate_break_duration(target.name, state=state)
         self._last_estimate = estimate
@@ -1989,6 +2080,9 @@ class CollectLogs:
         done = self._done
 
         if name in LOG_BLOCKS:
+            ready = self._tool_for(state, name)
+            if isinstance(ready, Step):
+                return ready
             self._last_target = name
             # Judged on the block, never the bag -- see _mine.
             check = verify_mod.block_broken(name)
@@ -2379,7 +2473,7 @@ class EatFood:
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
-class AimAtBlock:
+class AimAtBlock(_HoldsTheRightTool):
     """Put the crosshair on one exact block -- and, as `mine_block`, break it.
 
     THE CROSSHAIR IS THE PROOF, NOT THE ANGLE
@@ -2443,7 +2537,7 @@ class AimAtBlock:
         self._succeeded = succeeded
         return None
 
-    def plan(self, state, step_index: int, history: tuple):
+    def _plan(self, state, step_index: int, history: tuple):
         target = self.target
 
         # The verdict of the mine step just taken, if that is what it was.
@@ -2493,6 +2587,11 @@ class AimAtBlock:
                 return self._stop(
                     f"The {name} at {target} is under the crosshair but out "
                     f"of reach. Walk closer first (navigate_to).")
+            ready = self._tool_for(state, name)
+            if isinstance(ready, str):
+                return self._stop(ready)
+            if ready is not None:
+                return ready
             estimate = mining_mod.estimate_break_duration(name, state=state)
             if not estimate.breakable:
                 return self._stop(f"The {name} at {target} cannot be broken "

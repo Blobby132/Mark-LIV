@@ -276,6 +276,125 @@ def estimate_break_duration(block, held_item=None, state=None,
                          known_block=known, notes=tuple(notes))
 
 
+# ── Which tool to hold ───────────────────────────────────────────────────────
+
+HOTBAR_SLOTS = range(9)
+
+SWITCH_WORTH_S = 0.5
+"""Seconds a tool must save before it is worth a hotbar step of its own.
+Leaves break in a third of a second by hand; switching to a hoe for each
+one and back to the axe for the log would cost more than it saves."""
+
+_TIER_WORDS = {0: "wooden", 1: "stone", 2: "iron", 3: "diamond", 4: "netherite"}
+
+
+@dataclass(frozen=True)
+class ToolChoice:
+    """What to hold for one block, chosen from the hotbar.
+
+    `slot` is the hotbar slot (0-8) to select, or None to keep what is held.
+    `better_in_inventory` names an item in the MAIN inventory that would do
+    better than anything in the hotbar -- it cannot be reached without the
+    inventory screen."""
+    block: str
+    slot: int | None
+    item: str | None
+    harvests: bool
+    estimate: "BreakEstimate | None" = None
+    better_in_inventory: str | None = None
+    inventory_known: bool = True
+
+    @property
+    def refusal(self) -> str | None:
+        """Why not to swing at all, or None. Only for a block that drops
+        nothing with anything in the hotbar -- the swing would break it for
+        nothing, or not at all in the time allowed."""
+        if self.harvests or not self.inventory_known:
+            return None
+        held = " ".join((self.item or "bare hands").split("_"))
+        text = (f"Nothing in the hotbar can harvest {self.block}: it needs "
+                f"{tool_needed(self.block)}, and breaking it with {held} "
+                f"drops nothing. I did not swing.")
+        if self.better_in_inventory:
+            text += (f" There is a {' '.join(self.better_in_inventory.split('_'))}"
+                     f" in your inventory, but not in the hotbar -- move it "
+                     f"there and ask again.")
+        return text
+
+
+def tool_needed(block) -> str:
+    """In words: what harvests `block`."""
+    name = _short(block)
+    tier = _TIER_NEEDED.get(name, 0)
+    if tier <= 0:
+        return "a pickaxe"
+    return f"a {_TIER_WORDS.get(tier, 'better')} pickaxe or better"
+
+
+def best_hotbar_tool(state, block) -> ToolChoice:
+    """The hotbar item that harvests `block` (it drops) and breaks it
+    fastest, preferring what is already held on a tie or a trivial saving.
+
+    From the hotbar only: anything else is behind the inventory screen. An
+    unreadable inventory changes nothing -- no switch, and no refusal on a
+    guess."""
+    name = _short(getattr(block, "name", block))
+    inventory = getattr(state, "inventory", None)
+    current = getattr(state, "selected_slot", None)
+    held = getattr(state, "held_item", None)
+    if inventory is None:
+        held_name = _short(getattr(held, "name", "")) or None
+        return ToolChoice(block=name, slot=None, item=held_name,
+                          harvests=can_harvest(name, tool_from_item(held_name)),
+                          inventory_known=False)
+
+    by_slot = {}
+    for stack in inventory:
+        slot = getattr(stack, "slot", None)
+        if slot is not None and (getattr(stack, "count", 0) or 0) > 0:
+            by_slot[slot] = _short(stack.name)
+
+    def judge(item):
+        estimate = estimate_break_duration(name, held_item=item or "",
+                                           state=state)
+        seconds = estimate.seconds if estimate.seconds is not None \
+            else float("inf")
+        return estimate.drops, seconds, estimate
+
+    hotbar = [(slot, by_slot.get(slot)) for slot in HOTBAR_SLOTS]
+    if current is None or current not in HOTBAR_SLOTS:
+        current = None
+    now = judge(by_slot.get(current) if current is not None else None)
+
+    best_slot, best = current, now
+    for slot, item in hotbar:
+        verdict = judge(item)
+        better = (verdict[0] and not best[0]) or (
+            verdict[0] == best[0]
+            and verdict[1] < best[1] - SWITCH_WORTH_S)
+        if better:
+            best_slot, best = slot, verdict
+
+    # The main inventory: worth naming when it beats the hotbar's best.
+    stored = None
+    for slot, item in sorted(by_slot.items()):
+        if slot in HOTBAR_SLOTS:
+            continue
+        verdict = judge(item)
+        if (verdict[0] and not best[0]) or (
+                verdict[0] == best[0]
+                and verdict[1] < best[1] - SWITCH_WORTH_S):
+            if stored is None or verdict[1] < stored[1][1]:
+                stored = (item, verdict)
+
+    switch = best_slot is not None and best_slot != current
+    chosen = by_slot.get(best_slot) if best_slot is not None else None
+    return ToolChoice(block=name, slot=best_slot if switch else None,
+                      item=chosen, harvests=bool(best[0]),
+                      estimate=best[2],
+                      better_in_inventory=stored[0] if stored else None)
+
+
 # ── Is the crosshair on the RIGHT block? ─────────────────────────────────────
 
 def crosshair_on(state, position, name: str | None = None) -> bool:
