@@ -174,7 +174,8 @@ class ConsentWordingTests(unittest.TestCase):
         self.assertIn("only when you name it", GRANT_SUMMARY)
         detail = mc_actions._mc_guard({"action": "start_session"})["detail"]
         self.assertIn("only when you name the item", detail)
-        readme = (ROOT / "readme.md").read_text(encoding="utf-8")
+        readme = (ROOT / "docs" / "minecraft" / "README.md").read_text(
+            encoding="utf-8")
         start = readme.index("**What it deliberately cannot do.**")
         self.assertIn("expect_item", readme[start:start + 3000])
         self.assertIn("use_dangerous_items_unasked", skills.NOT_YET_POSSIBLE)

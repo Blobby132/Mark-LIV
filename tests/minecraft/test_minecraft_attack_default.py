@@ -101,7 +101,8 @@ class ConsentWordingTests(unittest.TestCase):
         self.assertIn("never attack a player", detail)
 
     def test_the_readme_and_the_tool_say_so(self):
-        readme = (ROOT / "readme.md").read_text(encoding="utf-8")
+        readme = (ROOT / "docs" / "minecraft" / "README.md").read_text(
+            encoding="utf-8")
         start = readme.index("**What it deliberately cannot do.**")
         self.assertIn("Hit a player", readme[start:start + 2000])
         from actions import minecraft as mc_actions

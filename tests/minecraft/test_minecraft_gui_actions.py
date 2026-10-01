@@ -184,7 +184,7 @@ class ConsentTests(unittest.TestCase):
         self.assertIn("creative", detail)
 
     def test_the_readme_no_longer_says_it_cannot_click(self):
-        readme = (REPO_ROOT / "readme.md") \
+        readme = (REPO_ROOT / "docs" / "minecraft" / "README.md") \
             .read_text(encoding="utf-8")
         self.assertNotIn("Click inside the inventory screen, so it cannot "
                          "craft yet", readme)

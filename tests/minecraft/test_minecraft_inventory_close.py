@@ -91,7 +91,8 @@ class WordingTests(unittest.TestCase):
     def test_the_model_and_the_user_are_told(self):
         from actions import minecraft as mc_actions
         self.assertIn("pause menu", mc_actions.TOOL["description"])
-        readme = (ROOT / "readme.md").read_text(encoding="utf-8")
+        readme = (ROOT / "docs" / "minecraft" / "README.md").read_text(
+            encoding="utf-8")
         start = readme.index("**What it deliberately cannot do.**")
         self.assertIn("Press ESC with no screen open",
                       readme[start:start + 3000])
