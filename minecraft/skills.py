@@ -393,17 +393,49 @@ class _HoldsTheRightTool:
     Nothing chose a tool before: a log was chopped with whatever was held,
     and stone was held at for ten seconds by hand, breaking it eventually
     and dropping nothing. A skill using this implements `_plan` instead of
-    `plan`, and asks `_tool_for` before each mine step."""
+    `plan`, and asks `_tool_for` before each mine step.
+
+    A tool only in the main inventory is fetched into the hotbar first
+    (HotbarFetch), once per task: when nothing in the hotbar harvests the
+    block, or when it saves FETCH_WORTH_S a block. While the inventory is
+    open the fetch keeps its own, stricter, danger watch and the runner's
+    stands down -- see `watch_hostiles`."""
 
     MAX_TOOL_SELECTS = 2
     _tool_slot_before = None      # the slot to go back to, once we switched
     _tool_restoring = False
     _plan_done = False
     _tool_tries = None            # {(block, slot): selects asked for}
+    _fetch = None                 # the trip into the inventory, once made
+    _fetch_note = ""              # why it was not made, or failed
+
+    @property
+    def watch_hostiles(self) -> bool:
+        return not (self._fetch is not None and self._fetch.in_screen)
+
+    @property
+    def watch_health(self) -> bool:
+        return not (self._fetch is not None and self._fetch.in_screen)
+
+    def _with_fetch(self, text: str) -> str:
+        """`text`, after what the trip into the inventory did, if it moved
+        anything -- the user's hotbar changed and should hear so."""
+        if self._fetch is not None and self._fetch.landed:
+            return f"{self._fetch.done_reason}; {text}"
+        return text
 
     def plan(self, state, step_index: int, history: tuple):
         if self._plan_done:
             return None
+        if self._fetch is not None and not self._fetch.finished:
+            step = self._fetch.plan(state, step_index, history)
+            if step is not None:
+                return step
+            if self._fetch.failed:
+                self._fetch_note = (
+                    f"I tried to move the "
+                    f"{' '.join(self._fetch.item.split('_'))} into the hotbar "
+                    f"and stopped: {self._fetch.done_reason}.")
         step = self._plan(state, step_index, history)
         if step is None:
             return self._finish(state)
@@ -424,11 +456,15 @@ class _HoldsTheRightTool:
                     note=f"back to hotbar slot {slot}")
 
     def _tool_for(self, state, block):
-        """None when ready to swing; a hotbar_select Step to take up the
-        better tool first; or a sentence: why not to swing at all."""
+        """None when ready to swing; a Step to take up the better tool first
+        (select it, or begin fetching it from the main inventory); or a
+        sentence: why not to swing at all."""
         choice = mining_mod.best_hotbar_tool(state, block)
+        trip = self._fetch_for(state, choice)
+        if trip is not None:
+            return trip
         if choice.refusal:
-            return choice.refusal
+            return " ".join(t for t in (choice.refusal, self._fetch_note) if t)
         if choice.slot is None:
             return None
         item = " ".join((choice.item or "tool").split("_"))
@@ -453,6 +489,26 @@ class _HoldsTheRightTool:
                      f"in the main inventory would be faster")
         return Step(action="hotbar_select", params={"slot": slot},
                     expectation=verify_mod.holding_slot(slot), note=note)
+
+    def _fetch_for(self, state, choice):
+        """The first step of a trip to fetch the better tool, or None: none
+        is better, the hotbar's is nearly as good, a trip was already made,
+        or it cannot be (then `_fetch_note` says why)."""
+        stored = choice.better_in_inventory
+        if not stored or self._fetch is not None:
+            return None
+        if choice.harvests:
+            now = getattr(choice.estimate, "seconds", None)
+            if now is None or choice.stored_seconds is None \
+                    or now - choice.stored_seconds < FETCH_WORTH_S:
+                return None
+        self._fetch = HotbarFetch(item=stored,
+                                  hotbar=hotbar_slot_to_fill(state))
+        step = self._fetch.plan(state)
+        if step is None:
+            self._fetch_note = (f"I could not fetch it: "
+                                f"{self._fetch.done_reason}.")
+        return step
 
 
 @dataclass
@@ -483,7 +539,7 @@ class BreakBlock(_HoldsTheRightTool):
 
     @property
     def done_reason(self) -> str:
-        return self._reason
+        return self._with_fetch(self._reason)
 
     @property
     def failed(self) -> bool:
@@ -1538,8 +1594,8 @@ class _Gatherer(_HoldsTheRightTool):
         if trouble and self._in_the_way and self._in_the_way not in trouble:
             trouble = f"{trouble} Before that: {self._in_the_way}"
         if trouble and self.failed:
-            return f"{self._progress_text()}{how}. {trouble}"
-        return f"{self._progress_text()}{how}"
+            return self._with_fetch(f"{self._progress_text()}{how}. {trouble}")
+        return self._with_fetch(f"{self._progress_text()}{how}")
 
     def _progress_text(self) -> str:
         what = self._noun(True)
@@ -2621,10 +2677,12 @@ def _interactive(name) -> bool:
 class EatFood:
     """Eat from the hotbar until not hungry, or `count` items.
 
-    THE HOTBAR IS ALL IT CAN REACH
-        Choosing a hotbar slot is a key press. Anything in the rest of the
-        inventory needs the inventory screen and mouse clicks on it, which
-        this does not do; it says so and names the food it saw there.
+    FOOD IN THE MAIN INVENTORY IS FETCHED FIRST
+        Choosing a hotbar slot is a key press; food anywhere else needs the
+        inventory screen. With no food on the hotbar it moves the best food
+        from the main inventory into it (HotbarFetch: one number-key swap,
+        through the click gate) and eats that. Without a mod that reports
+        screens, or in creative, it names the food and asks instead.
 
     RIGHT CLICK IS NOT ONLY EATING
         With a chest, door or furnace under the crosshair, holding right
@@ -2648,8 +2706,15 @@ class EatFood:
     _restoring: bool = False
     _reason: str = ""
     _blind: bool = False
+    _fetch: object = None
 
     MAX_LOOKS = 3
+
+    @property
+    def watch_hostiles(self) -> bool:
+        """Handed to the fetch's own, stricter watch while the inventory is
+        open -- it closes the screen before stopping; the runner cannot."""
+        return not (self._fetch is not None and self._fetch.in_screen)
 
     @property
     def goal(self) -> str:
@@ -2662,6 +2727,8 @@ class EatFood:
 
     @property
     def done_reason(self) -> str:
+        if self._fetch is not None and self._fetch.landed:
+            return f"{self._fetch.done_reason}; {self._reason}"
         return self._reason
 
     _full: bool = False
@@ -2681,11 +2748,24 @@ class EatFood:
         self._failed_bites = len(eats) - self._eaten
         if self._previous_slot is None:
             self._previous_slot = state.selected_slot
+        if self._fetch is not None and not self._fetch.finished:
+            step = self._fetch.plan(state, step_index, history)
+            if step is not None:
+                return step
 
         hunger = state.hunger
         finished = (self._eaten >= self.count or hunger >= MAX_HUNGER
                     or self._failed_bites >= 2)
         food = None if finished else self._choose(state)
+        if food is None and not finished and self._fetch is None:
+            stored = self._choose(state, slots=range(9, 36))
+            if stored is not None:
+                self._fetch = HotbarFetch(item=stored[1],
+                                          hotbar=hotbar_slot_to_fill(state),
+                                          hurt_is_expected=True)
+                step = self._fetch.plan(state, step_index, history)
+                if step is not None:
+                    return step
         if food is None:
             if not finished:
                 self._reason = self._no_food(state)
@@ -2723,14 +2803,15 @@ class EatFood:
                     expectation=verify_mod.ate(name),
                     note=(f"eat the {name} (hunger {hunger:.0f}/20)"))
 
-    def _choose(self, state):
-        """(slot 0-8, name) of the food to eat, or None.
+    def _choose(self, state, slots=range(9)):
+        """(slot, name) of the food to eat from `slots` -- the hotbar unless
+        told otherwise -- or None.
 
         The most filling one that does not overshoot what is missing, or if
         every one would, the smallest -- a steak at 18 of 20 is mostly
         wasted, a cookie is not."""
         hotbar = [(s.slot, s.name) for s in (state.inventory or ())
-                  if s.slot is not None and 0 <= s.slot <= 8
+                  if s.slot is not None and s.slot in slots
                   and s.name in FOODS and (s.count or 0) > 0]
         if not hotbar:
             return None
@@ -2753,11 +2834,12 @@ class EatFood:
                     f"which I will not eat on my own — "
                     f"{UNSAFE_FOODS[risky[0]]}")
         if elsewhere:
+            why = self._fetch.done_reason if self._fetch is not None \
+                else "no reason"
             return (f"there is no food on the hotbar. There is "
                     f"{', '.join(' '.join(n.split('_')) for n in elsewhere)} "
-                    f"in the rest of the inventory — move it to the hotbar "
-                    f"and I can eat it; I cannot click in the inventory "
-                    f"screen")
+                    f"in the rest of the inventory, and I could not move it "
+                    f"to the hotbar: {why}. Move it there and I can eat it")
         return "there is no food anywhere in the inventory"
 
     def _in_front(self, state) -> str:
@@ -2811,6 +2893,20 @@ def _carried_of(state):
 
 def _words(name) -> str:
     return " ".join(str(name).split("_"))
+
+
+def _learn_pointer(pointer, last) -> None:
+    """Measure the pointer's gain from the move just made, if it was one."""
+    if last is None or last.step.get("action") != "gui_point":
+        return
+    try:
+        before = last.state_before["gui"]["cursor_px"]
+        after = last.state_after["gui"]["cursor_px"]
+        params = last.step.get("params") or {}
+        pointer.observe((params.get("dx", 0), params.get("dy", 0)),
+                        tuple(before), tuple(after))
+    except (KeyError, TypeError):
+        pass
 
 
 @dataclass
@@ -3080,17 +3176,7 @@ class CraftItem:
     # ── the clicks ───────────────────────────────────────────────────────
 
     def _learn(self, last):
-        """Measure the pointer's gain from the move just made."""
-        if last is None or last.step.get("action") != "gui_point":
-            return
-        try:
-            before = last.state_before["gui"]["cursor_px"]
-            after = last.state_after["gui"]["cursor_px"]
-            params = last.step.get("params") or {}
-            self._pointer.observe((params.get("dx", 0), params.get("dy", 0)),
-                                  tuple(before), tuple(after))
-        except (KeyError, TypeError):
-            pass
+        _learn_pointer(self._pointer, last)
 
     def _craft(self, state, last):
         if state.screen not in gui_mod.ALLOWED_SCREENS:
@@ -3304,6 +3390,308 @@ class CraftItem:
                         f"batch{'es' if batches != 1 else ''})"}
 
 
+# ── Into the hotbar ──────────────────────────────────────────────────────────
+
+FETCH_WORTH_S = 1.5
+"""Seconds a tool in the main inventory must save on each block before a
+mining task goes into the inventory for it -- about what the trip costs:
+open, two or three pointer moves, the swap, close. A tool the hotbar has no
+substitute for (stone, and nothing in the hotbar that drops it) is always
+worth it."""
+
+_KEEP_AT_HAND = frozenset({"bow", "crossbow", "shield", "trident", "torch",
+                           "flint_and_steel", "fishing_rod", "ender_pearl",
+                           "totem_of_undying", "shears"})
+
+
+def _worth_keeping(name) -> bool:
+    """A tool, a weapon, food, a bucket or the like: what a player keeps on
+    the hotbar on purpose. A stack of blocks is not."""
+    name = str(name or "").split(":")[-1]
+    return (mining_mod.tool_from_item(name).kind is not None
+            or name in FOODS or name in UNSAFE_FOODS
+            or name in _KEEP_AT_HAND or name.endswith("_bucket"))
+
+
+def hotbar_slot_to_fill(state) -> int:
+    """The hotbar slot (0-8) a fetched stack goes into: the first empty
+    one; else the last holding nothing worth keeping at hand; else the last
+    that is not the one held. Whatever was there is swapped into the slot
+    the fetched stack came from -- nothing is dropped."""
+    held = getattr(state, "selected_slot", None)
+    by_slot = {s.slot: s.name for s in (getattr(state, "inventory", None) or ())
+               if s.slot is not None and 0 <= s.slot <= 8
+               and (s.count or 0) > 0}
+    for slot in range(9):
+        if slot not in by_slot:
+            return slot
+    for slot in range(8, -1, -1):
+        if slot != held and not _worth_keeping(by_slot[slot]):
+            return slot
+    return 8 if held != 8 else 7
+
+
+@dataclass
+class HotbarFetch:
+    """Bring one stack from the main inventory into the hotbar, the way a
+    player does: open the inventory, put the pointer on the stack, press the
+    hotbar slot's number key -- the game swaps the two -- and close it.
+
+    Not a task of its own: eat_food and the mining tasks run it when what
+    they need is in the main inventory, and go on once it is done. One
+    swap, never a stack on the pointer, so nothing can be dropped. The swap
+    passes the controller's click gate (minecraft/gui.py) like every click,
+    and is checked against the slots the game reports, then against the
+    inventory once the screen is shut.
+
+    While the screen is open it keeps craft_item's watch -- a hostile within
+    8 blocks or any health lost closes the screen and stops it -- and its
+    owner hands it the runner's watch for that time (`in_screen`), because
+    the runner would stop the task with the screen left open. With
+    `hurt_is_expected` (eating while starving loses health on its own) a
+    trip stopped by health alone, with no hostile near, is made once more.
+    """
+
+    item: str = ""
+    hotbar: int = 0                  # 0-8
+    hurt_is_expected: bool = False
+
+    _phase: str = "start"            # start, opening, point, closing, done
+    _reason: str = ""
+    _landed: bool = False
+    _pointer: object = field(default_factory=gui_mod.Pointer)
+    _peak: float | None = None
+    _open_tries: int = 0
+    _close_tries: int = 0
+    _still: int = 0
+    _swapped: bool = False
+    _again: bool = False
+    _retried: bool = False
+    _source: int | None = None       # the menu slot the stack is taken from
+    _displaced: str | None = None
+
+    @property
+    def in_screen(self) -> bool:
+        """From the step that opens the inventory until it is seen shut."""
+        return self._phase in ("opening", "point", "closing")
+
+    @property
+    def finished(self) -> bool:
+        return self._phase == "done"
+
+    @property
+    def landed(self) -> bool:
+        return self.finished and self._landed
+
+    @property
+    def failed(self) -> bool:
+        return self.finished and not self._landed
+
+    @property
+    def done_reason(self) -> str:
+        return self._reason
+
+    def plan(self, state, step_index: int = 0, history: tuple = ()):
+        last = history[-1] if history else None
+        _learn_pointer(self._pointer, last)
+        if self._phase == "done":
+            return None
+        if self._phase == "closing":
+            return self._closing(state)
+        health = getattr(state, "health", None)
+        if isinstance(health, (int, float)) and (
+                self._peak is None or health > self._peak):
+            self._peak = float(health)
+        if self._phase == "start":
+            return self._start(state)
+        danger = gui_mod.danger_refusal(state, self._peak)
+        if danger:
+            mob = gui_mod.danger_refusal(state)
+            if mob is None and self.hurt_is_expected and not self._retried:
+                self._retried = self._again = True
+            return self._abort(state, danger)
+        if step_index >= MAX_TASK_STEPS - 2 and state.screen:
+            return self._abort(state, "I ran out of steps")
+        if self._phase == "opening":
+            if state.screen == "inventory":
+                self._phase = "point"
+            elif state.screen:
+                return self._abort(state, f"a {_words(state.screen)} screen "
+                                          f"opened, not the inventory")
+            elif self._open_tries >= 2:
+                return self._stop("the inventory would not open")
+            else:
+                return self._open_step()
+        return self._point(state, last)
+
+    def refusal(self, state) -> str | None:
+        """Why the trip cannot start, before anything is pressed."""
+        mode = getattr(state, "game_mode", None)
+        if mode is None:
+            return ("the bridge mod does not report the game's screens -- "
+                    "run install_mod.bat with Minecraft closed for a version "
+                    "that does")
+        if mode not in gui_mod.CLICKABLE_MODES:
+            return (f"the game is in {mode} mode, and I only click in screens "
+                    f"in survival or adventure")
+        if getattr(state, "screen", None):
+            return f"a {_words(state.screen)} screen is already open"
+        danger = gui_mod.danger_refusal(state)
+        if danger:
+            return f"I did not open the inventory: {danger}"
+        return None
+
+    def _start(self, state):
+        problem = self.refusal(state)
+        if problem:
+            return self._stop(problem)
+        self._phase = "opening"
+        return self._open_step()
+
+    def _open_step(self):
+        self._open_tries += 1
+        return Step(action="inventory", params={"state": "open"},
+                    expectation=verify_mod.screen_is("inventory"),
+                    note=f"open the inventory to move the {_words(self.item)} "
+                         f"into hotbar slot {self.hotbar + 1}")
+
+    def _stop(self, reason):
+        self._reason = reason
+        self._phase = "done"
+        return None
+
+    def _abort(self, state, reason):
+        self._reason = reason
+        self._landed = False
+        if not getattr(state, "screen", None):
+            return self._closed(state)
+        self._phase = "closing"
+        return self._closing(state)
+
+    def _closing(self, state):
+        if not getattr(state, "screen", None):
+            return self._closed(state)
+        if self._close_tries >= 2:
+            self._landed = False
+            self._again = False
+            return self._stop(f"{self._reason}; the inventory would not "
+                              f"close".lstrip("; "))
+        self._close_tries += 1
+        return Step(action="inventory", params={"state": "close"},
+                    expectation=verify_mod.screen_closed(),
+                    note="close the inventory")
+
+    def _closed(self, state):
+        """Shut: the verdict from the inventory itself -- or, after a trip
+        stopped only by expected damage, the second trip."""
+        if self._again:
+            self._again = False
+            self._phase = "start"
+            self._peak = None
+            self._open_tries = self._close_tries = self._still = 0
+            self._source = None
+            self._pointer.aim_at(None)
+            return self._start(state)
+        self._phase = "done"
+        if not self._landed:
+            return None
+        here = next((s for s in (state.inventory or ())
+                     if s.slot == self.hotbar and (s.count or 0) > 0), None)
+        if here is None or here.name != self.item:
+            self._landed = False
+            self._reason = (f"the swap looked right in the screen, but with it "
+                            f"shut hotbar slot {self.hotbar + 1} holds "
+                            f"{_words(here.name) if here else 'nothing'}")
+            return None
+        self._reason = (f"moved the {_words(self.item)} into hotbar slot "
+                        f"{self.hotbar + 1}")
+        if self._displaced:
+            self._reason += (f" (the {_words(self._displaced)} there went "
+                             f"where it came from)")
+        return None
+
+    def _point(self, state, last):
+        if state.screen != "inventory":
+            return self._abort(state, "the inventory closed under me")
+        if last is not None and last.step.get("action") == "gui_point":
+            if last.verification.get("status") == verify_mod.FAILED:
+                self._still += 1
+            else:
+                self._still = 0
+            if self._still >= 2:
+                return self._abort(state, "the pointer did not move when I "
+                                          "moved the mouse, twice")
+        if self._swapped:
+            self._swapped = False
+            if last is None or last.step.get("action") != "gui_swap":
+                return self._abort(state, "I lost track of the swap")
+            if last.verification.get("status") != verify_mod.SUCCESS:
+                why = (last.action_result.get("error")
+                       or last.verification.get("reason") or "no reason")
+                return self._abort(state, f"the swap did not do what it "
+                                          f"should: {why}")
+            self._landed = True
+            self._phase = "closing"
+            return self._closing(state)
+        slots = state.slots or ()
+        row = sorted((s for s in slots if s.role == "hotbar"),
+                     key=lambda s: s.i)
+        if len(row) != 9:
+            return self._abort(state, "the screen does not show the hotbar "
+                                      "where I expect it")
+        target = row[self.hotbar]
+        source = _slot_of(state, self._source) if self._source is not None \
+            else None
+        if source is None or source.item != self.item:
+            stacks = [s for s in slots if s.role == "inventory"
+                      and s.item == self.item and (s.count or 0) > 0]
+            if not stacks:
+                return self._abort(state, f"I cannot see the "
+                                          f"{_words(self.item)} in the "
+                                          f"inventory screen")
+            source = max(stacks, key=lambda s: (s.count, -s.i))
+            self._source = source.i
+            self._pointer.aim_at(source)
+        if not gui_mod.inside(state, source):
+            move = self._pointer.next_move(state, source)
+            if move is None:
+                return self._abort(state, (
+                    f"the pointer would not settle on the "
+                    f"{_words(self.item)} after {gui_mod.MAX_CORRECTIONS} "
+                    f"corrections"))
+            return Step(action="gui_point",
+                        params={"dx": move[0], "dy": move[1]},
+                        expectation=verify_mod.pointer_moved(),
+                        note=f"point at the {_words(self.item)}")
+        moved = (source.item, source.count)
+        was = (target.item, target.count) if target.item else None
+        source_i, target_i = source.i, target.i
+
+        def swapped(before, after):
+            there = _slot_of(after, target_i)
+            back = _slot_of(after, source_i)
+            now_there = (there.item, there.count) if there and there.item \
+                else None
+            now_back = (back.item, back.count) if back and back.item \
+                else None
+            if now_there == moved and now_back == was:
+                return True, (f"the {_words(moved[0])} is in hotbar slot "
+                              f"{self.hotbar + 1}.")
+            return False, (f"hotbar slot {self.hotbar + 1} holds "
+                           f"{now_there or 'nothing'} and the stack's old "
+                           f"slot holds {now_back or 'nothing'}.")
+        self._swapped = True
+        self._displaced = target.item
+        return Step(action="gui_swap",
+                    params={"slot": source.i, "hotbar": self.hotbar + 1},
+                    expectation=verify_mod.gui_effect(
+                        f"swap the {_words(self.item)} into hotbar slot "
+                        f"{self.hotbar + 1}", swapped),
+                    note=f"press {self.hotbar + 1} over the "
+                         f"{_words(self.item)}: it swaps into hotbar slot "
+                         f"{self.hotbar + 1}")
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -3364,7 +3752,8 @@ class AimAtBlock(_HoldsTheRightTool):
 
     @property
     def done_reason(self) -> str:
-        return self._reason or "stopped before the crosshair was confirmed"
+        return self._with_fetch(
+            self._reason or "stopped before the crosshair was confirmed")
 
     def _stop(self, reason: str, succeeded: bool = False):
         self._reason = reason

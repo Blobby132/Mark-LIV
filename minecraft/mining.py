@@ -294,8 +294,8 @@ class ToolChoice:
 
     `slot` is the hotbar slot (0-8) to select, or None to keep what is held.
     `better_in_inventory` names an item in the MAIN inventory that would do
-    better than anything in the hotbar -- it cannot be reached without the
-    inventory screen."""
+    better than anything in the hotbar -- reaching it takes the inventory
+    screen -- and `stored_seconds` is how long it would take with it."""
     block: str
     slot: int | None
     item: str | None
@@ -303,6 +303,7 @@ class ToolChoice:
     estimate: "BreakEstimate | None" = None
     better_in_inventory: str | None = None
     inventory_known: bool = True
+    stored_seconds: float | None = None
 
     @property
     def refusal(self) -> str | None:
@@ -392,7 +393,8 @@ def best_hotbar_tool(state, block) -> ToolChoice:
     return ToolChoice(block=name, slot=best_slot if switch else None,
                       item=chosen, harvests=bool(best[0]),
                       estimate=best[2],
-                      better_in_inventory=stored[0] if stored else None)
+                      better_in_inventory=stored[0] if stored else None,
+                      stored_seconds=stored[1][1] if stored else None)
 
 
 # ── Is the crosshair on the RIGHT block? ─────────────────────────────────────

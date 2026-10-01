@@ -15,6 +15,7 @@ models what the real game does and the bridge reports:
     key swaps the slot under the pointer with that hotbar slot, and closing
     a screen returns the grid and the pointer's stack to the inventory;
   - shaped recipes from minecraft/recipes.py, matched anywhere in the grid;
+  - hunger, and eating what the selected hotbar slot holds;
   - THE GATE: every click and swap is judged by minecraft/gui.py's
     click_refusal from a fresh reading, exactly as the controller does, and
     refused the same way.
@@ -79,7 +80,8 @@ def accelerate(pixels):
 class GuiWorld(TreeWorld):
 
     def __init__(self, items, selected=0, table=None, mode="survival",
-                 mobs=(), health=20.0, pointer_gain=accelerate, **kwargs):
+                 mobs=(), health=20.0, pointer_gain=accelerate, hunger=20.0,
+                 **kwargs):
         logs = [NearbyBlock(*table, "crafting_table", True)] if table else []
         super().__init__(flat(), logs, **kwargs)
         # TreeWorld keeps its own inventory dict under the name the runner
@@ -91,12 +93,15 @@ class GuiWorld(TreeWorld):
         self.mode = mode
         self.mobs = list(mobs)
         self.health = health
+        self.hunger = hunger
+        self.eaten = []
         self.pointer_gain = pointer_gain
         self.screen = None
         self.grid = {}                               # cell -> [name, count]
         self.carried = None
         self.cursor = [WINDOW[0] / 2, WINDOW[1] / 2]
         self.clicks = 0
+        self.swaps = 0
         self.refused = []
         self.dropped = []
         self.table = table
@@ -219,7 +224,8 @@ class GuiWorld(TreeWorld):
             surface=base.surface, notable_blocks=tuple(self.logs),
             target_block=target, scan_radius=base.scan_radius,
             inventory=inventory, selected_slot=self.selected, held_item=held,
-            health=self.health, nearby_entities=tuple(self.mobs),
+            health=self.health, hunger=self.hunger,
+            nearby_entities=tuple(self.mobs),
             on_ground=True, screen=self.screen, gui=gui, slots=slots,
             carried=carried, game_mode=self.mode, captured_at=time.time(),
             source="bridge", confidence=EXACT)
@@ -263,6 +269,21 @@ class GuiWorld(TreeWorld):
                               reason="gui_gate", error="a screen is open")
         self.selected = int(params["slot"]) - 1
         return self._done("hotbar_select", params)
+
+    def eat(self, params):
+        """Hold right click: the selected stack is eaten if it is food, the
+        hold is long enough, the player is hungry and no screen is open."""
+        from minecraft import skills
+        held = self.stacks.get(self.selected)
+        if self.screen is None and held and held[0] in skills.FOODS \
+                and self.hunger < 20 and float(params.get("duration", 0)) \
+                >= skills.eat_ticks(held[0]) / 20.0:
+            held[1] -= 1
+            if held[1] <= 0:
+                del self.stacks[self.selected]
+            self.hunger = min(20.0, self.hunger + skills.FOODS[held[0]])
+            self.eaten.append(held[0])
+        return self._done("eat", params)
 
     def gui_point(self, params):
         refusal = gui_mod.screen_refusal(self.read())
@@ -349,6 +370,7 @@ class GuiWorld(TreeWorld):
         refused = self._gate("gui_swap", params)
         if refused is not None:
             return refused
+        self.swaps += 1
         entry = self._slot_entry(int(params["slot"]))
         hotbar = int(params["hotbar"]) - 1
         mine = self._content(entry)

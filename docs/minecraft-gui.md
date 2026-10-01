@@ -90,6 +90,31 @@ from each move and smoothed, not assumed. At most `MAX_CORRECTIONS` (8)
 corrections per target; if the cursor still is not inside the slot, the task
 closes the screen and says so.
 
+## Fetching into the hotbar (B3g)
+
+`eat_food` and the mining tasks use the same layer for one thing more: a
+stack they need that is only in the main inventory. `HotbarFetch` opens the
+inventory, brings the pointer onto the stack (closed loop, as above), sends
+`gui_swap` — the hotbar number key, which swaps the slot under the pointer
+with that hotbar slot — and closes. Nothing is ever on the pointer, so
+nothing can drop. The swap passes the click gate like a click. Its result
+is checked against the reported slots, and then against the inventory once
+the screen is shut.
+
+The hotbar slot it fills is the first empty one, else the last one holding
+something not worth keeping at hand (a block, not a tool, weapon, food or
+bucket), and never the selected one while another will do. What was there
+goes where the fetched stack came from. A mining task fetches a tool when
+nothing in the hotbar harvests the block, or when the stored tool saves
+`FETCH_WORTH_S` (1.5 s) a block. It makes the trip at most once per task.
+
+While the screen is open the fetch keeps the rules below. The runner's own
+danger watch stands down for that time, because it would stop the task with
+the screen left open. The runner reads each task's watch flags at every
+step, not just once. Starving costs a point of health every four seconds on
+its own, so for `eat_food` a trip stopped by health alone, with no hostile
+near, is made once more.
+
 ## Abort conditions
 
 A GUI task closes the screen (the `inventory` action, `state=close`) and

@@ -413,6 +413,11 @@ class TaskRunner:
             self._learn_the_mouse(record)
             self.progress.record(step.action, record.verification)
 
+            # Read again at every step: a skill may hand the watch to its own
+            # stricter one while a screen is open (it closes the screen before
+            # stopping, which this cannot do), and takes it back after.
+            watch.watch_health = getattr(skill, "watch_health", True)
+            watch.watch_hostiles = getattr(skill, "watch_hostiles", True)
             danger = watch.check(state)
             if danger:
                 self._account(skill, state, records)
