@@ -309,5 +309,53 @@ so. One file: `python -m pytest tests/minecraft/test_minecraft_fight.py`.
 The [readme](../readme.md) is what Jarvis is, installing and running it,
 and safety in brief. Everything else is in `docs/`, indexed by
 [docs/README.md](README.md); Minecraft has its own folder,
-[docs/minecraft/](minecraft/README.md). A test in `tests/core/` fails on
-a relative link that does not resolve.
+[docs/minecraft/](minecraft/README.md). `tests/core/test_repo_hygiene.py`
+fails on a relative link that does not resolve.
+
+## Where new code goes
+
+**A new skill.** A class in the `minecraft/skills/` module for its kind
+(`navigate`, `collect`, `collect_logs`, `collect_blocks`, `aim`, `eat`,
+`craft`, `place_build`, `combat`), or a new module when none fits --
+importing only from modules above it in the skills table. Register it in
+`BUILTIN_SKILLS` and `__all__` in `minecraft/skills/__init__.py`; name it
+in the tool text (`actions/_minecraft_text.py`: the TASKS paragraph and the
+`task` parameter) and in [docs/minecraft/README.md](minecraft/README.md);
+add it to the skills table here. If it changes what one session
+confirmation covers, change `GRANT_SUMMARY`, the banner in
+`actions/minecraft._mc_guard`, the "What it deliberately cannot do" list
+in docs/minecraft/README.md and `NOT_YET_POSSIBLE` in the same commit.
+
+**A new Minecraft action** (a key or button the controller presses).
+Its limits in `minecraft/action_spec.py`; a controller method that goes
+through `_require_authorized` and `_hold_inputs`; its capability in
+`_CAPABILITY_BY_ACTION` (`actions/minecraft.py`), and in
+`core/capabilities.py` if it is a new one. A new key goes on the
+allowlist in `minecraft/input_backend.py` only with a reason, and
+`test_minecraft_boundary.py` must still pass untouched. New checks are
+injected callables, like `progress_probe` and `hazard_probe`, never new
+imports.
+
+**A new action for Jarvis** (not Minecraft). `actions/<name>.py` exposing
+`TOOL` and a handler; discovery finds it. Helpers it alone uses go in
+`actions/_<name>.py` -- a leading underscore keeps discovery away.
+
+**A new mod field.** In the mod's source, an additive optional field
+under schema `/4` (`markliv.minecraft.state/4`) -- never a new version,
+since the reader rejects versions it does not know, and never anything
+that writes to the game. Read it in `minecraft/mod_bridge.py` into
+`WorldState` (`minecraft/state.py`) with its provenance. Rebuild
+`mods/markliv-bridge-1.0.0.jar`; `test_bridge_jar_is_current.py` keeps
+the jar and the source in step. Tests in `tests/bridge/`, with the Java
+harness in `tests/support/java/`.
+
+**A new test.** In the `tests/` folder for the code it tests. Anything a
+second test needs goes in `tests/support/`; tests never import each other,
+and find files through `tests.support.paths`.
+
+**A new doc.** `docs/<topic>.md`, or `docs/minecraft/<topic>.md`, with a
+line in the [docs index](README.md). Relative links are checked.
+
+**Size.** No file outside `tests/` over 2,000 lines;
+`tests/core/test_repo_hygiene.py` fails one that grows past it. Split
+along the layering above rather than raise the limit.
