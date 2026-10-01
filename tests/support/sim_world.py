@@ -3,7 +3,7 @@ SimWorld and TreeWorld: the simulated terrain most Minecraft task
 tests walk, look and mine in; flat(), state_from() and run().
 
 Shared by several test modules, so they import it from here instead of
-from each other. Moved here unchanged from tests/test_minecraft_navigation.py.
+from each other. Moved here unchanged from tests/minecraft/test_minecraft_navigation.py.
 """
 
 from __future__ import annotations

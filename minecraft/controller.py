@@ -1445,7 +1445,7 @@ class _TaskCancelScope:
     """`with controller.cancellable(event):` -- see that method.
 
     A small class rather than contextlib, which this package does not import
-    (tests/test_minecraft_boundary.py keeps the import list short on
+    (tests/minecraft/test_minecraft_boundary.py keeps the import list short on
     purpose)."""
 
     def __init__(self, controller: "MinecraftController", event):

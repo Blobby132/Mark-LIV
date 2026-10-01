@@ -3,7 +3,7 @@ DropWorld and LeafWorld: the worlds behind the live-run
 regression tests (drops that land away, leaves in the way).
 
 Shared by several test modules, so they import it from here instead of
-from each other. Moved here unchanged from tests/test_live_run_regressions.py.
+from each other. Moved here unchanged from tests/minecraft/test_live_run_regressions.py.
 """
 
 from __future__ import annotations

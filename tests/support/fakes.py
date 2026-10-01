@@ -3,7 +3,7 @@ Fakes for the controller's collaborators (window locator, process
 check) and for the task runner's controller and state source.
 
 Shared by several test modules, so they import it from here instead of
-from each other. Moved here unchanged from tests/test_minecraft_controller.py, tests/test_minecraft_tasks.py.
+from each other. Moved here unchanged from tests/minecraft/test_minecraft_controller.py, tests/minecraft/test_minecraft_tasks.py.
 """
 
 from __future__ import annotations

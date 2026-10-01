@@ -6,7 +6,7 @@ places against a solid, non-interactive neighbour it knows of, stands in
 reach and out of the cell, presses nothing until the game reports the
 crosshair on that neighbour's face, and proves the result twice: the
 crosshair on a block of that name at the cell, and the held stack one
-smaller. Run end to end in tests/build_world.py.
+smaller. Run end to end in tests/support/build_world.py.
 """
 
 from __future__ import annotations

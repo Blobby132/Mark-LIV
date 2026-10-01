@@ -9,7 +9,7 @@ WHAT THIS PACKAGE IS ALLOWED TO DO
 WHAT IT CANNOT DO, STRUCTURALLY
     It has no subprocess, no shell, no filesystem writes, no network, and no
     key outside a frozen list of sixteen. Those are not filtered; they are
-    absent, and `tests/test_minecraft_boundary.py` fails the build if one
+    absent, and `tests/minecraft/test_minecraft_boundary.py` fails the build if one
     appears. The controller knows how to control Minecraft. It does not know
     how to control Windows.
 

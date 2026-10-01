@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Drives {@link Gui} for tests/test_bridge_gui_fields.py. One command per
+ * Drives {@link Gui} for tests/bridge/test_bridge_gui_fields.py. One command per
  * line: {@code role result craftGrid playerInventory containerSlot},
  * {@code centre origin slot scale}, {@code slot i role x y item count}
  * ({@code null} for no item), {@code view scale w h cx cy},

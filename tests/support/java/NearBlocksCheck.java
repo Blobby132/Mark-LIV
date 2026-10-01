@@ -4,7 +4,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
 /**
- * Drives {@link NearBlocks} for tests/test_bridge_near_blocks.py. One
+ * Drives {@link NearBlocks} for tests/bridge/test_bridge_near_blocks.py. One
  * command per line: {@code inbox dx dy dz}, {@code origin x y z} (starts a
  * new snapshot), {@code offer x y z name solid}, {@code json} (prints the
  * field) and {@code measure} (prints its length in bytes).

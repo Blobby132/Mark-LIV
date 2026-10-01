@@ -4,7 +4,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
 /**
- * Drives {@link ColumnScan} for tests/test_bridge_floor_scan.py.
+ * Drives {@link ColumnScan} for tests/bridge/test_bridge_floor_scan.py.
  *
  * <p>Reads one column per line: {@code feet first last need cap} and then
  * the blocks top down, each one of air, plant (passable, not air), fluid

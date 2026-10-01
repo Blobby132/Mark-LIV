@@ -2,7 +2,7 @@
 DENIED: the held items place (and interact) refuse.
 
 Shared by several test modules, so they import it from here instead of
-from each other. Moved here unchanged from tests/test_minecraft_place_held_item.py.
+from each other. Moved here unchanged from tests/minecraft/test_minecraft_place_held_item.py.
 """
 
 from __future__ import annotations

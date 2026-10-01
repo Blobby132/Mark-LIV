@@ -13,9 +13,6 @@ TESTS_DIR = SUPPORT_DIR.parent
 REPO_ROOT = TESTS_DIR.parent
 
 # The Java harness the bridge tests compile against the mod's source.
-# Temporary fallback: tests/java until the move commit puts it in
-# tests/support/java; the fallback goes right after.
-JAVA_HARNESS_DIR = (SUPPORT_DIR / "java" if (SUPPORT_DIR / "java").is_dir()
-                    else TESTS_DIR / "java")
+JAVA_HARNESS_DIR = SUPPORT_DIR / "java"
 
 __all__ = ["REPO_ROOT", "TESTS_DIR", "SUPPORT_DIR", "JAVA_HARNESS_DIR"]

@@ -32,7 +32,7 @@ TWO CONSUMERS, TWO REQUIREMENTS
 WHY THE COMPRESSION IS LOCAL
     `screen_processor._compress()` does the right thing, but importing it drags
     `actions/` — and numpy, and cv2 — into this package, which the import
-    boundary in `tests/test_minecraft_boundary.py` forbids. The dimensions and
+    boundary in `tests/minecraft/test_minecraft_boundary.py` forbids. The dimensions and
     quality here are copied from it so frames look the same as the rest of the
     app's; the fifteen lines of PIL are not worth the coupling.
 """

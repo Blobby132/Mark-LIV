@@ -8,7 +8,7 @@ a wall of leaves four blocks up, and the planner, correctly given what it was
 told, found no way in.
 
 The rule now lives in fabric-mod/.../ColumnScan.java, free of Minecraft
-types. These tests compile it with the harness in tests/java and check it
+types. These tests compile it with the harness in tests/support/java and check it
 against columns built by hand. They need a JDK (javac) and are skipped
 without one; the Python side of the same failure is covered in
 test_navigation_ground_cover.py.

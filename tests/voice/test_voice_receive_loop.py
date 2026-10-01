@@ -3,7 +3,7 @@ The receive loop: tool calls off it, interrupts that cannot swallow a reply,
 and the Live API events it now answers.
 
 WHY main.py IS LOADED THIS WAY
-    Same reason as tests/test_voice_main_paths.py: main.py imports the audio
+    Same reason as tests/voice/test_voice_main_paths.py: main.py imports the audio
     stack, Qt and the Gemini SDK at module level and cannot be imported here.
     The methods under test are lifted out of the real source by name and
     bound to a small stand-in, so what runs is the shipped code, not a copy.

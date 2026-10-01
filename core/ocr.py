@@ -4,7 +4,7 @@ core/ocr.py — optional text extraction from an image.
 WHY THIS IS IN core/ AND NOT IN minecraft/
 
     `minecraft/` is forbidden from starting processes. That is not a style
-    rule: it is asserted by `tests/test_minecraft_boundary.py`, which parses
+    rule: it is asserted by `tests/minecraft/test_minecraft_boundary.py`, which parses
     every module in the package and fails the build on an import of
     `subprocess` — so that "JARVIS can play Minecraft" can never quietly come
     to mean "JARVIS can run programs".

@@ -2,7 +2,7 @@
 payload() and source(): a mod-bridge payload and a reader of it.
 
 Shared by several test modules, so they import it from here instead of
-from each other. Moved here unchanged from tests/test_minecraft_mod_bridge.py.
+from each other. Moved here unchanged from tests/bridge/test_minecraft_mod_bridge.py.
 """
 
 from __future__ import annotations

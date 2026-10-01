@@ -24,7 +24,7 @@ THE SPLIT THAT MATTERS
                     WorldState
 
     `parse_overlay` is a pure function over a string. Every test in
-    tests/test_minecraft_debug_overlay.py runs against captured F3 text with
+    tests/minecraft/test_minecraft_debug_overlay.py runs against captured F3 text with
     no screen, no OCR engine and no Minecraft. That is the part that has to be
     right, and it is the part that can actually be proven right here.
 
@@ -47,7 +47,7 @@ NO OCR LIBRARY IS IMPORTED HERE
     not import pytesseract, and must not.
 
     pytesseract runs the Tesseract binary in a subprocess, and this package is
-    forbidden from starting processes -- `tests/test_minecraft_boundary.py`
+    forbidden from starting processes -- `tests/minecraft/test_minecraft_boundary.py`
     parses every module here and fails the build on it. That rule is what
     stops "JARVIS can play Minecraft" from quietly becoming "JARVIS can run
     programs", so the reader implementation lives in `core/ocr.py` and is

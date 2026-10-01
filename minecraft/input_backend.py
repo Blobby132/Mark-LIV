@@ -36,7 +36,7 @@ WHY RELATIVE MOUSE MOVEMENT
 OFF WINDOWS
     `UnavailableBackend` refuses every call with a reason. Sending input on
     Linux would mean shelling out to `xdotool`, and this package does not get a
-    subprocess — see `tests/test_minecraft_boundary.py`. Refusing honestly is
+    subprocess — see `tests/minecraft/test_minecraft_boundary.py`. Refusing honestly is
     better than a backend that silently does nothing while the planner believes
     the player is walking.
 """

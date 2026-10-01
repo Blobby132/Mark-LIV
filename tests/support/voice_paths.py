@@ -3,7 +3,7 @@ METHODS: main.py's voice methods, lifted out and compiled on
 their own, because main.py cannot be imported in a test.
 
 Shared by several test modules, so they import it from here instead of
-from each other. Moved here unchanged from tests/test_voice_main_paths.py,
+from each other. Moved here unchanged from tests/voice/test_voice_main_paths.py,
 except that ROOT, the repository root, now comes from tests.support.paths
 (computed from the test file's own location, it would be wrong one level
 down).

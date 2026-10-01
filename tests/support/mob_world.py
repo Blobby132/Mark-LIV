@@ -2,7 +2,7 @@
 MobWorld: a simulated world with mobs that chase and hurt.
 
 Shared by several test modules, so they import it from here instead of
-from each other. Moved here unchanged from tests/test_minecraft_flee.py.
+from each other. Moved here unchanged from tests/minecraft/test_minecraft_flee.py.
 """
 
 from __future__ import annotations

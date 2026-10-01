@@ -9,7 +9,7 @@ tree_logs() grouped partial trees from what was left. The same first-come
 rule on the entity list let dropped items push a zombie off it.
 
 fabric-mod/.../Nearest.java and Kinds.java hold the rules, free of Minecraft
-types; these tests compile them with tests/java/NearestCheck.java. They need
+types; these tests compile them with tests/support/java/NearestCheck.java. They need
 a JDK and are skipped without one.
 """
 

@@ -19,7 +19,7 @@ WHAT THIS FILE DELIBERATELY DOES NOT DO
     It does not decide whether something is safe — `core/capabilities.py` does.
     It does not send input — `minecraft/input_backend.py` does, and only for
     sixteen keys. It does not import subprocess, os.system, or any other action
-    module. `tests/test_minecraft_boundary.py` fails the build if that changes.
+    module. `tests/minecraft/test_minecraft_boundary.py` fails the build if that changes.
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@ mine_block and break_block -- select it first, verify the slot, and put the
 previous slot back when they finish, the way eat_food does. When nothing in
 the hotbar can harvest the block they refuse before swinging, and say so --
 and say when the tool that would is in the main inventory. (Since B3g they
-fetch it from there first: tests/test_minecraft_hotbar_fetch.py.)
+fetch it from there first: tests/minecraft/test_minecraft_hotbar_fetch.py.)
 """
 
 from __future__ import annotations
