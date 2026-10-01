@@ -83,6 +83,18 @@ _INPUT_ACTIONS = frozenset({
 })
 
 
+def _entity_probe():
+    """The mob under the crosshair as (name, category), or None -- for an
+    attack that must only ever hit something hostile (fight)."""
+    try:
+        entity = _get_state_source().read().target_entity
+    except Exception:
+        return None
+    if entity is None:
+        return None
+    return (entity.name, getattr(entity, "category", None))
+
+
 def _target_probe():
     """What the crosshair is on -- (name, x, y, z, face) -- for the mining
     loop to watch, and for mine and place to confirm before pressing.
@@ -196,7 +208,8 @@ def _get_controller() -> MinecraftController:
         _controller = MinecraftController(progress_probe=_target_probe,
                                           hazard_probe=_hazard_probe,
                                           held_item_probe=_held_item,
-                                          gui_probe=_gui_state)
+                                          gui_probe=_gui_state,
+                                          entity_probe=_entity_probe)
         _observer = Observer(_controller._locator)
     return _controller
 

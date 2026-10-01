@@ -230,6 +230,9 @@ class HoldSpec:
     # never make it reach somewhere else.
     expect_target: tuple = None
     expect_face: str = None
+    # Attacking only: press nothing unless a hostile mob is under the
+    # crosshair. Another precondition: it can only refuse.
+    expect_hostile: bool = False
 
     @property
     def clamped(self) -> bool:
@@ -244,6 +247,8 @@ class HoldSpec:
             out["expect_at"] = list(self.expect_target)
         if self.expect_face is not None:
             out["expect_face"] = self.expect_face
+        if self.expect_hostile:
+            out["expect_hostile"] = True
         return out
 
 
@@ -415,8 +420,15 @@ def parse_attack(params: dict) -> HoldSpec:
                 f"looking at with 'read_state', then attack."
             )
     duration, requested = _bounded_duration(params, 0.5, MAX_ATTACK_DURATION_S)
+    hostile = False
+    if "expect_hostile" in (params or {}):
+        if params["expect_hostile"] is not True:
+            raise InvalidAction("'expect_hostile' is a precondition: true, "
+                                "or leave it out.")
+        hostile = True
     return HoldSpec(action="attack", buttons=(ATTACK_BUTTON,),
-                    duration=duration, requested_duration=requested)
+                    duration=duration, requested_duration=requested,
+                    expect_hostile=hostile)
 
 
 def parse_use_item(params: dict) -> HoldSpec:

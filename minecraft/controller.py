@@ -166,7 +166,7 @@ class MinecraftController:
                  process_module=None, emergency=None, start_watchers=True,
                  focus_wait_s: float = FOCUS_WAIT_SECONDS,
                  progress_probe=None, hazard_probe=None, clock=None,
-                 held_item_probe=None, gui_probe=None):
+                 held_item_probe=None, gui_probe=None, entity_probe=None):
         self._backend = backend if backend is not None else create_backend()
         self._locator = locator if locator is not None else Locator()
         self._sessions = sessions if sessions is not None else SessionManager()
@@ -230,6 +230,10 @@ class MinecraftController:
         # minecraft/gui.py's rules decide from it; without it, no click.
         self._gui_probe = gui_probe
         self._gui_health_peak = None
+        # Asked before an attack that expects a hostile: the crosshair's
+        # entity as (name, category), or None. Without it, such an attack
+        # presses nothing.
+        self._entity_probe = entity_probe
 
         self._sessions.on_end(self._on_session_end)
 
@@ -670,7 +674,8 @@ class MinecraftController:
                      action: str, requested: dict, clamped: bool,
                      stop_when_changed: bool = False,
                      expect_target: tuple | None = None,
-                     expect_face: str | None = None) -> ActionResult:
+                     expect_face: str | None = None,
+                     expect_hostile: bool = False) -> ActionResult:
         """Hold keys and/or mouse buttons for up to `seconds`, re-checking the
         world every tick.
 
@@ -699,13 +704,13 @@ class MinecraftController:
             return self._hold_inputs_owned(keys, buttons, seconds, action,
                                            requested, clamped,
                                            stop_when_changed, expect_target,
-                                           expect_face)
+                                           expect_face, expect_hostile)
         finally:
             self._input_slot.release()
 
     def _hold_inputs_owned(self, keys, buttons, seconds, action, requested,
                            clamped, stop_when_changed, expect_target,
-                           expect_face=None):
+                           expect_face=None, expect_hostile=False):
         """`_hold_inputs`, once this thread owns the input slot."""
         started = time.monotonic()
         epoch = self._abort_epoch
@@ -728,6 +733,15 @@ class MinecraftController:
 
         if self._aborted(epoch):
             return self._cancelled_result(action, requested, clamped)
+
+        if expect_hostile:
+            mismatch = self._entity_refusal()
+            if mismatch:
+                return ActionResult(
+                    ok=False, action=action, requested=requested,
+                    stopped_reason="target_not_confirmed", clamped=clamped,
+                    error_class="TargetNotConfirmed", error=mismatch,
+                )
 
         if expect_target is not None:
             mismatch = self._target_mismatch(expect_target, expect_face)
@@ -887,6 +901,27 @@ class MinecraftController:
             if str(seen_face).lower() != face:
                 return (f"The crosshair is on the {seen_face} face of {want}, "
                         f"not the {face} face. Nothing was pressed.")
+        return ""
+
+    def _entity_refusal(self) -> str:
+        """'' when the entity probe reports a hostile mob under the
+        crosshair; otherwise why not. Never a player, never a passive mob,
+        never something it cannot name."""
+        if self._entity_probe is None:
+            return ("I cannot read what the crosshair is on, so I did not "
+                    "attack. Nothing was pressed.")
+        try:
+            seen = self._entity_probe()
+        except Exception:
+            seen = None
+        if not seen:
+            return "The crosshair is not on a mob. Nothing was pressed."
+        name, category = (tuple(seen) + (None, None))[:2]
+        if category != "hostile":
+            what = category or "not known to be hostile"
+            return (f"The crosshair is on {name or 'something'}, which is "
+                    f"{what}; I only attack hostile mobs. Nothing was "
+                    f"pressed.")
         return ""
 
     def move(self, params: dict) -> ActionResult:
@@ -1059,8 +1094,14 @@ class MinecraftController:
         Deliberately says nothing about whether anything broke — that is
         `minecraft/verification.py`'s job, and conflating the two is how an
         agent ends up reporting a tree felled that is still standing."""
-        return self._gameplay(core_caps.MINECRAFT_COMBAT, "attack",
-                              action_spec.parse_attack, params)
+        refusal = self._require_authorized(core_caps.MINECRAFT_COMBAT,
+                                           "attack")
+        if refusal is not None:
+            return refusal
+        spec = action_spec.parse_attack(params or {})
+        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                 "attack", spec.as_dict(), spec.clamped,
+                                 expect_hostile=spec.expect_hostile)
 
     def use_item(self, params: dict | None = None) -> ActionResult:
         return self._gameplay(core_caps.MINECRAFT_ITEMS, "use_item",

@@ -550,11 +550,17 @@ public class MarkLivBridge implements ClientModInitializer {
             return "null";
         }
         Entity entity = entityHit.getEntity();
+        // category and position are additive (schema /4): what the fight
+        // task checks before every swing -- never a player, never a cow.
         return Json.object(
                 "name", Json.quote(entityName(entity)),
                 "distance", Json.number(
                         client.player == null ? 0.0
-                                : client.player.distanceTo(entity)));
+                                : client.player.distanceTo(entity)),
+                "category", Json.quote(categoryOf(entity)),
+                "position", Json.array(Json.number(entity.getX()),
+                                       Json.number(entity.getY()),
+                                       Json.number(entity.getZ())));
     }
 
     private String nearbyJson(Minecraft client, Entity self) {
