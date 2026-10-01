@@ -78,6 +78,20 @@ class ThreeByThreeTests(unittest.TestCase):
         self.assertEqual(world.count("stick"), 2)
         self.assertIsNone(world.screen)
 
+    def test_a_table_in_the_inventory_is_placed_and_used(self):
+        """B3f with B4a: no table near, one held -- placed beside the
+        player, proven like any placement, then opened."""
+        from tests.build_world import BuildWorld
+        world = BuildWorld({0: ("oak_planks", 5), 1: ("stick", 4),
+                            2: ("crafting_table", 1)})
+        skill, result = craft(world, "wooden_pickaxe")
+        self.assertFalse(skill.failed, f"{skill.done_reason} / {result.reason}")
+        self.assertEqual([n for _c, n in world.placed], ["crafting_table"])
+        self.assertEqual(world.count("wooden_pickaxe"), 1)
+        self.assertEqual(world.count("crafting_table"), 0)
+        self.assertIsNone(world.screen)
+        self.assertIn("placed the crafting table", skill.done_reason)
+
     def test_no_table_in_reach_is_refused_before_anything(self):
         world = GuiWorld({0: ("oak_planks", 5), 1: ("stick", 4)})
         skill, result = craft(world, "wooden_pickaxe")

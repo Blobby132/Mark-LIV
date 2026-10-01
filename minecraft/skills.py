@@ -50,7 +50,7 @@ from minecraft import mining as mining_mod
 from minecraft import gui as gui_mod
 from minecraft import building as building_mod
 from minecraft import recipes as recipes_mod
-from minecraft.state import EXACT, UNKNOWN
+from minecraft.state import EXACT, UNKNOWN, NearbyBlock
 from minecraft.task_runner import MAX_TASK_STEPS, Step
 
 CANNOT_SEE_TARGET = (
@@ -3024,6 +3024,8 @@ class CraftItem:
     _walker: object = None
     _aborted: bool = False
     _still: int = 0              # pointer moves in a row that did not move it
+    _placer: object = None
+    _table_note: str = ""
 
     @property
     def goal(self) -> str:
@@ -3035,7 +3037,8 @@ class CraftItem:
 
     @property
     def done_reason(self) -> str:
-        return self._reason or "stopped before crafting anything"
+        reason = self._reason or "stopped before crafting anything"
+        return f"{self._table_note}; {reason}" if self._table_note else reason
 
     # ── the loop ─────────────────────────────────────────────────────────
 
@@ -3062,6 +3065,8 @@ class CraftItem:
 
         if self._phase == "check":
             return self._check(state)
+        if self._phase == "placing":
+            return self._placing(state, step_index, history)
         if self._phase == "open":
             return self._open(state, history)
         return self._craft(state, last)
@@ -3178,6 +3183,8 @@ class CraftItem:
                     t for t in tables if aiming_mod.SHARED.within_reach(
                         state.position, t.position)])
             if table is None:
+                if verify_mod._count_of(state, {"crafting_table"}) > 0:
+                    return self._place_table(state)
                 return self._stop(
                     f"A {_words(recipe.output)} needs a crafting table's 3x3 "
                     f"grid, and I cannot see a crafting table I can get to. "
@@ -3186,6 +3193,57 @@ class CraftItem:
             self._table = table
         self._phase = "open"
         return self._open(state, ())
+
+    # ── a table of its own ───────────────────────────────────────────────
+
+    def _place_table(self, state):
+        """No table in reach and one in the inventory: put it down beside
+        the player with place_block_at -- the same proof as any placement --
+        and use it."""
+        local = nav.LocalMap.from_state(state)
+        here = (math.floor(state.position[0]), math.floor(state.position[2]))
+        spots = []
+        for dx in range(-2, 3):
+            for dz in range(-2, 3):
+                column = (here[0] + dx, here[1] + dz)
+                if column == here or max(abs(dx), abs(dz)) > 2:
+                    continue
+                ground = local.ground_at(*column)
+                if ground is None:
+                    continue
+                cell = (column[0], ground + 1, column[1])
+                verdict, _name = building_mod.what_is_at(local, state, cell)
+                if verdict not in (building_mod.EMPTY, building_mod.REPLACE):
+                    continue
+                if not building_mod.references(local, state, cell,
+                                               unusable=_interactive):
+                    continue
+                spots.append((abs(dx) + abs(dz), cell))
+        if not spots:
+            return self._stop(
+                f"A {_words(self._recipe.output)} needs a crafting table, and "
+                f"there is no clear spot beside me to put down the one I "
+                f"have.")
+        cell = min(spots)[1]
+        self._placer = PlaceBlockAt(x=cell[0], y=cell[1], z=cell[2],
+                                    item="crafting_table",
+                                    allowed=frozenset({"crafting_table"}))
+        self._phase = "placing"
+        return self._placing(state, 0, ())
+
+    def _placing(self, state, step_index, history):
+        step = self._placer.plan(state, step_index, history)
+        if step is not None:
+            return step
+        if not self._placer.placed:
+            return self._stop(f"I could not put down the crafting table: "
+                              f"{self._placer.done_reason}")
+        cell = self._placer.cell
+        self._table_note = (f"placed the crafting table at {cell} "
+                            f"({self._placer.done_reason.split(': ', 1)[-1]})")
+        self._table = NearbyBlock(*cell, "crafting_table", True)
+        self._phase = "open"
+        return self._open(state, history)
 
     # ── opening the grid ─────────────────────────────────────────────────
 
@@ -3871,6 +3929,10 @@ class PlaceBlockAt:
     known: dict = field(default_factory=dict)
     restore_slot: bool = True
     avoid: frozenset = frozenset()   # (x, z) columns never to stand in
+    allowed: frozenset = building_mod.BUILDING_BLOCKS
+    """What it may place. craft_item passes {"crafting_table"}: a table is
+    a full block of its own name -- a fine thing to place, only never a
+    thing to place AGAINST."""
 
     name = "place_block_at"
     verifiable_with = ("target_block", "inventory")
@@ -4012,7 +4074,7 @@ class PlaceBlockAt:
     def _check(self, state):
         item = building_mod.short(self.item)
         self.item = item
-        if item not in building_mod.BUILDING_BLOCKS:
+        if item not in self.allowed:
             return (f"I only build with plain blocks -- "
                     f"{', '.join(sorted(n for n in building_mod.BUILDING_BLOCKS if not n.endswith('_planks')))}"
                     f" and any planks -- not {_words(item) or 'nothing'}.")
