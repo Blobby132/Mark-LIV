@@ -72,11 +72,13 @@ class ShutdownTests(unittest.TestCase):
                             self.held.cancel)
         self.addCleanup(interrupts.unregister, "test-held")
 
-    def run_shutdown(self):
+    def run_shutdown(self, save_fails=False):
         shutdown = _lift("_shutdown")
         fake = types.SimpleNamespace(session=None)
 
         async def save():
+            if save_fails:
+                raise OSError("disk full")
             self.events.append(("saved",))
         fake._save_session_summary = save
 
@@ -92,6 +94,23 @@ class ShutdownTests(unittest.TestCase):
         self.assertEqual(kinds[-1], "exit")
         self.assertEqual(self.events[-1], ("exit", 0, False),
                          "the process exited with a key still held")
+
+    def test_a_failing_save_still_exits_and_releases(self):
+        """A6: an exception in _save_session_summary (or cancel_active)
+        ended _shutdown early -- the process never exited, and nothing
+        released what was held."""
+        self.run_shutdown(save_fails=True)
+        self.assertEqual(self.events[-1], ("exit", 0, False))
+
+    def test_a_failing_cancel_active_still_exits(self):
+        original = interrupts.cancel_active
+
+        def boom(_reason):
+            raise RuntimeError("a cancel callback broke")
+        interrupts.cancel_active = boom
+        self.addCleanup(setattr, interrupts, "cancel_active", original)
+        self.run_shutdown()
+        self.assertEqual(self.events[-1], ("exit", 0, False))
 
     def test_the_shutdown_branch_uses_it(self):
         source = MAIN.read_text(encoding="utf-8")

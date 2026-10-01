@@ -2441,8 +2441,17 @@ class JarvisLive:
         registered cancel -- each of which releases what it holds -- is
         called again right before exiting, whether or not it says anything
         is running. `exit_process` is for tests."""
-        _interrupts.cancel_active("JARVIS is shutting down")
-        await self._save_session_summary()
+        # Neither of these may stop the exit below: a cancel callback that
+        # raises, or a save that fails (disk full, a bad memory file), left
+        # the process running and whatever was held still held.
+        try:
+            _interrupts.cancel_active("JARVIS is shutting down")
+        except Exception:
+            pass
+        try:
+            await self._save_session_summary()
+        except Exception:
+            pass
         if self.session:
             try:
                 await self.session.send_client_content(
