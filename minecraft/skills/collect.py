@@ -1025,8 +1025,3 @@ def _item_total(state, names) -> int:
         if getattr(stack, "name", None) in names:
             total += int(getattr(stack, "count", 0) or 0)
     return total
-
-
-def _log_total(state) -> int:
-    """Every kind of log in the inventory, added up."""
-    return _item_total(state, LOG_BLOCKS)
