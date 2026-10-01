@@ -119,6 +119,17 @@ def what_is_at(local, state, cell, known=None) -> tuple:
     placed (`known`: cell -> name), the notable blocks, then the scan.
     `local` is a navigation.LocalMap of `state`."""
     cell = cell_of(cell)
+    near = getattr(state, "near", None)
+    if near is not None and near.covers(cell):
+        # The game's own list of every block around the player: the most
+        # direct answer there is, and fresher than a task's own record.
+        block = near.block_at(cell)
+        if block is None:
+            return EMPTY, "air"
+        name = short(block.name)
+        if block.solid is False:
+            return (REPLACE if name in REPLACEABLE else OCCUPIED), name
+        return OCCUPIED, name
     if known and cell in known:
         name = short(known[cell])
         return (EMPTY if name in ("air", "cave_air", "void_air")
@@ -151,6 +162,12 @@ def solid_at(local, state, cell, known=None):
     """The name of a block known to be solid at `cell`, or None: one a task
     placed, a notable block, or a column's floor at exactly that height."""
     cell = cell_of(cell)
+    near = getattr(state, "near", None)
+    if near is not None and near.covers(cell):
+        block = near.block_at(cell)
+        if block is None or block.solid is not True:
+            return None
+        return short(block.name)
     if known and cell in known:
         name = short(known[cell])
         return None if name in REPLACEABLE else name

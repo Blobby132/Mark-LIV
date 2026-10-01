@@ -62,7 +62,7 @@ from dataclasses import replace as _copy_with
 
 from minecraft.state import (
     BlockRef, EXACT, EntityRef, GuiSlot, GuiView, ItemStack, NearbyBlock,
-    WorldState, empty_state,
+    NearSnapshot, WorldState, empty_state,
 )
 
 SCHEMA = "markliv.minecraft.state/4"
@@ -348,6 +348,7 @@ class ModBridgeStateSource:
             slots=_gui_slots(payload.get("slots")),
             carried=_carried(payload.get("carried")),
             game_mode=_text(payload.get("game_mode")),
+            near=_near(payload.get("near_blocks")),
             on_ground=(payload["on_ground"]
                        if isinstance(payload.get("on_ground"), bool) else None),
             scan_radius=_integer((payload.get("scan") or {}).get("radius")
@@ -641,6 +642,42 @@ def _gui_slots(value):
                            x=x, y=y, item=item,
                            count=(count or 0) if item else 0))
     return tuple(out)
+
+
+def _near(value):
+    """The near_blocks snapshot (B4d), or None from a jar without it -- or
+    with any entry that is not [x, y, z, name, solid]. Dropping that one
+    entry would make its cell read as air, so the whole snapshot is
+    distrusted instead."""
+    if not isinstance(value, dict):
+        return None
+    origin = value.get("origin")
+    if not isinstance(origin, (list, tuple)) or len(origin) != 3:
+        return None
+    try:
+        origin = tuple(int(v) for v in origin)
+        radius, below, above = (int(value[k]) for k in
+                                ("radius", "below", "above"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    complete = _number(value.get("complete_within"))
+    blocks = []
+    entries = value.get("blocks")
+    if not isinstance(entries, (list, tuple)):
+        return None
+    for entry in entries:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 5:
+            return None
+        x, y, z, name, solid = entry
+        if not all(isinstance(v, int) and not isinstance(v, bool)
+                   for v in (x, y, z)) or not isinstance(solid, bool):
+            return None
+        blocks.append(NearbyBlock(x=x, y=y, z=z,
+                                  name=_short_name(name) or "unknown",
+                                  solid=solid))
+    return NearSnapshot(origin=origin, radius=radius, below=below,
+                        above=above, complete_within=complete,
+                        blocks=tuple(blocks))
 
 
 def _carried(value):

@@ -26,7 +26,7 @@ import math
 
 from minecraft import action_spec
 from minecraft import building
-from minecraft.state import NearbyBlock
+from minecraft.state import NearbyBlock, NearSnapshot
 from tests.gui_world import GuiWorld
 
 MAX_CLEARANCE = 4
@@ -115,8 +115,32 @@ class BuildWorld(GuiWorld):
         self.ground = {(b.x, b.z): b for b in surface}
 
     def read(self):
+        import dataclasses
         self._rescan()
-        return super().read()
+        state = super().read()
+        if not self.report_near:
+            return state
+        return dataclasses.replace(state, near=self._near())
+
+    report_near = True
+
+    def _near(self):
+        """The mod's near_blocks: every non-air block in the box round the
+        feet block, complete (the simulation has no quota to hit)."""
+        fx, fy, fz = (math.floor(self.x), math.floor(self.y),
+                      math.floor(self.z))
+        blocks = []
+        for dx in range(-4, 5):
+            for dz in range(-4, 5):
+                for dy in range(-1, 5):
+                    cell = (fx + dx, fy + dy, fz + dz)
+                    name = self._name_at(cell)
+                    if name is None:
+                        continue
+                    blocks.append(NearbyBlock(*cell, name,
+                                              self._solid(cell)))
+        return NearSnapshot(origin=(fx, fy, fz), radius=4, below=1, above=4,
+                            complete_within=None, blocks=tuple(blocks))
 
     def crosshair(self):
         """(cell, name, face) of the first block the view ray enters within

@@ -57,25 +57,35 @@ final class Nearest {
                 || distance < heap.peek().distance();
     }
 
-    /** Offer one candidate. A category with no quota is dropped. */
-    void offer(String category, double distance, String json) {
+    /**
+     * Offer one candidate. A category with no quota is dropped.
+     *
+     * @return the distance of whatever this left out -- the candidate
+     *         itself, or the farther one it displaced -- or NaN when
+     *         nothing was left out
+     */
+    double offer(String category, double distance, String json) {
         PriorityQueue<Candidate> heap = category == null ? null
                 : kept.get(category);
         if (heap == null) {
-            return;
+            return distance;
         }
         int quota = quotas.get(category);
         if (quota <= 0) {
-            return;
+            return distance;
         }
         Candidate candidate = new Candidate(distance, offered++, json);
         if (heap.size() < quota) {
             heap.add(candidate);
-        } else if (FARTHEST_FIRST.compare(candidate, heap.peek()) > 0) {
-            // Nearer than the farthest kept (or as near and offered earlier).
-            heap.poll();
-            heap.add(candidate);
+            return Double.NaN;
         }
+        if (FARTHEST_FIRST.compare(candidate, heap.peek()) > 0) {
+            // Nearer than the farthest kept (or as near and offered earlier).
+            double displaced = heap.poll().distance();
+            heap.add(candidate);
+            return displaced;
+        }
+        return distance;
     }
 
     /**

@@ -72,10 +72,13 @@ class PlacingTests(unittest.TestCase):
     def test_the_cell_is_looked_at_again_just_before_pressing(self):
         """A berry bush appears under the cell while it aims. The scan
         cannot say which of the two blocks above the floor the bush is in,
-        so the cell is no longer known to be free: nothing is pressed."""
+        so the cell is no longer known to be free: nothing is pressed. (A
+        jar without near_blocks: with it, the bush is known to be in the
+        other cell, and placing is right.)"""
         world = BuildWorld({0: ("cobblestone", 5)},
                            placed=(((2, 64, 0), "cobblestone"),
                                    ((2, 65, 0), "cobblestone")))
+        world.report_near = False
         original = world.look
 
         def look_then_bush(params):

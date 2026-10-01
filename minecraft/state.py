@@ -191,6 +191,55 @@ class GuiView:
 
 
 @dataclass(frozen=True)
+class NearSnapshot:
+    """Every non-air block in a small box around the player, from the bridge
+    (`near_blocks`, B4d) -- where the terrain scan, one floor per column,
+    cannot say what is under a wall's top.
+
+    The box is `radius` blocks each way across, from `below` under the feet
+    block (`origin`) to `above` over it. `complete_within` is how far the
+    list is complete -- None when nothing was left out: a cell inside the
+    box, nearer than that, and not listed is air. Beyond it, not known."""
+    origin: tuple                          # the feet block (x, y, z)
+    radius: int
+    below: int
+    above: int
+    complete_within: float | None = None
+    blocks: tuple = ()                     # tuple[NearbyBlock, ...]
+
+    def covers(self, cell) -> bool:
+        """Can this snapshot say what is at `cell`, air included?"""
+        try:
+            dx = int(cell[0]) - int(self.origin[0])
+            dy = int(cell[1]) - int(self.origin[1])
+            dz = int(cell[2]) - int(self.origin[2])
+        except (TypeError, ValueError, IndexError):
+            return False
+        if abs(dx) > self.radius or abs(dz) > self.radius \
+                or not -self.below <= dy <= self.above:
+            return False
+        return self.complete_within is None or \
+            (dx * dx + dy * dy + dz * dz) ** 0.5 < self.complete_within
+
+    def block_at(self, cell):
+        """The listed block at `cell`, or None."""
+        try:
+            want = (int(cell[0]), int(cell[1]), int(cell[2]))
+        except (TypeError, ValueError, IndexError):
+            return None
+        for block in self.blocks:
+            if block.position == want:
+                return block
+        return None
+
+    def as_dict(self) -> dict:
+        return {"origin": list(self.origin), "radius": self.radius,
+                "below": self.below, "above": self.above,
+                "complete_within": self.complete_within,
+                "blocks": [b.as_dict() for b in self.blocks]}
+
+
+@dataclass(frozen=True)
 class WorldState:
     """Everything the agent believes about the game right now.
 
@@ -239,6 +288,9 @@ class WorldState:
     carried: ItemStack | None = None       # the stack on the pointer
     game_mode: str | None = None           # survival / creative / ...
 
+    # Every block in a small box around the player (B4d), from the bridge.
+    near: NearSnapshot | None = None
+
     # Provenance — never None, because "where did this come from" always has
     # an answer even when every value is missing.
     source: str = "none"
@@ -258,7 +310,7 @@ class WorldState:
                "time_of_day", "light_level", "nearby_entities",
                "surface", "notable_blocks", "scan_radius",
                "mouse_sensitivity", "on_ground",
-               "screen", "gui", "slots", "carried", "game_mode")
+               "screen", "gui", "slots", "carried", "game_mode", "near")
 
     def __post_init__(self):
         """Normalise provenance, then freeze it.

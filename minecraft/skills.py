@@ -4370,6 +4370,7 @@ class _Builder:
                 return self._restore(state)
             cell = self._next_cell(state)
             if cell is None:
+                self._finished(state)
                 return self._restore(state)
             self._current = PlaceBlockAt(x=cell[0], y=cell[1], z=cell[2],
                                          item=self.item, known=self._known,
@@ -4399,6 +4400,9 @@ class _Builder:
     def _targets(self, state):
         """Fill self._cells, or return why not."""
         raise NotImplementedError
+
+    def _finished(self, state) -> None:
+        """Every cell has been tried. A hook for a last check."""
 
     def _keep_out(self) -> frozenset:
         """Columns never to stand in while building: the structure's own.
@@ -4530,6 +4534,7 @@ class BuildBlueprint(_Builder):
     _key: tuple = None
     _blueprint: object = None
     _before: int = 0                # cells placed by earlier tasks
+    _checked: str = ""
     _found: list = field(default_factory=list)
     _lists_untried = False          # "Still to place" says it
 
@@ -4562,11 +4567,13 @@ class BuildBlueprint(_Builder):
             head += (f"Already in place when I started, though not proven "
                      f"by me: {_cells_text(self._found)}. ")
         if done >= total:
-            return f"{head}Built: all {total} placed. This task {text}"
+            return (f"{head}Built: all {total} placed. This task {text}"
+                    f"{self._checked}")
         left = [c for c in record["cells"] if c not in record["placed"]]
         return (f"{head}{done} of {total} placed so far. This task "
-                f"{text} Still to place: {_cells_text(left)}. Ask again "
-                f"(build_blueprint {self._blueprint.plan}) to carry on.")
+                f"{text}{self._checked} Still to place: {_cells_text(left)}. "
+                f"Ask again (build_blueprint {self._blueprint.plan}) to "
+                f"carry on.")
 
     def _record(self, current) -> None:
         super()._record(current)
@@ -4623,6 +4630,43 @@ class BuildBlueprint(_Builder):
         self._cells = left
         self._known = record["known"]
         return None
+
+    def _finished(self, state) -> None:
+        """With the plan placed, check it against the game's own list of
+        the blocks around the player (near_blocks, B4d), where it reaches.
+        A cell that does not hold the block now is taken off the placed
+        list -- asking again puts it back -- and the report names it."""
+        record = _BLUEPRINTS.get(self._key)
+        near = getattr(state, "near", None)
+        if record is None or len(record["placed"]) < len(record["cells"]):
+            return
+        if near is None:
+            self._checked = (" Not checked block by block: the bridge mod "
+                             "does not report the blocks around me "
+                             "(install_mod.bat updates it).")
+            return
+        seen, wrong, out_of_range = 0, [], 0
+        for cell in record["cells"]:
+            if not near.covers(cell):
+                out_of_range += 1
+                continue
+            block = near.block_at(cell)
+            name = building_mod.short(block.name) if block else "air"
+            if name == self.item:
+                seen += 1
+            else:
+                wrong.append((cell, name))
+        text = (f" Checked against the game's own list of the blocks around "
+                f"me: {seen} of {len(record['cells'])} confirmed")
+        if out_of_range:
+            text += f", {out_of_range} too far from where I stand to check"
+        if wrong:
+            text += ("; not as built: " + "; ".join(
+                f"{c} holds {_words(n)}" for c, n in wrong))
+            for cell, _name in wrong:
+                record["placed"].discard(cell)
+                record["known"].pop(cell, None)
+        self._checked = text + "."
 
     def _keep_out(self) -> frozenset:
         """For walls and a shelter, the footprint -- every column inside

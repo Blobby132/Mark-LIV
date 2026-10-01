@@ -161,6 +161,36 @@ class BuildTests(unittest.TestCase):
         self.assertIn(str(spare), skill.done_reason)
         self.assertNotIn(spare, [c for c, _ in world.placed])
 
+    def test_a_finished_build_is_checked_block_by_block(self):
+        world = BuildWorld({0: ("cobblestone", 20)})
+        skill, _ = build(world, plan="platform", x=0, y=64, z=3)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertIn("Checked against the game's own list", skill.done_reason)
+        self.assertIn("9 of 9 confirmed", skill.done_reason)
+
+    def test_a_block_gone_since_is_found_and_put_back_on_the_list(self):
+        world = BuildWorld({0: ("cobblestone", 20)})
+        original = world.place
+
+        def then_broken(params):
+            answer = original(params)
+            if len(world.placed) == 9:           # someone breaks the first
+                del world.blocks[world.placed[0][0]]
+            return answer
+        world.place = then_broken
+        skill, _ = build(world, plan="platform", x=0, y=64, z=3)
+        gone = world.placed[0][0]
+        self.assertTrue(skill.failed)
+        self.assertIn(f"{gone} holds air", skill.done_reason)
+        self.assertIn("Still to place", skill.done_reason)
+
+    def test_without_the_snapshot_it_says_it_did_not_check(self):
+        world = BuildWorld({0: ("cobblestone", 20)})
+        world.report_near = False
+        skill, _ = build(world, plan="platform", x=0, y=64, z=3)
+        self.assertFalse(skill.failed, skill.done_reason)
+        self.assertIn("Not checked block by block", skill.done_reason)
+
     def test_without_coordinates_it_builds_in_front(self):
         world = BuildWorld({0: ("cobblestone", 20)}, yaw=0.0)  # facing +z
         skill, result = build(world, plan="platform")

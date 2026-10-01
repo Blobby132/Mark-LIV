@@ -321,12 +321,13 @@ public class MarkLivBridge implements ClientModInitializer {
         Terrain terrain = scanTerrain(level, feet);
         out.raw("surface", terrain.surface);
         out.raw("notable_blocks", terrain.notable);
+        out.raw("near_blocks", terrain.near);
 
         return out.close();
     }
 
-    /** The two products of one pass over the scan volume. */
-    private record Terrain(String surface, String notable) { }
+    /** The three products of one pass over the scan volume. */
+    private record Terrain(String surface, String notable, String near) { }
 
     /**
      * Can a player's body occupy this block?
@@ -403,6 +404,9 @@ public class MarkLivBridge implements ClientModInitializer {
         int originX = feet.getX();
         int originY = feet.getY();
         int originZ = feet.getZ();
+        // Every non-air block close by, from the rows this pass reads
+        // anyway: no extra block lookups.
+        NearBlocks near = new NearBlocks(originX, originY, originZ);
         BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
         // Each column is read once, top down, from MAX_CLEARANCE above the
@@ -476,6 +480,18 @@ public class MarkLivBridge implements ClientModInitializer {
                     }
                 }
 
+                if (Math.abs(dx) <= NearBlocks.RADIUS
+                        && Math.abs(dz) <= NearBlocks.RADIUS) {
+                    for (int dy = -NearBlocks.BELOW; dy <= NearBlocks.ABOVE;
+                            dy++) {
+                        int i = top - dy;
+                        if (i >= 0 && i < length && !air[i]) {
+                            near.offer(x, originY + dy, z, names[i],
+                                       collides[i]);
+                        }
+                    }
+                }
+
                 int floor = ColumnScan.floor(collides, open, first, last,
                         feetIndex, PLAYER_HEIGHT, MAX_CLEARANCE);
                 int chosen = floor >= 0 ? floor
@@ -498,7 +514,8 @@ public class MarkLivBridge implements ClientModInitializer {
 
         return new Terrain(Json.array(surface.toArray(new String[0])),
                            Json.array(notable.select(List.of())
-                                   .toArray(new String[0])));
+                                   .toArray(new String[0])),
+                           near.json());
     }
 
     private String targetBlockJson(Minecraft client) {
