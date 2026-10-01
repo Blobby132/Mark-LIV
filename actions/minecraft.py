@@ -1077,10 +1077,10 @@ TOOL = {
         "stop. Longer durations are shortened to the limit, not refused.\n"
         "TASKS: run_task does a bounded multi-step job, observing and "
         "verifying between steps: walk_forward, survey, find_block, "
-        "break_block, place_block, collect_logs, fell_tree, navigate_to, "
-        "eat_food, aim_at_block, "
+        "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
+        "navigate_to, eat_food, aim_at_block, "
         "mine_block. The mining tasks (break_block, collect_logs, fell_tree, "
-        "mine_block) take up the best tool in the HOTBAR first and put the "
+        "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
         "slot back afterwards; they refuse, before swinging, a block nothing "
         "in the hotbar can harvest (stone by hand, iron with a wooden "
         "pickaxe) and say so -- including when the right tool is only in the "
@@ -1126,7 +1126,15 @@ TOOL = {
         "at most, never counted as logs. Their reports name the tree each "
         "log came from and any logs left too high to reach: answer 'which "
         "tree' or 'why that tree' from that report, and if it does not say, "
-        "say you do not know rather than guess. break_block only breaks "
+        "say you do not know rather than guess. "
+        "collect_blocks gets `count` of target = stone (cobblestone), dirt, "
+        "sand, red_sand, gravel, deepslate, coal, iron (raw iron) or copper "
+        "(raw copper): it walks to the nearest exposed one it can reach, "
+        "breaks it with the right hotbar tool and picks up the drop, and "
+        "counts success ONLY from the drop arriving in the inventory. It "
+        "never digs (a buried block is 'not reachable without digging'), "
+        "never breaks the block under the player, and leaves any block "
+        "touching water or lava. break_block only breaks "
         "whatever the crosshair is on right now — it does not aim or walk — "
         "so for 'break a log' use collect_logs.\n"
         "eat_food eats from the HOTBAR until not hungry (count: how many "
@@ -1213,8 +1221,9 @@ TOOL = {
                 "type": "STRING",
                 "description": ("For run_task: walk_forward | survey | "
                                 "find_block | break_block | place_block | "
-                                "collect_logs | fell_tree | navigate_to | "
-                                "eat_food | aim_at_block | mine_block."),
+                                "collect_logs | fell_tree | collect_blocks | "
+                                "navigate_to | eat_food | aim_at_block | "
+                                "mine_block."),
             },
             "x": {
                 "type": "INTEGER",
@@ -1240,11 +1249,15 @@ TOOL = {
                                 "nearest one of these instead of a "
                                 "coordinate — log, stone, dirt, grass, sand, "
                                 "water, crafting_table, furnace, chest, or "
-                                "an exact block name."),
+                                "an exact block name. For collect_blocks: "
+                                "what to collect — stone, dirt, sand, "
+                                "red_sand, gravel, deepslate, coal, iron or "
+                                "copper."),
             },
             "count": {
                 "type": "INTEGER",
-                "description": ("For collect_logs: how many logs to get. With "
+                "description": ("For collect_logs and collect_blocks: how "
+                                "many logs or items to get. With "
                                 "the bridge mod they are counted in the "
                                 "inventory (collected); without it I can "
                                 "only report blocks that disappeared "
