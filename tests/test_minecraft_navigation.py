@@ -2221,3 +2221,28 @@ class NewRouteStartsAtItsStartTests(unittest.TestCase):
         skill._skip_to = 5
         skill._reroute(stuck_diagnosis(), avoid=None)
         self.assertEqual(skill._skip_to, 0)
+
+
+class AvoidedStartTests(unittest.TestCase):
+    """A3: the diagonal-clip check in find_path also ran for straight
+    moves, and for a straight move one of its two "corner" cells is the
+    current column. The start can be avoided -- the player stands where
+    the mob was -- and then every move out of it was refused."""
+
+    def corridor(self):
+        floor = [NearbyBlock(x, 63, 0, "stone", True, 4) for x in range(-2, 8)]
+        walls = [NearbyBlock(x, 66, z, "stone", True, 4)
+                 for x in range(-2, 8) for z in (-1, 1)]
+        return state_from(floor + walls, position=(0.5, 64.0, 0.5))
+
+    def test_a_corridor_out_of_an_avoided_start(self):
+        state = self.corridor()
+        self.assertTrue(nav.find_path(state, (5, 0)).found)
+        path = nav.find_path(state, (5, 0), avoid={(0, 0)})
+        self.assertTrue(path.found, path.reason)
+
+    def test_diagonals_past_an_avoided_column_are_still_refused(self):
+        path = nav.find_path(state_from(flat_with_room(4)), (1, 1),
+                             avoid={(0, 0), (1, 0)})
+        first = path.waypoints[0]
+        self.assertNotEqual((first[0], first[-1]), (1, 1))

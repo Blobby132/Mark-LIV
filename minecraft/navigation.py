@@ -574,9 +574,14 @@ def find_path(state, goal, max_nodes: int = MAX_NODES, avoid=None) -> Path:
         for neighbour, step in local.neighbours(current):
             if neighbour in blocked:
                 continue
-            if blocked and (neighbour[0], current[1]) in blocked \
-                    or blocked and (current[0], neighbour[1]) in blocked:
-                continue    # a diagonal past an avoided column clips it
+            if blocked and neighbour[0] != current[0] \
+                    and neighbour[1] != current[1] \
+                    and ((neighbour[0], current[1]) in blocked
+                         or (current[0], neighbour[1]) in blocked):
+                # A diagonal past an avoided column clips it. Diagonals
+                # only: for a straight move one of these "corners" is the
+                # current column, which is avoided when it is the start.
+                continue
             new_cost = cost_so_far[current] + step
             if new_cost < cost_so_far.get(neighbour, float("inf")):
                 cost_so_far[neighbour] = new_cost
