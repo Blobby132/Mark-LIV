@@ -24,7 +24,7 @@ part-way, the next one starts here.
 | 0a line endings | done | normalise line endings, no content change |
 | 0b pyproject | done | pyproject.toml and a lint test |
 | 0c defects and lint | done | a01fdec skills/__init__.py: an explicit public API |
-| 1 tests | | |
+| 1 tests | done | 52cdfaf tests: drop the move's two fallbacks |
 | 2 docs | | |
 | 3 oversized files | | |
 | 4 root and tools | | |
@@ -43,4 +43,10 @@ Expected after phase 0: 1507 collected (1501 + 6).
 
 ## Next
 
-Phase 1: tests into subfolders (1a-1e).
+Phase 2: docs (2a shrink readme, docs/minecraft/; 2b index and link test;
+2c ARCHITECTURE).
+
+Phase 1 proof (1e): test names (file::class::method, path ignored) are
+identical before and after -- unittest on 3.11/3.12/3.13 and pytest, 1507
+each, zero differences. Counts: pytest 3.11 1494 passed / 13 skipped,
+3.12 and 3.13 1470 / 37; unittest 1507 run, 13 / 37 / 37 skipped.
