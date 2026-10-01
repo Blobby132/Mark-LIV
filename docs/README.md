@@ -21,6 +21,8 @@ and safety in brief. Everything else is here.
 | [Inventory and crafting screens](minecraft/gui.md) | What the bridge reports about an open screen, and the click gate |
 | [Jumping and placing](minecraft/jump-place.md) | Design for building upwards and over gaps (not built) |
 | [Proposals](minecraft/proposals.md) | Shallow water, a staircase down, long trips in legs (not built) |
+| [First real run](minecraft/FIRST_RUN.md) | The checklist for the first test in the game, in order, with what to write down when a step fails |
+| [Not tested in the game](minecraft/NOT_TESTED_IN_GAME.md) | Every capability verified only by unit tests or simulation, with its source and tests |
 
 ## Working on it
 

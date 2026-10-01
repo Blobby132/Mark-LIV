@@ -26,9 +26,9 @@ part-way, the next one starts here.
 | 3 two readme lines | done | 553b139 |
 | 4 unused public names | done | 456153a |
 | 5 remaining lint | done | d95f99e |
-| 6 stale Java comment | done | (this commit) |
-| 7 first-run docs | | |
+| 6 stale Java comment | done | f222b0b |
+| 7 first-run docs | done | (this commit) |
 
 ## Next
 
-Item 7.
+Final: three-version run, delete this file, report.

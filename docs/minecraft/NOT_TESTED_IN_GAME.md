@@ -1,0 +1,89 @@
+# Not tested in the game
+
+Everything below has been verified only by unit tests, the Java test
+harness, or a simulated world (`tests/support/`). None of it has run inside
+Minecraft. [FIRST_RUN.md](FIRST_RUN.md) is the checklist that tries it.
+
+**What has run in the game.** The live logs from the first three runs
+(up to 2026-09-24) exercised starting a session, `look`, `move`, `mine`,
+`navigate_to`, `collect_logs` and `break_block` — the third run with the jar
+that reads the ground nearest the feet (commits 56081e0, 6ddeaa2). Session
+start reported the F12 hook as `global`; no log records F12 being pressed.
+Everything committed from 2b5c11c ("Third run: …") onward is untested in the
+game, and so is every jar built since: **the current
+`mods/markliv-bridge-1.0.0.jar` has never been loaded in Minecraft.**
+
+The "From" column is the report that listed it as unverified (or the commit, where it came after the last run without a report saying so): **R-A** the
+A/N/C round, **R-D** the danger-stop round, **R-B** the B round (screens,
+building, survival), **R-1** the items 1–7 round.
+
+## The bridge mod (Java)
+
+| Capability | Source | Only verified by | From |
+|---|---|---|---|
+| The open screen's kind, its slots and their window-pixel positions, the pointer, the stack on the pointer, the game mode | `fabric-mod/src/main/java/com/markliv/bridge/Gui.java` | `tests/bridge/test_bridge_gui_fields.py` (Java harness `GuiCheck.java`) | R-B |
+| The access widener that lets the mod read where a container screen is drawn (`leftPos`, `topPos`) | `fabric-mod/src/main/resources/markliv-bridge.accesswidener` | `tests/bridge/test_bridge_gui_fields.py` checks it is declared; never loaded | R-B |
+| `near_blocks`: every non-air block within 4 of the player, and how far out the list is complete; its size (about 4.8 KB, under 12 KB at its cap) | `fabric-mod/src/main/java/com/markliv/bridge/NearBlocks.java` | `tests/bridge/test_bridge_near_blocks.py` (`NearBlocksCheck.java`) | R-B |
+| The target's and each mob's `category` (hostile, passive, player, …) and position | `MarkLivBridge.java` (`categoryOf`), `Kinds.java` | `tests/minecraft/test_minecraft_attack_precondition.py`, `test_minecraft_item_drops.py` | R-B, R-1 |
+| What a dropped item is (`item` on its entity entry) | `Kinds.java`, `MarkLivBridge.java` | `tests/minecraft/test_minecraft_item_drops.py`, `tests/bridge/test_bridge_nearest.py` | R-A (N7) |
+| Logs reported up to 12 blocks above the feet, following the trunk | `ColumnScan.java` (`TREE_UP`), `MarkLivBridge.java` | `tests/bridge/test_bridge_floor_scan.py` (`ColumnScanCheck.java`) | R-A (N8) |
+| The nearest notable blocks of each kind, not the first 64 found | `Nearest.java` | `tests/bridge/test_bridge_nearest.py` (`NearestCheck.java`) | committed after the last run (0060ef0) |
+| The one list of logs and hazards (crimson and warped stems, dripstone, portals, sculk, tripwire) | `Kinds.java`, `minecraft/navigation.py` | `tests/minecraft/test_minecraft_block_names.py` | R-A (C10) |
+| The terrain scan's cost (collision computed once per block, names cached) — never timed | `ColumnScan.java` | `tests/bridge/test_bridge_scan_cost.py` | R-A (C11) |
+
+## Screens and crafting
+
+| Capability | Source | Only verified by | From |
+|---|---|---|---|
+| The click gate: allowed screens and modes, the pointer inside the slot's shrunken rect, no hostile near, no health lost | `minecraft/gui.py`, `minecraft/controller.py` (`gui_click`, `gui_swap`) | `tests/minecraft/test_minecraft_gui.py`, `test_minecraft_gui_actions.py` | R-B |
+| Bringing the pointer onto a slot: pointer acceleration, learnt from the pointer the game reports | `minecraft/skills/base.py` (`_learn_pointer`), `minecraft/controller.py` (`gui_point`) | `tests/minecraft/test_minecraft_craft_item.py`, `test_minecraft_hotbar_fetch.py` (simulated `pointer_gain` in `tests/support/gui_world.py`) | R-B |
+| Crafting by clicks: pick up a stack, one per cell, put the rest back, shift-click the output; the 2×2 and the 3×3; putting a table down first | `minecraft/skills/craft.py`, `minecraft/recipes.py` | `tests/minecraft/test_minecraft_craft_item.py` | R-B |
+| Moving an item from the main inventory to the hotbar (one number-key swap) | `minecraft/skills/hotbar.py` | `tests/minecraft/test_minecraft_hotbar_fetch.py` | R-B |
+| `craft_item` taking up a safe slot before opening a table, and putting the old slot back | `minecraft/skills/craft.py` (`_safe_hand`, `_restore_hand`) | `tests/minecraft/test_minecraft_interact_held_item.py` | R-1 |
+| The runner pressing ESC to close a screen its task opened, after a cancel, a timeout or an error | `minecraft/task_runner.py` (`_track_screen`, `_close_own_screen`) | `tests/minecraft/test_minecraft_screen_guard.py` | R-1 |
+| No gameplay input while a screen is open | `minecraft/controller.py` (`SCREEN_BLOCKED_ACTIONS`) | `tests/minecraft/test_minecraft_screen_guard.py` | R-1 |
+| `inventory close` refused when the bridge reports no screen | `minecraft/controller.py` (`_close_refusal`) | `tests/minecraft/test_minecraft_inventory_close.py` | R-1 |
+
+## Placing and building
+
+| Capability | Source | Only verified by | From |
+|---|---|---|---|
+| Face aiming: pressing only when the crosshair is on the right block *and* face; proving the result twice | `minecraft/skills/place_build.py` (`PlaceBlockAt`), `minecraft/building.py`, `minecraft/aiming.py` | `tests/minecraft/test_minecraft_place_block_at.py`, `test_minecraft_place_precondition.py` | R-B |
+| `build_line` | `minecraft/skills/place_build.py` (`BuildLine`) | `tests/minecraft/test_minecraft_build_line.py` | R-B |
+| `build_blueprint` and the shelter numbers: 14 wall blocks with a doorway, a 3-block step, a 9-block roof (26); about fifteen blocks a task; carrying on | `minecraft/building.py`, `minecraft/skills/place_build.py` (`BuildBlueprint`) | `tests/minecraft/test_minecraft_build_blueprint.py` | R-B |
+| The hop onto a single raised block, and giving up after 3 hops at the same block (the overshoot came from the simulator's walk speed) | `minecraft/skills/navigate.py` (`MAX_HOPS_ONTO`) | `tests/minecraft/test_minecraft_navigate_fixes.py` | R-B |
+| `place` and `interact` refusing buckets, flint and steel, TNT, spawn eggs and the like; `use_item` pouring or lighting only when the item is named | `minecraft/action_spec.py` (`interact_refusal`, `use_item_refusal`), `minecraft/controller.py` | `tests/minecraft/test_minecraft_place_held_item.py`, `test_minecraft_interact_held_item.py` | R-1 |
+| Jump, then place (pillar up, bridge): **not built** — a design only, with a timing window (about 0.27 s) from game constants, never measured | [jump-place.md](jump-place.md) | nothing — there is no code | R-B |
+
+## Mobs and danger
+
+| Capability | Source | Only verified by | From |
+|---|---|---|---|
+| `flee` against real mobs: running to the furthest reachable ground, sprinting on clear ground, until the nearest hostile is over 12 blocks away | `minecraft/skills/combat.py` (`Flee`) | `tests/minecraft/test_minecraft_flee.py` (simulated `MobWorld`) | R-B |
+| `fight` against real mobs: walk into reach, aim at the body, tap every other step; a hit judged by knockback (the check wants 0.2 blocks; about 0.4 in the game, 0.5 in the simulator); "gone" as "most likely killed" | `minecraft/skills/combat.py` (`Fight`), `minecraft/verification.py` (`knocked_back`) | `tests/minecraft/test_minecraft_fight.py` (simulated arena) | R-B |
+| `fight`: the mobs it will not walk up to (`NEVER_MELEE`, matched by the names the game reports), the start-health floor (12), taking up the best sword or axe and putting the slot back | `minecraft/skills/combat.py` | `tests/minecraft/test_minecraft_fight.py` | R-1 |
+| Every `attack` hits only a mob the game calls hostile | `minecraft/controller.py` (`_entity_refusal`), `actions/minecraft.py` (`_entity_probe`) | `tests/minecraft/test_minecraft_attack_default.py`, `test_minecraft_attack_precondition.py` | R-1 |
+| The danger watch between steps: a lost heart, or a hostile within 5 blocks at about your level, stops or refuses a task; `navigate_to` keeps walking | `minecraft/danger.py`, `minecraft/task_runner.py` | `tests/minecraft/test_minecraft_danger.py`, `test_minecraft_tasks.py` | R-D |
+| The hazard probe inside a hold: mining, eating, placing or interacting lets go for a hostile within 3 blocks or 2 health lost | `actions/minecraft.py` (`_hazard_probe`), `minecraft/controller.py` | `tests/minecraft/test_minecraft_hazard_probe.py` | R-A (A2, A4) |
+| The dusk thresholds (12000, 13000, 23000 ticks; a hostile within 24 blocks), from game constants, never measured; overworld only | `minecraft/danger.py` (`DUSK_START`, `NIGHT_START`, `NIGHT_END`, `has_night`) | `tests/minecraft/test_minecraft_night.py` | R-B, R-1 |
+
+## Walking, gathering, eating
+
+| Capability | Source | Only verified by | From |
+|---|---|---|---|
+| Going round a mob in a gap; diagonal steps not cutting corners; a failed hop counted as a stall; detour tries refilling; not skipping a new route's first waypoints | `minecraft/skills/navigate.py`, `minecraft/navigation.py`, `minecraft/stuck.py` | `tests/minecraft/test_minecraft_navigation.py`, `test_minecraft_navigate_fixes.py` | R-A (N1–N5) |
+| Step pacing: counting the wait for a fresh reading toward the pause (about 400 ms a step, measured in a timed simulation) | `minecraft/task_runner.py` | `tests/minecraft/test_minecraft_step_pacing.py` | R-A (N6) |
+| Re-planning when the target log changes mid-walk; picking up what was broken before giving up; trying every drop | `minecraft/skills/collect.py` | `tests/minecraft/test_collect_logs_walker.py`, `test_collect_logs_trees.py`, `test_live_run_regressions.py` | R-A (N9), R-D |
+| Taking up the best hotbar tool before each swing, and putting the slot back | `minecraft/skills/collect.py` (`_HoldsTheRightTool`), `minecraft/mining.py` | `tests/minecraft/test_minecraft_tools.py` | R-B (B1) |
+| `collect_blocks` (stone, dirt, sand, gravel, ores): only exposed blocks, never the one underfoot, none beside water or lava | `minecraft/skills/collect_blocks.py` | `tests/minecraft/test_collect_blocks.py` | R-B (B2) |
+| `eat_food`: choosing food, eating for each food's own time (capped at 3 s), looking up first if a chest or door is under the crosshair | `minecraft/skills/eat.py` | `tests/minecraft/test_minecraft_eating.py` | R-D, R-A (C8) |
+| `look_around` saying how many trees, your health, hunger, the food on your hotbar and whether it is night | `actions/minecraft.py` (`_around_line`, `_player_bits`) | `tests/minecraft/test_minecraft_navigation.py`, `test_minecraft_night.py` | R-D |
+| A brief "cannot see the window" blip not ending the session | `minecraft/controller.py` (`WINDOW_MISS_SPAN_S`, `WINDOW_MISS_RUN_GAP_S`) | `tests/minecraft/test_minecraft_safety.py` | R-A (C9) |
+| `install_mod.bat` refusing while Minecraft runs, and checking the copy by content | `tools/install_mod.py` | `tests/bridge/test_install_mod.py` | R-D |
+
+## Not Minecraft, and not testable here
+
+Anything needing Windows (the `.bat` files, the global F12 hook, SendInput),
+the Qt HUD, audio devices or the live Gemini session has not been run where
+these changes were made. Those are covered by the first-run checklist only
+where they touch Minecraft.
