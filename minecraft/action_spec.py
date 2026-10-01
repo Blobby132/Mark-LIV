@@ -224,10 +224,12 @@ class HoldSpec:
     duration: float = 0.0
     requested_duration: float = 0.0
     detail: dict = None
-    # Mining only: the (x, y, z) the crosshair must be CONFIRMED on before the
-    # button goes down. A precondition, not a destination -- it can only make
-    # a mine refuse, never make one reach somewhere else.
+    # Mining and placing: the (x, y, z) the crosshair must be CONFIRMED on
+    # before the button goes down -- and for placing, optionally which face.
+    # A precondition, not a destination: it can only make the action refuse,
+    # never make it reach somewhere else.
     expect_target: tuple = None
+    expect_face: str = None
 
     @property
     def clamped(self) -> bool:
@@ -240,6 +242,8 @@ class HoldSpec:
             out.update(self.detail)
         if self.expect_target is not None:
             out["expect_at"] = list(self.expect_target)
+        if self.expect_face is not None:
+            out["expect_face"] = self.expect_face
         return out
 
 
@@ -581,8 +585,12 @@ def _parse_expect_at(params: dict):
             or len(raw) != 3:
         raise InvalidAction(
             "'expect_at' must be the block coordinate [x, y, z] the "
-            "crosshair has to be on before mining.")
+            "crosshair has to be on before pressing.")
     return tuple(_as_int(v, "expect_at") for v in raw)
+
+
+FACES = ("north", "south", "west", "east", "up", "down")
+"""A block's faces, as the game names them (the crosshair reports one)."""
 
 
 def parse_place(params: dict) -> HoldSpec:
@@ -590,7 +598,12 @@ def parse_place(params: dict) -> HoldSpec:
 
     A tap, with no duration parameter: a held right-click places block after
     block as the view drifts, and an agent asked for one block would build a
-    trail of them."""
+    trail of them.
+
+    Optional preconditions, checked by the controller at the last moment:
+    `expect_at` [x, y, z], the block the crosshair must be on, and
+    `expect_face`, which of its faces -- the same block, another face, is
+    another cell. Malformed ones are refused, never dropped."""
     for unsupported in ("duration", "count", "times", "block", "item"):
         if unsupported in (params or {}):
             raise InvalidAction(
@@ -599,8 +612,19 @@ def parse_place(params: dict) -> HoldSpec:
                 f"at -- select the item first with 'hotbar_select', and ask "
                 f"again for another block."
             )
+    target = _parse_expect_at(params)
+    face = (params or {}).get("expect_face")
+    if face is not None:
+        face = str(face).strip().lower()
+        if face not in FACES:
+            raise InvalidAction(f"'expect_face' must be one of "
+                                f"{', '.join(FACES)}.")
+        if target is None:
+            raise InvalidAction("'expect_face' needs 'expect_at': the face "
+                                "of which block?")
     return HoldSpec(action="place", buttons=(USE_BUTTON,),
-                    duration=PLACE_TAP_S, requested_duration=PLACE_TAP_S)
+                    duration=PLACE_TAP_S, requested_duration=PLACE_TAP_S,
+                    expect_target=target, expect_face=face)
 
 
 # What `place` must never right-click with. Placing is a tap of the use

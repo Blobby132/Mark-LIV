@@ -669,7 +669,8 @@ class MinecraftController:
     def _hold_inputs(self, keys: tuple, buttons: tuple, seconds: float,
                      action: str, requested: dict, clamped: bool,
                      stop_when_changed: bool = False,
-                     expect_target: tuple | None = None) -> ActionResult:
+                     expect_target: tuple | None = None,
+                     expect_face: str | None = None) -> ActionResult:
         """Hold keys and/or mouse buttons for up to `seconds`, re-checking the
         world every tick.
 
@@ -686,7 +687,9 @@ class MinecraftController:
         `expect_target`, when given, is the (x, y, z) the progress probe must
         report BEFORE anything is pressed. Mining a block the crosshair is not
         confirmed to be on is how the wrong thing gets broken, so a mismatch,
-        or a probe that cannot say, refuses the action with nothing pressed."""
+        or a probe that cannot say, refuses the action with nothing pressed.
+        `expect_face` adds which face of it -- placing against the wrong face
+        puts the block in the wrong cell."""
         # One input action at a time, refused rather than queued -- see
         # _input_slot. Outside the try below on purpose: an action that never
         # got the slot must not release inputs another action is holding.
@@ -695,12 +698,14 @@ class MinecraftController:
         try:
             return self._hold_inputs_owned(keys, buttons, seconds, action,
                                            requested, clamped,
-                                           stop_when_changed, expect_target)
+                                           stop_when_changed, expect_target,
+                                           expect_face)
         finally:
             self._input_slot.release()
 
     def _hold_inputs_owned(self, keys, buttons, seconds, action, requested,
-                           clamped, stop_when_changed, expect_target):
+                           clamped, stop_when_changed, expect_target,
+                           expect_face=None):
         """`_hold_inputs`, once this thread owns the input slot."""
         started = time.monotonic()
         epoch = self._abort_epoch
@@ -725,7 +730,7 @@ class MinecraftController:
             return self._cancelled_result(action, requested, clamped)
 
         if expect_target is not None:
-            mismatch = self._target_mismatch(expect_target)
+            mismatch = self._target_mismatch(expect_target, expect_face)
             if mismatch:
                 return ActionResult(
                     ok=False, action=action, requested=requested,
@@ -850,9 +855,10 @@ class MinecraftController:
             error=error or (_explain(stopped_reason) if stopped_reason else ""),
         )
 
-    def _target_mismatch(self, expected) -> str:
-        """'' when the probe confirms the crosshair is on `expected` (x, y, z),
-        otherwise a sentence saying what it is on instead.
+    def _target_mismatch(self, expected, face=None) -> str:
+        """'' when the probe confirms the crosshair is on `expected` (x, y, z)
+        -- and on `face` of it, when one is given -- otherwise a sentence
+        saying what it is on instead.
 
         Read at the last moment before input goes down, so the check is about
         where the crosshair IS, not where it was when the step was planned."""
@@ -862,8 +868,8 @@ class MinecraftController:
             return f"{expected!r} is not a block coordinate I can check."
         seen = self._probe()
         if seen is None:
-            return (f"I cannot read what the crosshair is on, so I will not "
-                    f"mine: I could not confirm it is on {want}.")
+            return (f"I cannot read what the crosshair is on, so I pressed "
+                    f"nothing: I could not confirm it is on {want}.")
         try:
             name, where = seen[0], (int(seen[1]), int(seen[2]), int(seen[3]))
         except (TypeError, ValueError, IndexError):
@@ -872,6 +878,15 @@ class MinecraftController:
         if where != want:
             return (f"The crosshair is on {name} at {where}, not on {want}. "
                     f"Nothing was pressed.")
+        if face is not None:
+            seen_face = seen[4] if len(seen) > 4 else None
+            if not seen_face:
+                return (f"The crosshair is on {want}, but the reading does "
+                        f"not say which face, and the {face} face is the one "
+                        f"meant. Nothing was pressed.")
+            if str(seen_face).lower() != face:
+                return (f"The crosshair is on the {seen_face} face of {want}, "
+                        f"not the {face} face. Nothing was pressed.")
         return ""
 
     def move(self, params: dict) -> ActionResult:
@@ -999,7 +1014,9 @@ class MinecraftController:
                 actual_duration_ms=0, stopped_reason="held_item",
                 error_class="HeldItemRefused", error=problem)
         return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
-                                 "place", spec.as_dict(), spec.clamped)
+                                 "place", spec.as_dict(), spec.clamped,
+                                 expect_target=spec.expect_target,
+                                 expect_face=spec.expect_face)
 
     def _held_item(self):
         """The held item's name, "" for an empty hand, None if unknown.

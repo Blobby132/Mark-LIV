@@ -84,7 +84,8 @@ _INPUT_ACTIONS = frozenset({
 
 
 def _target_probe():
-    """What the crosshair is on, for the mining loop to watch.
+    """What the crosshair is on -- (name, x, y, z, face) -- for the mining
+    loop to watch, and for mine and place to confirm before pressing.
 
     Returns None when nothing can read it, which the controller treats as "no
     probe" and falls back to a plain timed hold. Deliberately cheap: it runs
@@ -95,7 +96,8 @@ def _target_probe():
         return None
     if block is None:
         return None
-    return (block.name, block.x, block.y, block.z)
+    return (block.name, block.x, block.y, block.z,
+            getattr(block, "face", None))
 
 
 # Danger inside a hold, per kind of action: (hostile radius, health lost).
