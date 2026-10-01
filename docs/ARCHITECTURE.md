@@ -312,6 +312,16 @@ and safety in brief. Everything else is in `docs/`, indexed by
 [docs/minecraft/](minecraft/README.md). `tests/core/test_repo_hygiene.py`
 fails on a relative link that does not resolve.
 
+## Known stale (fix at the next mod rebuild)
+
+The mod's source cannot change without rebuilding
+`mods/markliv-bridge-1.0.0.jar`, and the jar stays byte-identical until it
+has been tried in the real game. So these wait for the next rebuild:
+
+| Where | What is stale | Should say |
+|---|---|---|
+| `fabric-mod/src/main/java/com/markliv/bridge/MarkLivBridge.java`, line 637 (a comment) | `docs/minecraft-gui.md` | [`docs/minecraft/gui.md`](minecraft/gui.md) -- the doc moved |
+
 ## Where new code goes
 
 **A new skill.** A class in the `minecraft/skills/` module for its kind

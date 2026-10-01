@@ -25,10 +25,10 @@ part-way, the next one starts here.
 | 2 move test_install_mod | done | 3281520 |
 | 3 two readme lines | done | 553b139 |
 | 4 unused public names | done | 456153a |
-| 5 remaining lint | done | (this commit) |
-| 6 stale Java comment | | |
+| 5 remaining lint | done | d95f99e |
+| 6 stale Java comment | done | (this commit) |
 | 7 first-run docs | | |
 
 ## Next
 
-Item 6.
+Item 7.
