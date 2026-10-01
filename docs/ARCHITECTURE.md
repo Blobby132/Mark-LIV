@@ -10,6 +10,7 @@ hold the reasoning; this page is the map.
 voice / model
   └─ actions/minecraft.py          the adapter: which capability a call needs,
        │                           the session banner, ActionResult → words
+       │                           (its long tool text: actions/_minecraft_text.py)
        ├─ core/permissions guard   the broker, deciding from core/capabilities.py
        ├─ minecraft/capabilities   phase gate: can only subtract from that table
        └─ minecraft/controller     session check, focus guard, preconditions,
@@ -32,6 +33,13 @@ reading the game
 The model chooses *which* action or skill to run and with what parameters.
 It never chooses what a skill does step by step, and nothing it says can
 widen what the session allows.
+
+## The adapter, `actions/`
+
+| Module | Job |
+|---|---|
+| `minecraft.py` | The one action the loader discovers: TOOL, the handler, capability resolution, the session banner, the injected probes. |
+| `_minecraft_text.py` | TOOL's long text: the description and every parameter's. Data only; skipped by discovery (leading `_`). |
 
 ## Modules in `minecraft/`
 

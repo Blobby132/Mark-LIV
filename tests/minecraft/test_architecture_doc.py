@@ -29,6 +29,11 @@ class ArchitectureDocTests(unittest.TestCase):
             with self.subTest(module=path.name):
                 self.assertIn(f"`{path.name}`", self.text)
 
+    def test_every_adapter_module_is_mapped(self):
+        for path in sorted((ROOT / "actions").glob("*minecraft*.py")):
+            with self.subTest(module=path.name):
+                self.assertIn(f"`{path.name}`", self.text)
+
     def test_every_skills_module_is_mapped(self):
         for path in sorted((ROOT / "minecraft" / "skills").glob("*.py")):
             with self.subTest(module=path.name):

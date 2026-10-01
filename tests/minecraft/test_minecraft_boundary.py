@@ -24,6 +24,15 @@ from tests.support.paths import REPO_ROOT
 
 PACKAGE = REPO_ROOT / "minecraft"
 ADAPTER = REPO_ROOT / "actions" / "minecraft.py"
+# The adapter's tool text lives beside it, and is part of the adapter.
+ADAPTER_FILES = [ADAPTER, REPO_ROOT / "actions" / "_minecraft_text.py"]
+
+# The one module beside the adapter it may import: TOOL's text. It is not an
+# action (no TOOL, skipped by discovery), it is scanned like the rest, and
+# test_the_adapters_text_is_inert_data pins it to literals only -- no
+# import, no function, no class -- so importing it can never bring a
+# capability with it.
+ADAPTER_DATA_MODULES = frozenset({"actions._minecraft_text"})
 
 # Modules this package may import. Anything else is a boundary violation.
 #
@@ -78,7 +87,7 @@ def _module_files():
     # too. A flat glob would pass a forbidden import there without a look.
     files = sorted(PACKAGE.rglob("*.py"))
     assert files, "no modules found in minecraft/ — is the path right?"
-    return files + [ADAPTER]
+    return files + ADAPTER_FILES
 
 
 def _imports(tree) -> list:
@@ -102,6 +111,10 @@ def _root(name: str) -> str:
 
 
 class TestImportBoundary(unittest.TestCase):
+
+    def test_the_adapters_text_module_is_checked_too(self):
+        self.assertIn(REPO_ROOT / "actions" / "_minecraft_text.py",
+                      _module_files())
 
     def test_subpackages_are_checked_too(self):
         """The skills were split into minecraft/skills/; every module there
@@ -131,6 +144,8 @@ class TestImportBoundary(unittest.TestCase):
             for name, lineno in _imports(tree):
                 if name.startswith("minecraft") or name.startswith("."):
                     continue
+                if name in ADAPTER_DATA_MODULES:
+                    continue
                 if name in ALLOWED_CORE or _root(name) == "minecraft":
                     continue
                 if _root(name) in ALLOWED_STDLIB:
@@ -156,8 +171,28 @@ class TestImportBoundary(unittest.TestCase):
                     continue
                 if name in ("actions", "actions.minecraft"):
                     continue
+                if name in ADAPTER_DATA_MODULES:
+                    continue
                 offenders.append(f"{path}:{lineno} imports {name}")
         self.assertEqual(offenders, [], f"sideways action imports: {offenders}")
+
+    def test_the_adapters_text_is_inert_data(self):
+        """What makes ADAPTER_DATA_MODULES safe to import: a docstring and
+        assignments of literals, nothing else anywhere in the file."""
+        for module in ADAPTER_DATA_MODULES:
+            path = REPO_ROOT / (module.replace(".", "/") + ".py")
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in tree.body:
+                with self.subTest(module=module, line=node.lineno):
+                    if isinstance(node, ast.Expr):
+                        self.assertIsInstance(node.value, ast.Constant)
+                        continue
+                    self.assertIsInstance(node, ast.Assign)
+                    ast.literal_eval(node.value)      # raises if not a literal
+            code = [n for n in ast.walk(tree) if isinstance(n, (
+                ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef,
+                ast.Lambda, ast.Call))]
+            self.assertEqual(code, [], f"{module} must stay data only")
 
     def test_core_imports_are_limited_to_the_narrow_interfaces(self):
         offenders = []
