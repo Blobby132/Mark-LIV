@@ -167,5 +167,50 @@ class ConfinedWriterTests(_Sandbox):
             "print('built')")
 
 
+
+def long_source(chars):
+    """A Python file of `chars` characters, give or take a line, ending in
+    a marker."""
+    lines, size, i = [], 0, 0
+    while size < chars - 20:
+        line = f"value_{i} = {i}\n"
+        lines.append(line)
+        size += len(line)
+        i += 1
+    return "".join(lines) + "# END OF FILE\n"
+
+
+class OptimizeCapTests(_Sandbox):
+    """2. optimize sent the model code[:6000] and wrote the reply over the
+    whole file, so everything after 6,000 characters was lost even after
+    the user confirmed. It now refuses a file over the cap, saying how long
+    it is, and sends the whole file below it."""
+
+    def test_a_file_over_the_cap_is_left_byte_identical(self):
+        source = long_source(self.ch.OPTIMIZE_MAX_CHARS + 4000)
+        path = self.project_file(source)
+        before = path.read_bytes()
+        self.replies.append(source[:self.ch.OPTIMIZE_MAX_CHARS])
+        answer = self.run_action(action="optimize", file_path="project/app.py")
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.prompts, [], "the model was asked anyway")
+        self.assertIn(f"{len(source):,}", answer)
+        self.assertIn(f"{self.ch.OPTIMIZE_MAX_CHARS:,}", answer)
+
+    def test_inline_code_over_the_cap_writes_nothing(self):
+        source = long_source(self.ch.OPTIMIZE_MAX_CHARS + 10)
+        self.replies.append("x = 1")
+        self.run_action(action="optimize", code=source)
+        self.assertFalse((self.home / "Desktop" / "jarvis_code.py").exists())
+
+    def test_under_the_cap_the_model_sees_the_whole_file(self):
+        source = long_source(self.ch.OPTIMIZE_MAX_CHARS - 200)
+        self.assertLessEqual(len(source), self.ch.OPTIMIZE_MAX_CHARS)
+        self.project_file(source)
+        self.replies.append(source)
+        self.run_action(action="optimize", file_path="project/app.py")
+        self.assertIn("# END OF FILE", self.prompts[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

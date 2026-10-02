@@ -14,6 +14,10 @@ BASE_DIR           = get_base_dir()
 API_CONFIG_PATH    = BASE_DIR / "config" / "api_keys.json"
 DESKTOP            = Path.home() / "Desktop"
 MAX_BUILD_ATTEMPTS = 3
+OPTIMIZE_MAX_CHARS = 6000
+"""optimize sends the model the whole file and writes the reply over the
+whole file, so it refuses anything longer: it used to send only the first
+6,000 characters and write the reply back over all of it."""
 # Model choice lives in core/gemini.py, and so does the timeout and the
 # fallback ladder. Writing a model name here is what left this file hanging
 # forever whenever that one alias was unwell.
@@ -434,6 +438,11 @@ def _optimize_action(file_path, code, language, output_path, player) -> str:
             return err
     if not code:
         return "Please provide code or a file path to optimize, sir."
+    if len(code) > OPTIMIZE_MAX_CHARS:
+        what = f"'{Path(file_path).name}'" if file_path else "That code"
+        return (f"{what} is {len(code):,} characters, and I only optimize "
+                f"code whole, up to {OPTIMIZE_MAX_CHARS:,} characters, so I "
+                f"left it unchanged. Ask me to edit a specific part instead.")
 
     if player:
         player.write_log("[Code] Optimizing code...")
@@ -451,7 +460,7 @@ Optimize the following code for:
 Return ONLY the optimized code — no explanation, no markdown, no backticks.
 
 Original code:
-{code[:6000]}
+{code}
 
 Optimized code:"""
 
