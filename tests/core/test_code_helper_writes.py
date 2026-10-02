@@ -416,5 +416,33 @@ class UndoAndConfirmationTests(_Sandbox):
         self.assertNotIn("undo_provider", guard)
 
 
+
+class OptimizeOutputPathTests(_Sandbox):
+    """optimize with inline code works out where to save from output_path,
+    and a path outside the home folder raised PathEscape out of the action,
+    after the model had been asked. It is now refused with the writer's
+    plain message, before the model is asked, and nothing is written."""
+
+    def test_an_output_path_outside_home_is_refused_not_raised(self):
+        for attempt in (str(self.outside / "owned.py"),
+                        "../../outside/owned.py"):
+            with self.subTest(output_path=attempt):
+                self.replies.append("x = 1\n")
+                answer = self.run_action(action="optimize", code="x = 1",
+                                         output_path=attempt)
+                self.assertIn("inside your home folder", answer)
+                self.assertIn(attempt, answer)
+                self.assertFalse((self.outside / "owned.py").exists())
+                self.assertEqual(self.prompts, [], "the model was asked")
+
+    def test_an_output_path_inside_home_still_works(self):
+        self.replies.append("x = 1\ny = 2\n")
+        self.run_action(action="optimize", code="x = 1\ny = 2",
+                        output_path="optimized.py")
+        self.assertEqual(
+            (self.home / "Desktop" / "optimized.py").read_text(),
+            "x = 1\ny = 2")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

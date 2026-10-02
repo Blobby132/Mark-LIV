@@ -566,10 +566,21 @@ def _optimize_action(file_path, code, language, output_path, player) -> str:
                 f"code whole, up to {OPTIMIZE_MAX_CHARS:,} characters, so I "
                 f"left it unchanged. Ask me to edit a specific part instead.")
 
+    lang   = language or "python"
+    target = file_path
+    if not target:
+        # Inline code is saved where output_path says, or on the Desktop.
+        # Worked out before the model is asked: a path outside the home
+        # folder used to raise PathEscape out of the action after the call.
+        try:
+            target = _resolve_save_path(output_path, lang)
+        except PathEscape:
+            return (f"I can only write files inside your home folder. "
+                    f"'{output_path}' is outside it.")
+
     if player:
         player.write_log("[Code] Optimizing code...")
 
-    lang  = language or "python"
     model = _get_gemini()
 
     prompt = f"""You are an expert {lang} developer and code reviewer.
@@ -596,7 +607,6 @@ Optimized code:"""
         return _unchanged(file_path, problem)
     optimized = _clean_code(reply)
 
-    target = file_path or _resolve_save_path(output_path, lang)
     written, status = _write_confined(target, optimized,
                                       undo_label="optimized")
     if written is None:
