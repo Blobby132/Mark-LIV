@@ -89,13 +89,29 @@ def _read_file(file_path: str) -> tuple[str, str]:
         return "", f"Could not read file: {e}"
 
 
-def _save_file(path: Path, content: str) -> str:
+def _write_confined(path_str, content: str) -> tuple[Path | None, str]:
+    """Write `content` to `path_str`, resolved exactly as _read_file resolves
+    a path, and only there. Returns (the resolved path, "Saved to: ...") or
+    (None, why not).
+
+    Every write in this file comes through here. edit and optimize used to
+    read through safe_path but write to Path(file_path) as given, so a
+    relative path was read from the home folder and written beside the
+    process's working directory -- outside the safe-path check."""
+    try:
+        path = safe_path.resolve_within_any(safe_path.default_roots(),
+                                            str(path_str))
+    except PathEscape:
+        return None, (f"I can only write files inside your home folder. "
+                      f"'{path_str}' is outside it.")
+    except ValueError:
+        return None, "No file path provided."
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        return f"Saved to: {path}"
     except Exception as e:
-        return f"Could not save: {e}"
+        return None, f"Could not save: {e}"
+    return path, f"Saved to: {path}"
 
 
 def _preview(code: str, lines: int = 10) -> str:
@@ -192,9 +208,11 @@ Code:"""
 
     response = model.generate_content(prompt)
     code     = _clean_code(response.text)
-    path     = _resolve_save_path(output_path, lang)
-    _save_file(path, code)
-    return code, path
+    written, status = _write_confined(_resolve_save_path(output_path, lang),
+                                      code)
+    if written is None:
+        raise OSError(status)
+    return code, written
 
 
 def _fix_code(code: str, error_output: str, description: str) -> str:
@@ -303,7 +321,9 @@ def _build(description, language, output_path, args, timeout, speak=None, player
 
         try:
             code = _fix_code(code, last_output, description)
-            _save_file(path, code)
+            written, status = _write_confined(path, code)
+            if written is None:
+                raise OSError(status)
         except Exception as e:
             msg = f"Could not fix code on attempt {attempt}: {e}"
             if speak: speak(msg)
@@ -360,8 +380,10 @@ Updated code:"""
     except Exception as e:
         return f"Could not edit code: {e}"
 
-    status = _save_file(Path(file_path), edited)
-    print(f"[Code] ✅ Edited: {file_path}")
+    written, status = _write_confined(file_path, edited)
+    if written is None:
+        return status
+    print(f"[Code] ✅ Edited: {written}")
     return f"File edited. {status}\n\nPreview:\n{_preview(edited)}"
 
 
@@ -439,14 +461,11 @@ Optimized code:"""
     except Exception as e:
         return f"Could not optimize code: {e}"
 
-    # Kaydet
-    if file_path:
-        save_path = Path(file_path)
-    else:
-        save_path = _resolve_save_path(output_path, lang)
-
-    status = _save_file(save_path, optimized)
-    print(f"[Code] ✅ Optimized: {save_path}")
+    target = file_path or _resolve_save_path(output_path, lang)
+    written, status = _write_confined(target, optimized)
+    if written is None:
+        return status
+    print(f"[Code] ✅ Optimized: {written}")
 
     original_lines  = len(code.splitlines())
     optimized_lines = len(optimized.splitlines())
