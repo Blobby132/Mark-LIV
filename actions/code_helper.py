@@ -26,11 +26,16 @@ PROSE_LINE_SHARE   = 0.5
 """A reply with no fenced block in which more than this share of the lines
 read as sentences is taken as an explanation, not code, and is not written --
 unless the original reads that way too (a README, notes)."""
+UNDO_MAX_BYTES     = 1_000_000
+"""edit, optimize and write keep the old bytes of a file they replace, so
+"undo" can put them back. Above this size (file_controller's limit too) no
+copy is kept, and both the confirmation and the reply say so."""
 # Model choice lives in core/gemini.py, and so does the timeout and the
 # fallback ladder. Writing a model name here is what left this file hanging
 # forever whenever that one alias was unwell.
 from core import capabilities, exec_safe, gemini, safe_path
 from core.safe_path import PathEscape
+from core.undo import push_undo
 
 
 def _get_api_key() -> str:
@@ -144,7 +149,8 @@ def _read_file(file_path: str) -> tuple[str, str]:
         return "", f"Could not read file: {e}"
 
 
-def _write_confined(path_str, content: str) -> tuple[Path | None, str]:
+def _write_confined(path_str, content: str,
+                    undo_label: str = "") -> tuple[Path | None, str]:
     """Write `content` to `path_str`, resolved exactly as _read_file resolves
     a path, and only there. Returns (the resolved path, "Saved to: ...") or
     (None, why not).
@@ -152,7 +158,11 @@ def _write_confined(path_str, content: str) -> tuple[Path | None, str]:
     Every write in this file comes through here. edit and optimize used to
     read through safe_path but write to Path(file_path) as given, so a
     relative path was read from the home folder and written beside the
-    process's working directory -- outside the safe-path check."""
+    process's working directory -- outside the safe-path check.
+
+    With an `undo_label` ("edited"), replacing an existing file keeps its
+    old bytes and registers an undo that puts them back. build passes none:
+    it rewrites its own file on every attempt."""
     try:
         path = safe_path.resolve_within_any(safe_path.default_roots(),
                                             str(path_str))
@@ -161,12 +171,67 @@ def _write_confined(path_str, content: str) -> tuple[Path | None, str]:
                       f"'{path_str}' is outside it.")
     except ValueError:
         return None, "No file path provided."
+    replaced = previous = None
+    if undo_label and path.is_file():
+        try:
+            replaced = path.stat().st_size
+            if replaced <= UNDO_MAX_BYTES:
+                previous = path.read_bytes()
+        except OSError:
+            pass
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     except Exception as e:
         return None, f"Could not save: {e}"
-    return path, f"Saved to: {path}"
+    status = f"Saved to: {path}"
+    if replaced is None:
+        return path, status
+    if previous is None:
+        return path, (f"{status} It replaced {replaced:,} bytes, and I could "
+                      f"not keep a copy of them (the limit is "
+                      f"{UNDO_MAX_BYTES:,}), so this cannot be undone.")
+    try:
+        written = path.read_bytes()      # what is on disk, line endings and all
+    except OSError:
+        written = None
+    push_undo(f"{undo_label} {path.name}",
+              _undo_replace(path, previous, written))
+    return path, (f"{status} It replaced {replaced:,} bytes; say \"undo\" to "
+                  f"put them back.")
+
+
+def _undo_replace(path: Path, previous: bytes, written: bytes | None):
+    """Reverse of a replace: put the old bytes back, exactly. If the file has
+    changed since it was written, the later version is someone's work, and it
+    is left alone."""
+    def _fn():
+        try:
+            current = path.read_bytes()
+        except FileNotFoundError:
+            return f"'{path.name}' is no longer there, so nothing was put back."
+        if written is not None and current != written:
+            return (f"'{path.name}' has changed since I wrote it, so I left "
+                    f"it alone.")
+        path.write_bytes(previous)
+        return f"'{path.name}' has its previous contents back."
+    return _fn
+
+
+def _replace_note(path: Path | None) -> str:
+    """What writing to `path` will do, for the confirmation: " (new file)",
+    " (replaces 10,220 bytes)", or "" when that cannot be told."""
+    if path is None:
+        return ""
+    try:
+        if not path.exists():
+            return " (new file)"
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size > UNDO_MAX_BYTES:
+        return f" (replaces {size:,} bytes, too large to undo)"
+    return f" (replaces {size:,} bytes)"
 
 
 def _preview(code: str, lines: int = 10) -> str:
@@ -244,7 +309,8 @@ def _detect_intent(description: str, file_path: str, code: str) -> str:
         return "explain"
     return "write"
 
-def _write(description: str, language: str, output_path: str, player=None) -> tuple[str, Path]:
+def _write(description: str, language: str, output_path: str, player=None,
+           undo_label: str = "") -> tuple[str, Path, str]:
     lang  = language or "python"
     model = _get_gemini()
 
@@ -264,10 +330,10 @@ Code:"""
     response = model.generate_content(prompt)
     code     = _clean_code(response.text)
     written, status = _write_confined(_resolve_save_path(output_path, lang),
-                                      code)
+                                      code, undo_label)
     if written is None:
         raise OSError(status)
-    return code, written
+    return code, written, status
 
 
 def _fix_code(code: str, error_output: str, description: str) -> str:
@@ -346,7 +412,7 @@ def _build(description, language, output_path, args, timeout, speak=None, player
     lang = language or "python"
 
     try:
-        code, path = _write(description, lang, output_path, player)
+        code, path, _status = _write(description, lang, output_path, player)
         print(f"[Code] ✅ Written: {path}")
     except Exception as e:
         msg = f"Could not write initial code: {e}"
@@ -397,9 +463,10 @@ def _write_action(description, language, output_path, player) -> str:
     if player:
         player.write_log("[Code] Writing code...")
     try:
-        code, path = _write(description, language, output_path, player)
+        code, path, status = _write(description, language, output_path,
+                                    player, undo_label="wrote over")
         print(f"[Code] ✅ Written: {path}")
-        return f"Code written. Saved to: {path}\n\nPreview:\n{_preview(code)}"
+        return f"Code written. {status}\n\nPreview:\n{_preview(code)}"
     except Exception as e:
         return f"Could not generate code: {e}"
 
@@ -439,7 +506,7 @@ Updated code:"""
         return _unchanged(file_path, problem)
     edited = _clean_code(reply)
 
-    written, status = _write_confined(file_path, edited)
+    written, status = _write_confined(file_path, edited, undo_label="edited")
     if written is None:
         return status
     print(f"[Code] ✅ Edited: {written}")
@@ -530,7 +597,8 @@ Optimized code:"""
     optimized = _clean_code(reply)
 
     target = file_path or _resolve_save_path(output_path, lang)
-    written, status = _write_confined(target, optimized)
+    written, status = _write_confined(target, optimized,
+                                      undo_label="optimized")
     if written is None:
         return status
     print(f"[Code] ✅ Optimized: {written}")
@@ -699,6 +767,20 @@ def _ch_capability(params: dict) -> str:
     return capabilities.CODE_EXEC
 
 
+def _write_target(action: str, params: dict) -> Path | None:
+    """The file write, edit or optimize will write to, resolved the way the
+    action resolves it, or None. Never raises: the guard only describes."""
+    try:
+        file_path = str(params.get("file_path") or "").strip()
+        if action == "edit" or (action == "optimize" and file_path):
+            return safe_path.resolve_within_any(safe_path.default_roots(),
+                                                file_path)
+        return _resolve_save_path(str(params.get("output_path") or "").strip(),
+                                  str(params.get("language") or "").strip())
+    except Exception:
+        return None
+
+
 def _ch_guard(params: dict) -> dict:
     action = str((params or {}).get("action", "")).lower().strip()
     target = str((params or {}).get("file_path", "")
@@ -715,7 +797,11 @@ def _ch_guard(params: dict) -> dict:
                            "re-running it — with your full user account."),
                 "target": target}
     if action in ("write", "edit", "optimize"):
-        return {"summary": f"{action.title()} '{what}'", "target": target}
+        path = _write_target(action, params or {})
+        if path is not None:
+            what = path.name
+        return {"summary": f"{action.title()} '{what}'{_replace_note(path)}",
+                "target": target}
     return {"summary": f"code_helper: {action or 'auto'}", "target": target}
 
 

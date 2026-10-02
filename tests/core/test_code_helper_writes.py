@@ -284,5 +284,137 @@ class ReplySanityTests(_Sandbox):
         self.assertEqual(path.read_text(), reply.strip())
 
 
+
+class UndoAndConfirmationTests(_Sandbox):
+    """4. No write had a backup or an undo, and the confirmation said only
+    "Edit 'app.py'". edit, optimize and write now register an undo when they
+    replace an existing file, and the confirmation says what will be
+    replaced. build is left as it was."""
+
+    # CRLF line endings and a non-ASCII byte: a text round trip would not
+    # give these back exactly.
+    CRLF = ORIGINAL.replace("\n", "\r\n") + "# caf\u00e9\r\n"
+
+    def setUp(self):
+        super().setUp()
+        from core import undo
+        self.undo = undo
+        undo.clear()
+        self.addCleanup(undo.clear)
+
+    def desktop_file(self, content=CRLF):
+        path = self.home / "Desktop" / "jarvis_code.py"
+        path.write_bytes(content.encode("utf-8"))
+        return path
+
+    def replace(self, action):
+        """Run `action` over an existing file; return (path, its bytes
+        before, the reply)."""
+        if action == "write":
+            path = self.desktop_file()
+            self.replies.append(ORIGINAL + "# written\n")
+            params = {"action": "write", "description": "functions"}
+        else:
+            path = self.project_file(self.CRLF)
+            self.replies.append(ORIGINAL + "# changed\n")
+            params = {"action": action, "file_path": "project/app.py"}
+            if action == "edit":
+                params["description"] = "add a comment at the end"
+        before = path.read_bytes()
+        answer = self.run_action(**params)
+        self.assertNotEqual(path.read_bytes(), before,
+                            f"{action} did not write: {answer}")
+        return path, before, answer
+
+    def test_undo_restores_the_original_bytes(self):
+        for action in ("edit", "optimize", "write"):
+            with self.subTest(action=action):
+                path, before, _answer = self.replace(action)
+                self.assertTrue(self.undo.can_undo(),
+                                f"{action} registered no undo")
+                result = self.undo.undo_last()
+                self.assertEqual(path.read_bytes(), before, result)
+
+    def test_the_reply_says_it_can_be_undone(self):
+        for action in ("edit", "optimize", "write"):
+            with self.subTest(action=action):
+                _path, before, answer = self.replace(action)
+                self.assertIn(f"{len(before):,} bytes", answer)
+                self.assertIn("undo", answer)
+                self.undo.clear()
+
+    def test_undo_leaves_a_file_changed_since_alone(self):
+        path, _before, _answer = self.replace("edit")
+        path.write_bytes(b"the user's own later work\n")
+        result = self.undo.undo_last()
+        self.assertEqual(path.read_bytes(), b"the user's own later work\n")
+        self.assertIn("changed since", result)
+
+    def test_a_file_too_large_to_keep_says_it_cannot_be_undone(self):
+        with mock.patch.object(self.ch, "UNDO_MAX_BYTES", 100):
+            _path, _before, answer = self.replace("edit")
+        self.assertFalse(self.undo.can_undo())
+        self.assertIn("cannot be undone", answer)
+
+    def test_build_registers_no_undo(self):
+        """build rewrites its file on every attempt; its behaviour and its
+        CODE_EXEC confirmation are unchanged."""
+        self.desktop_file()
+        self.replies.append("print('built')")
+        with mock.patch.object(self.ch, "_run_file",
+                               return_value="Output:\nbuilt"):
+            self.run_action(action="build", description="print built")
+        self.assertFalse(self.undo.can_undo())
+        self.assertEqual(self.ch._ch_capability({"action": "build"}),
+                         self.ch.capabilities.CODE_EXEC)
+
+    # The confirmation
+
+    def guard(self, **params):
+        return self.ch._ch_guard(params)
+
+    def test_the_confirmation_says_how_much_it_replaces(self):
+        size = len(self.project_file().read_bytes())
+        for action in ("edit", "optimize"):
+            with self.subTest(action=action):
+                self.assertEqual(
+                    self.guard(action=action,
+                               file_path="project/app.py")["summary"],
+                    f"{action.title()} 'app.py' (replaces {size:,} bytes)")
+
+    def test_write_names_the_file_it_will_replace(self):
+        self.assertEqual(self.guard(action="write")["summary"],
+                         "Write 'jarvis_code.py' (new file)")
+        size = len(self.desktop_file().read_bytes())
+        self.assertEqual(self.guard(action="write")["summary"],
+                         f"Write 'jarvis_code.py' (replaces {size:,} bytes)")
+        self.assertEqual(
+            self.guard(action="optimize", code="x = 1")["summary"],
+            f"Optimize 'jarvis_code.py' (replaces {size:,} bytes)")
+
+    def test_the_confirmation_warns_when_it_cannot_be_undone(self):
+        size = len(self.project_file().read_bytes())
+        with mock.patch.object(self.ch, "UNDO_MAX_BYTES", 100):
+            summary = self.guard(action="edit",
+                                 file_path="project/app.py")["summary"]
+        self.assertEqual(summary, f"Edit 'app.py' (replaces {size:,} bytes, "
+                                  f"too large to undo)")
+
+    def test_the_guard_never_raises(self):
+        for path in ("../outside/evil.py", str(self.outside / "evil.py"), ""):
+            with self.subTest(path=path):
+                self.assertIn("summary",
+                              self.guard(action="edit", file_path=path))
+                self.assertIn("summary",
+                              self.guard(action="write", output_path=path))
+
+    def test_it_still_asks_first(self):
+        """The undo is pushed after the write; the guard offers none, so
+        FILE_WRITE stays a confirmation rather than becoming reversible."""
+        guard = self.guard(action="edit", file_path="project/app.py")
+        self.assertNotIn("undo", guard)
+        self.assertNotIn("undo_provider", guard)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
