@@ -18,6 +18,14 @@ OPTIMIZE_MAX_CHARS = 6000
 """optimize sends the model the whole file and writes the reply over the
 whole file, so it refuses anything longer: it used to send only the first
 6,000 characters and write the reply back over all of it."""
+MIN_KEEP_RATIO     = 0.5
+"""edit and optimize write the model's reply over the whole file, so a reply
+under this share of the original's length is taken as cut off, not finished,
+and is not written."""
+PROSE_LINE_SHARE   = 0.5
+"""A reply with no fenced block in which more than this share of the lines
+read as sentences is taken as an explanation, not code, and is not written --
+unless the original reads that way too (a README, notes)."""
 # Model choice lives in core/gemini.py, and so does the timeout and the
 # fallback ladder. Writing a model name here is what left this file hanging
 # forever whenever that one alias was unwell.
@@ -48,6 +56,49 @@ def _clean_code(text: str) -> str:
     text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
     text = re.sub(r"\n?```$", "", text)
     return text.strip()
+
+
+_FENCE_LINE = re.compile(r"^\s*```", re.MULTILINE)
+_SENTENCE   = re.compile(r"^[A-Z][^=(){}\[\];<>]*[.!?]$")
+
+
+def _prose_share(text: str) -> float:
+    """The share of non-blank lines that read as sentences: a capital first,
+    no code punctuation, a full stop at the end. Indented lines (docstrings,
+    comments inside code) never count."""
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return 0.0
+    return sum(1 for line in lines if _SENTENCE.match(line)) / len(lines)
+
+
+def _reply_problem(original: str, reply: str) -> str:
+    """Why the model's reply must not be written over `original`, or "".
+
+    edit and optimize ask for the whole updated file and write the reply over
+    it. A reply that is empty, an explanation instead of code, an explanation
+    wrapped round the code, or a fraction of the file would replace the
+    original, so it is refused."""
+    code = _clean_code(reply)
+    if not code:
+        return "the model's reply was empty"
+    if _FENCE_LINE.search(code) and not _FENCE_LINE.search(original):
+        return ("the model wrapped an explanation round the code, and "
+                "writing it would put that explanation into the file")
+    if (not _FENCE_LINE.search(reply)
+            and _prose_share(code) > PROSE_LINE_SHARE
+            and _prose_share(original) <= PROSE_LINE_SHARE):
+        return "the model's reply reads as an explanation, not code"
+    if len(code) < MIN_KEEP_RATIO * len(original):
+        return (f"the model's reply is {len(code):,} characters and the "
+                f"original is {len(original):,}; a rewrite under half the "
+                f"original is more likely cut off than finished")
+    return ""
+
+
+def _unchanged(file_path, why: str) -> str:
+    what = f"'{Path(file_path).name}'" if file_path else "anything"
+    return f"I did not change {what}: {why}."
 
 
 def _resolve_save_path(output_path: str, language: str) -> Path:
@@ -380,9 +431,13 @@ Updated code:"""
 
     try:
         response = model.generate_content(prompt)
-        edited   = _clean_code(response.text)
+        reply    = response.text or ""
     except Exception as e:
         return f"Could not edit code: {e}"
+    problem = _reply_problem(content, reply)
+    if problem:
+        return _unchanged(file_path, problem)
+    edited = _clean_code(reply)
 
     written, status = _write_confined(file_path, edited)
     if written is None:
@@ -466,9 +521,13 @@ Optimized code:"""
 
     try:
         response  = model.generate_content(prompt)
-        optimized = _clean_code(response.text)
+        reply     = response.text or ""
     except Exception as e:
         return f"Could not optimize code: {e}"
+    problem = _reply_problem(code, reply)
+    if problem:
+        return _unchanged(file_path, problem)
+    optimized = _clean_code(reply)
 
     target = file_path or _resolve_save_path(output_path, lang)
     written, status = _write_confined(target, optimized)

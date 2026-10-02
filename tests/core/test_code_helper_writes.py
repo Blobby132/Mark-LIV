@@ -212,5 +212,77 @@ class OptimizeCapTests(_Sandbox):
         self.assertIn("# END OF FILE", self.prompts[0])
 
 
+
+class ReplySanityTests(_Sandbox):
+    """3. edit and optimize wrote whatever the model returned. A reply that
+    is empty, an explanation instead of code, an explanation wrapped
+    round the code, or a fraction of the file now writes nothing, and says
+    why."""
+
+    PROSE = ("I have reviewed the code carefully and it looks correct.\n"
+             "There is nothing that needs to change in this file.\n"
+             "You may want to add tests for the edge cases.\n")
+    MIXED = ("Here is the updated code with the change applied:\n\n"
+             f"```python\n{ORIGINAL}# edited\n```\n\n"
+             "This adds a comment at the end of the file.")
+
+    def assert_refused(self, action, reply, *words):
+        path = self.project_file()
+        before = path.read_bytes()
+        self.replies.append(reply)
+        params = {"action": action, "file_path": "project/app.py"}
+        if action == "edit":
+            params["description"] = "add a comment at the end"
+        answer = self.run_action(**params)
+        self.assertEqual(path.read_bytes(), before,
+                         f"{action} wrote the reply: {reply[:40]!r}")
+        self.assertIn("did not change", answer)
+        for word in words:
+            self.assertIn(word, answer)
+
+    def test_an_empty_reply_writes_nothing(self):
+        for action in ("edit", "optimize"):
+            with self.subTest(action=action):
+                self.assert_refused(action, "   \n", "empty")
+
+    def test_an_explanation_instead_of_code_writes_nothing(self):
+        for action in ("edit", "optimize"):
+            with self.subTest(action=action):
+                self.assert_refused(action, self.PROSE, "explanation")
+
+    def test_an_explanation_wrapped_round_the_code_writes_nothing(self):
+        for action in ("edit", "optimize"):
+            with self.subTest(action=action):
+                self.assert_refused(action, self.MIXED, "explanation")
+
+    def test_a_partial_file_writes_nothing(self):
+        part = ORIGINAL[: int(len(ORIGINAL) * 0.4)]
+        for action in ("edit", "optimize"):
+            with self.subTest(action=action):
+                self.assert_refused(action, part, f"{len(part.strip()):,}",
+                                    f"{len(ORIGINAL):,}")
+
+    def test_the_thresholds_are_named(self):
+        self.assertEqual(self.ch.MIN_KEEP_RATIO, 0.5)
+        self.assertEqual(self.ch.PROSE_LINE_SHARE, 0.5)
+
+    def test_a_good_reply_is_written(self):
+        path = self.project_file()
+        reply = "```python\n" + ORIGINAL + "# edited\n```"
+        self.replies.append(reply)
+        self.run_action(action="edit", file_path="project/app.py",
+                        description="add a comment at the end")
+        self.assertEqual(path.read_text(), ORIGINAL + "# edited")
+
+    def test_editing_prose_is_still_allowed(self):
+        """The prose rule only applies when the file itself is code."""
+        path = self.project_file(self.PROSE, name="NOTES.md")
+        reply = self.PROSE + "Remember to update the changelog.\n"
+        self.replies.append(reply)
+        self.run_action(action="edit", file_path="project/NOTES.md",
+                        description="add a reminder")
+        self.assertEqual(path.read_text(), reply.strip())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
