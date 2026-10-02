@@ -527,16 +527,11 @@ Be specific and actionable. If you see an error message, quote it exactly."""
         except Exception:
             pass
 
-        if file_path and file_content:
-
-            code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", analysis, re.DOTALL)
-            if code_match:
-                fixed_code = code_match.group(1).strip()
-                save_path  = Path(file_path)
-                _save_file(save_path, fixed_code)
-                analysis += f"\n\n✅ Fixed code has been saved to: {file_path}"
-                print(f"[Code] ✅ Fixed code saved: {file_path}")
-
+        # The analysis, suggested code included -- and nothing written.
+        # screen_debug is a read (FILE_READ in _ch_capability). It used to
+        # write the reply's first code block over file_path, with no backup
+        # or confirmation, though the model saw only the first 4,000
+        # characters of the file. Changing a file is `edit`: FILE_WRITE.
         return analysis
 
     except Exception as e:
