@@ -124,11 +124,6 @@ def _take_screenshot() -> Path | None:
         return None
 
 
-def _image_to_base64(path: Path) -> str:
-    import base64
-    return base64.b64encode(path.read_bytes()).decode("utf-8")
-
-
 _VALID_INTENTS = {"write", "edit", "explain", "run", "build", "screen_debug", "optimize"}
 
 
@@ -488,9 +483,6 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
         from google.genai import types
 
         image_bytes  = screenshot_path.read_bytes()
-        # Unused, but kept: dropping the call would drop a file read, and
-        # the lint cleanup changed no behaviour.
-        image_base64 = _image_to_base64(screenshot_path)  # noqa: F841
 
         user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
 
