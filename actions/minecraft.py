@@ -489,8 +489,10 @@ def _result_line(result, player=None) -> str:
     refusal nobody can see is indistinguishable from a bug."""
     if player:
         if result.ok:
+            note = getattr(result, "note", "")
             player.write_log(f"[minecraft] {result.action}: ok "
-                             f"({result.actual_duration_ms}ms)")
+                             f"({result.actual_duration_ms}ms)"
+                             + (f" -- {note}" if note else ""))
         else:
             player.write_log(f"[minecraft] {result.action} REFUSED: "
                              f"{result.stopped_reason or result.error_class}")

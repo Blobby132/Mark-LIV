@@ -40,6 +40,7 @@ import atexit
 import threading
 import time
 from dataclasses import dataclass, field
+from dataclasses import replace as _copy_result
 
 from minecraft import action_spec, process as mc_process
 from minecraft import gui as gui_mod
@@ -93,6 +94,18 @@ grazing a neighbour as the view settles. Two at 40ms apart costs 40ms of
 over-mining and removes a whole class of "it held the button for one tick and
 nothing broke"."""
 
+SCREEN_CONFIRM_SECONDS = 1.0
+"""How long, after a key that opens or closes a screen, to wait for a bridge
+reading taken after the press that shows the expected screen; and how long a
+screen-dependent check waits for any reading newer than the last such press.
+
+The bridge publishes about five times a second, and the game applies a key on
+its next tick, so the reading in hand right after a press usually shows the
+screen as it was before it. A real run opened the inventory and had the close
+that followed refused, "no screen is open", on exactly that snapshot."""
+
+SCREEN_POLL_SECONDS = 0.05
+
 FOCUS_WAIT_SECONDS = 4.0
 """How long an action will wait, BEFORE it starts, for Minecraft to come back
 to the front.
@@ -130,6 +143,9 @@ class ActionResult:
     released: tuple = ()
     error_class: str = ""
     error: str = ""
+    # What a fresh reading after the action showed, when that is the point:
+    # "Opened: ..." or "Not confirmed: ...". Says nothing it did not see.
+    note: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -143,12 +159,15 @@ class ActionResult:
             "released": list(self.released),
             "error_class": self.error_class,
             "error": self.error,
+            "note": self.note,
         }
 
     def describe(self) -> str:
         if self.ok:
             note = " (shortened to the limit)" if self.clamped else ""
-            return f"{self.action}: done in {self.actual_duration_ms}ms{note}."
+            after = f" {self.note}" if self.note else ""
+            return (f"{self.action}: done in {self.actual_duration_ms}ms"
+                    f"{note}.{after}")
         if self.stopped_reason:
             return (f"{self.action}: stopped after {self.actual_duration_ms}ms "
                     f"— {self.stopped_reason}.")
@@ -161,6 +180,24 @@ SCREEN_BLOCKED_ACTIONS = frozenset({"attack", "mine", "place", "interact",
 """Gameplay holds refused while the bridge reports a screen open: in a
 container screen their clicks and keys land in the GUI. The screen actions
 (gui_*) and `inventory` are what work inside one, and are not here."""
+
+OPENS_A_SCREEN = frozenset({
+    "crafting_table", "chest", "trapped_chest", "barrel", "ender_chest",
+    "furnace", "blast_furnace", "smoker",
+})
+"""Blocks whose right-click opens a screen. An interact aimed at one waits
+for a fresh reading to say whether it opened; any other interact (a door, a
+button) does not wait for a screen that is not coming."""
+
+
+def _taken_after(state, when) -> bool:
+    """Was this reading captured after `when` (wall-clock seconds)?"""
+    captured = getattr(state, "captured_at", None)
+    return isinstance(captured, (int, float)) and captured > when
+
+
+def _screen_words(kind) -> str:
+    return " ".join(str(kind).split("_"))
 
 
 class MinecraftController:
@@ -238,6 +275,10 @@ class MinecraftController:
         # minecraft/gui.py's rules decide from it; without it, no click.
         self._gui_probe = gui_probe
         self._gui_health_peak = None
+        # Wall-clock time the last key that can open or close a screen came
+        # up (inventory, interact), or None. A screen decision after it must
+        # be taken on a reading captured after it -- see _screen_reading.
+        self._screen_changed_at = None
         # Asked before an attack that expects a hostile: the crosshair's
         # entity as (name, category), or None. Without it, such an attack
         # presses nothing.
@@ -743,7 +784,19 @@ class MinecraftController:
             return self._cancelled_result(action, requested, clamped)
 
         if action in SCREEN_BLOCKED_ACTIONS:
-            screen = self._open_screen()
+            state, fresh = self._screen_reading()
+            if not fresh:
+                return ActionResult(
+                    ok=False, action=action, requested=requested,
+                    stopped_reason="screen_unknown", clamped=clamped,
+                    error_class="ScreenUnknown",
+                    error=(f"No reading from the game newer than the last "
+                           f"screen key has arrived, so I cannot tell "
+                           f"whether a screen is still open -- and a "
+                           f"{action} into one would move items. Nothing "
+                           f"was pressed."),
+                )
+            screen = str(getattr(state, "screen", None) or "")
             if screen:
                 return ActionResult(
                     ok=False, action=action, requested=requested,
@@ -934,27 +987,89 @@ class MinecraftController:
                         f"not the {face} face. Nothing was pressed.")
         return ""
 
-    def _open_screen(self) -> str:
-        """The kind of screen the bridge reports open, or ''. '' too when
-        there is no bridge reading: nothing is reported open."""
+    def _read_gui(self):
         if self._gui_probe is None:
-            return ""
+            return None
         try:
-            state = self._gui_probe()
+            return self._gui_probe()
         except Exception:
-            return ""
-        return str(getattr(state, "screen", None) or "")
+            return None
+
+    def _screen_reading(self, want=None, after=None,
+                        timeout: float | None = None):
+        """(reading, fresh): a bridge reading for a screen decision.
+
+        Fresh means captured after `after` -- by default the last key that
+        could open or close a screen -- and, with `want`, also showing what
+        `want(reading)` asks for. Waits up to SCREEN_CONFIRM_SECONDS for
+        one. Without a bridge, or before any screen key, any reading is
+        fresh: there is nothing it could be stale against."""
+        after = self._screen_changed_at if after is None else after
+        state = self._read_gui()
+        if self._gui_probe is None or after is None:
+            return state, True
+        wait = SCREEN_CONFIRM_SECONDS if timeout is None else timeout
+        deadline = time.monotonic() + wait
+        newest = None
+        while True:
+            if state is not None and _taken_after(state, after):
+                newest = state
+                if want is None or want(state):
+                    return state, True
+            if time.monotonic() >= deadline:
+                return (newest if newest is not None else state), False
+            time.sleep(SCREEN_POLL_SECONDS)
+            state = self._read_gui()
+
+    def _confirm_screen(self, result: ActionResult, want_open: bool,
+                        kind: str = "") -> ActionResult:
+        """After a key that opens or closes a screen: wait for a reading
+        taken after it, and say what it shows -- opened, closed, or not
+        confirmed. The key went down either way, so `ok` stands."""
+        if not result.ok:
+            return result
+        pressed_at = time.time()
+        self._screen_changed_at = pressed_at
+        if self._gui_probe is None:
+            return result
+        state, seen = self._screen_reading(
+            want=lambda s: bool(getattr(s, "screen", None)) == want_open,
+            after=pressed_at)
+        screen = getattr(state, "screen", None) if state is not None else None
+        what = _screen_words(kind) if kind else "a"
+        if seen and want_open:
+            note = (f"Opened: the game reports the {_screen_words(screen)} "
+                    f"screen open.")
+        elif seen:
+            note = "Closed: the game reports no screen open."
+        elif state is None or not _taken_after(state, pressed_at):
+            note = (f"Not confirmed: no reading from the game newer than "
+                    f"the key press arrived within "
+                    f"{SCREEN_CONFIRM_SECONDS:.0f}s.")
+        elif want_open:
+            note = (f"Not confirmed: {SCREEN_CONFIRM_SECONDS:.0f}s after the "
+                    f"key press the game still reports no {what} screen "
+                    f"open.")
+        else:
+            note = (f"Not confirmed: {SCREEN_CONFIRM_SECONDS:.0f}s after the "
+                    f"key press the game still reports the "
+                    f"{_screen_words(screen)} screen open.")
+        return _copy_result(result, note=note)
 
     def _close_refusal(self) -> str:
         """'' when the bridge reports a screen open now; otherwise why ESC
         is not pressed. ESC with no screen open is not harmless: it opens
-        the pause menu. A screen it cannot see is not assumed."""
-        state = None
-        if self._gui_probe is not None:
-            try:
-                state = self._gui_probe()
-            except Exception:
-                state = None
+        the pause menu. A screen it cannot see is not assumed. Judged on a
+        reading taken after the last screen key, never an older one."""
+        state, fresh = self._screen_reading(
+            want=lambda s: bool(getattr(s, "screen", None)))
+        if self._gui_probe is not None and not fresh and \
+                (state is None or not _taken_after(
+                    state, self._screen_changed_at or 0)):
+            return ("No reading from the game newer than the last screen "
+                    "key has arrived, so I cannot tell whether a screen is "
+                    "open -- and ESC with none open brings up the pause "
+                    "menu. Nothing was pressed.")
         if state is None:
             return ("I cannot see whether a screen is open -- that needs the "
                     "bridge mod -- and ESC with none open brings up the "
@@ -1148,8 +1263,18 @@ class MinecraftController:
         problem = action_spec.interact_refusal(self._held_item())
         if problem:
             return self._held_item_refused("interact", spec, problem)
-        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
-                                 "interact", spec.as_dict(), spec.clamped)
+        seen = self._probe()
+        block = str(seen[0]) if isinstance(seen, (tuple, list)) and seen \
+            else ""
+        result = self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                   "interact", spec.as_dict(), spec.clamped)
+        if block in OPENS_A_SCREEN:
+            return self._confirm_screen(result, want_open=True, kind=block)
+        if result.ok:
+            # A door or a lever opens nothing; a block not in the list might.
+            # Either way, later screen checks need a reading from after this.
+            self._screen_changed_at = time.time()
+        return result
 
     def _held_item_refused(self, action, spec, problem) -> ActionResult:
         return ActionResult(
@@ -1174,8 +1299,11 @@ class MinecraftController:
         if refusal is not None:
             return refusal
         spec = action_spec.parse_inventory(params or {})
-        return self._hold_inputs(spec.keys, spec.buttons, spec.duration,
-                                 spec.action, spec.as_dict(), spec.clamped)
+        result = self._hold_inputs(spec.keys, spec.buttons, spec.duration,
+                                   spec.action, spec.as_dict(), spec.clamped)
+        return self._confirm_screen(
+            result, want_open=spec.action == "inventory_open",
+            kind="inventory" if spec.action == "inventory_open" else "")
 
     def attack(self, params: dict | None = None) -> ActionResult:
         """Hold the attack button -- only with a hostile mob under the
@@ -1242,12 +1370,13 @@ class MinecraftController:
     def _gui_state(self):
         """A fresh reading for the screen rules, or None. Never raises. Also
         keeps the best health seen since the screen opened, for the rule
-        that health must not drop while clicking."""
+        that health must not drop while clicking. None too when no reading
+        newer than the last screen key arrives: a click is never judged on
+        a picture of the screen from before it opened or closed."""
         if self._gui_probe is None:
             return None
-        try:
-            state = self._gui_probe()
-        except Exception:
+        state, fresh = self._screen_reading()
+        if not fresh:
             return None
         if state is None or not getattr(state, "screen", None):
             self._gui_health_peak = None

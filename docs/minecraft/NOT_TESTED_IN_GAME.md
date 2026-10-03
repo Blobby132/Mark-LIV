@@ -16,7 +16,7 @@ game, and so is every jar built since: **the current
 The "From" column is the report that listed it as unverified (or the commit, where it came after the last run without a report saying so): **R-A** the
 A/N/C round, **R-D** the danger-stop round, **R-B** the B round (screens,
 building, survival), **R-1** the items 1–7 round, **R-F** the feature-list
-round.
+round, **R-O** the ore-finding and digging round.
 
 ## The bridge mod (Java)
 
@@ -45,6 +45,7 @@ round.
 | The runner pressing ESC to close a screen its task opened, after a cancel, a timeout or an error | `minecraft/task_runner.py` (`_track_screen`, `_close_own_screen`) | `tests/minecraft/test_minecraft_screen_guard.py` | R-1 |
 | No gameplay input while a screen is open | `minecraft/controller.py` (`SCREEN_BLOCKED_ACTIONS`) | `tests/minecraft/test_minecraft_screen_guard.py` | R-1 |
 | `inventory close` refused when the bridge reports no screen | `minecraft/controller.py` (`_close_refusal`) | `tests/minecraft/test_minecraft_inventory_close.py` | R-1 |
+| After a key that opens or closes a screen (inventory, interact with a table or chest), waiting up to 1 s for a reading taken after it and saying "opened", "closed" or "not confirmed"; every screen-dependent refusal judged on a reading newer than the last such key | `minecraft/controller.py` (`_screen_reading`, `_confirm_screen`) | `tests/minecraft/test_minecraft_screen_freshness.py` (a fake bridge 200 ms behind the game) | R-O |
 | An older jar told apart from "no screen open": `inventory close` and `craft_item` say the mod is older and name the field (`game_mode`) | `minecraft/controller.py` (`_close_refusal`), `minecraft/skills/craft.py` (`_no_game_mode`) | `tests/minecraft/test_minecraft_screen_messages.py` | R-F |
 | The one-line "older than this Jarvis" notice, once, at session start or the first task that needs a missing feature; HUD and reply | `actions/minecraft.py` (`_feature_notice`), `minecraft/mod_bridge.py` (`outdated_notice`) | `tests/minecraft/test_minecraft_feature_notice.py` | R-F |
 | `bridge_check`'s table of the features in the live payload | `tools/bridge_check.py` (`feature_rows`) | `tests/bridge/test_bridge_check_features.py` | R-F |
