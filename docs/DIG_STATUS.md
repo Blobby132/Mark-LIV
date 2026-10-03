@@ -10,10 +10,10 @@ ends. Each phase is one or more commits on `claude/trusting-curie-tjgwfd`.
 | 1b | Python: `state.ores`, `state.singleplayer`, `find_ores` (read-only) | done |
 | 2 | `minecraft/digging.py`: the planner and its eight hard rules | done |
 | 3 | `dig_to` skill | done |
-| 4 | `mine_ore` and the tool text | next |
-| 5 | Simulated dig worlds, docs, report | |
+| 4 | `mine_ore` and the tool text | done |
+| 5 | Simulated dig worlds, docs, report | next |
 
-`dig_to` digs when asked; `mine_ore` (phase 4) will choose the ore and take the vein.
+`dig_to` digs when asked; `mine_ore` chooses the ore and takes the vein.
 
 Owed: the "Known stale" comment in `MarkLivBridge.java` (ARCHITECTURE.md)
 should have been fixed at the 1a rebuild; it goes with the next one.

@@ -107,7 +107,8 @@ GRANT_SUMMARY = (
     "screens (one click at a time, each only when the game reports the "
     "pointer over the slot meant), interact with blocks and entities, "
     "and -- when you ask, in a single-player world only -- dig a staircase "
-    "tunnel through natural stone, earth and ore under hard safety rules"
+    "tunnel through natural stone, earth and ore under hard safety rules, "
+    "to a cell you name or to the nearest ore the scan lists and its vein"
 )
 """What the confirmation banner says the grant covers, in the user's words.
 

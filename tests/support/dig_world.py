@@ -27,7 +27,7 @@ from minecraft import navigation as nav
 from minecraft import action_spec
 from minecraft.controller import ActionResult
 from minecraft.state import (BlockRef, EXACT, EntityRef, ItemStack,
-                             NearSnapshot, WorldState)
+                             NearSnapshot, OreHit, OreSnapshot, WorldState)
 from minecraft.task_runner import DISPATCH
 
 AIR = ("air", False, None)
@@ -162,8 +162,37 @@ class DigWorld:
             target_block=target, nearby_entities=drops, near=near,
             on_ground=True, game_mode="survival",
             singleplayer=self.singleplayer,
+            ores=self._ore_scan() if self.singleplayer else None,
             features=tuple(mod_bridge.REQUIRED_FEATURES),
             source="test", confidence=EXACT)
+
+    def _ore_scan(self):
+        """What the mod's ore scan would list: the placed ore within 24
+        sideways, 32 down and 16 up, nearest first, with `exposed` and
+        `fluid_near` worked out the same way."""
+        fx, fy, fz = self.feet()
+        hits = []
+        for cell, entry in self.cells.items():
+            if not entry[0].endswith("_ore"):
+                continue
+            dx, dy, dz = cell[0] - fx, cell[1] - fy, cell[2] - fz
+            if abs(dx) > 24 or abs(dz) > 24 or dy < -32 or dy > 16:
+                continue
+            exposed = any(
+                self.at((cell[0] + a, cell[1] + b, cell[2] + c))[0] == "air"
+                or self.at((cell[0] + a, cell[1] + b, cell[2] + c))[2]
+                for a, b, c in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0),
+                                (0, 0, 1), (0, 0, -1)))
+            fluid = any(self.at((cell[0] + a, cell[1] + b, cell[2] + c))[2]
+                        for a in range(-2, 3) for b in range(-2, 3)
+                        for c in range(-2, 3))
+            hits.append((dx * dx + dy * dy + dz * dz,
+                         OreHit(name=entry[0], x=cell[0], y=cell[1],
+                                z=cell[2], exposed=bool(exposed),
+                                fluid_near=bool(fluid))))
+        hits.sort(key=lambda h: (h[0], h[1].position))
+        return OreSnapshot(origin=(fx, fy, fz), radius=24, down=32, up=16,
+                           complete=True, ores=tuple(h[1] for h in hits))
 
     def crosshair(self):
         """(cell, name, face) of the first block the view ray meets within

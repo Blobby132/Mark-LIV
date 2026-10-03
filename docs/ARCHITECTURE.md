@@ -76,7 +76,7 @@ widen what the session allows.
 | `gui.py` | When a click inside a screen may happen (the click gate). Imports only heapq, math, dataclasses. |
 | `recipes.py` | The recipes `craft_item` knows. Data. |
 | `digging.py` | Where a staircase may be dug: the next one to three cells to clear and the floor to keep, from the cells the mod reported (never an unknown one), or a refusal naming the hard rule (R1-R7); `abort_reason` (R8). Imports only math and dataclasses. |
-| `ores.py` | What the mod's ore scan lists, filtered and put in words for `find_ores`; refuses outside a single-player world. Imports only math and dataclasses. |
+| `ores.py` | What the mod's ore scan lists, filtered and put in words for `find_ores`; refuses outside a single-player world. `choose`: the ore `mine_ore` goes for -- the nearest listed one with no water or lava beside it that the dig limits allow -- where to stand, and about how many blocks that is; `vein_of`. Imports only math, dataclasses and `digging`. |
 | `danger.py` | Should a task stop for health or a mob; the dusk note. |
 | `verification.py` | Did that step actually work? |
 | `stuck.py`, `progress.py` | Why a walk stopped; noticing nothing is happening. |
@@ -97,8 +97,8 @@ its own; a layer is the longest chain of imports beneath it:
 
 | Layer | Modules |
 |---|---|
-| 0 | `aiming` `building` `capabilities` `danger` `digging` `emergency` `errors` `gui` `ledger` `mining` `ores` `process` `recipes` `session` `state` |
-| 1 | `action_spec` `debug_overlay` `input_backend` `mod_bridge` `navigation` `perception` `task_slot` `verification` `window` |
+| 0 | `aiming` `building` `capabilities` `danger` `digging` `emergency` `errors` `gui` `ledger` `mining` `process` `recipes` `session` `state` |
+| 1 | `action_spec` `debug_overlay` `input_backend` `mod_bridge` `navigation` `ores` `perception` `task_slot` `verification` `window` |
 | 2 | `controller` `observation` `progress` `stuck` `skills.base` |
 | 3 | `task_runner` |
 | 4 | `skills.hotbar` `skills.navigate` |
@@ -131,7 +131,7 @@ its imports put it in.
 | `craft.py` | `craft_item` | |
 | `place_build.py` | `place_block`, `place_block_at`, `build_line`, `build_blueprint` | The blueprint memory that lets "carry on" resume. |
 | `combat.py` | `flee`, `fight` | `NEVER_MELEE`, the start-health floor, the weapon choice. |
-| `dig.py` | `dig_to` | A staircase from `digging.py`'s plans: every rule re-checked before every swing, R8 between every step, the dig's progress kept so asking again carries on. Imports from `collect` (the tool before each swing). |
+| `dig.py` | `dig_to`, `mine_ore` | A staircase from `digging.py`'s plans: every rule re-checked before every swing, R8 between every step, the dig's progress kept so asking again carries on. `mine_ore` digs to the ore `ores.choose` picks, then breaks the vein under `digging.check_break`, stepping into the hole it left (`digging.check_walk` for open air), and counts what it got from the inventory. Imports from `collect` (the tool before each swing). |
 | `__init__.py` | — | The registry (`BUILTIN_SKILLS`, `create`, `available`), `NOT_YET_POSSIBLE`, and the public names in `__all__`. Anything else is imported from its submodule. |
 
 Each module imports only from those above it in the table (craft also from

@@ -30,11 +30,13 @@ from core import capabilities
 from core import interrupts
 from core import ocr as core_ocr
 
+from minecraft import aiming as mc_aiming
 from minecraft import capabilities as mc_phase
 from minecraft import navigation as mc_nav
 from minecraft import ores as mc_ores
 from minecraft import perception as mc_perception
 from minecraft import skills as mc_skills
+from minecraft.skills import dig as mc_dig
 from minecraft import danger as mc_danger
 from minecraft.controller import MinecraftController
 from minecraft.debug_overlay import DebugOverlayStateSource
@@ -451,12 +453,15 @@ def _mc_guard(params: dict) -> dict:
             f"I never right-click with a bucket, flint and steel, TNT or a "
             f"spawn egg to open something, and I pour lava or water or "
             f"start a fire only when you name the item. "
-            f"When you ask me to dig, and only in a single-player world, "
+            f"When you ask me to dig or to mine ore, and only in a "
+            f"single-player world, "
             f"I dig a staircase through natural stone, earth and ore: never "
             f"the block under you, never beside water or lava or within "
             f"three blocks of lava, never under sand or gravel, and at most "
             f"40 blocks, 16 down and 32 across a dig, stopping at once if "
-            f"you are hurt or anything moves that should not. "
+            f"you are hurt or anything moves that should not. For ore I go "
+            f"only for ore the scan lists, never one with water or lava "
+            f"beside it, and take the vein I can reach from beside it. "
             f"Inside screens I only ever click in "
             f"your inventory and a crafting table -- never a chest, a "
             f"furnace or the creative inventory -- and only when the game "
@@ -522,6 +527,7 @@ _TASK_NEEDS = {
     "fell_tree": ("tree_up", "item_names"),
     "collect_blocks": ("item_names",),
     "dig_to": ("singleplayer", "near_grid"),
+    "mine_ore": ("singleplayer", "ores", "near_grid"),
 }
 """The mod's features each task depends on (mod_bridge.FEATURES), besides
 mob_categories, which every task needs: the danger watch between steps sees
@@ -862,7 +868,8 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
 
     options = {}
     for key in ("seconds", "direction", "expected", "swings", "steps",
-                "count", "slot", "target", "item", "plan", "size"):
+                "count", "slot", "target", "item", "plan", "size", "ore",
+                "radius"):
         if key in params:
             options[key] = params[key]
     if name in ("aim_at_block", "mine_block", "place_block_at",
@@ -906,6 +913,14 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
     if blocked:
         return blocked
 
+    plan = ""
+    if name == "mine_ore":
+        # The same choice the task will make on its first step, said now:
+        # the model tells the user the plan, and nothing starts without one.
+        plan = _mine_ore_plan(_get_state_source().read(), options)
+        if not plan.startswith("Plan:"):
+            return plan
+
     runner = TaskRunner(controller, _get_state_source(),
                         observer=_get_observer())
 
@@ -927,7 +942,9 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
     if player:
         player.write_log(f"[minecraft] task {name} started in the background "
                          f"(say stop to cancel it)")
-    return (f"Started {name} — {job.goal}. It is running now, in the "
+    if plan:
+        plan = f" {plan} Tell the user this plan."
+    return (f"Started {name} — {job.goal}.{plan} It is running now, in the "
             f"background, for at most {MAX_TASK_SECONDS:.0f} seconds. It is "
             f"NOT finished: do not tell the user it worked. When it ends, a "
             f"message beginning [Minecraft task] will say what actually "
@@ -1094,6 +1111,30 @@ def _find_ores(params: dict) -> str:
     return (f"{mc_ores.describe(state, hits, ore, radius)}\n"
             f"Tell the user only what this lists. Do not promise ore it "
             f"does not list.\n{ {'ores': listed} }")
+
+
+def _mine_ore_plan(state, params: dict) -> str:
+    """"Plan: ..." -- the ore mine_ore will go for, how far and how deep,
+    and how much it will dig -- or why there is none. The choice is the
+    one the task makes (minecraft/ores.py choose), from this reading."""
+    problem = mc_ores.refusal(state)
+    if problem:
+        return problem
+    ore = params.get("ore")
+    under_way = mc_dig.mine_under_way(ore)
+    if under_way:
+        return f"Plan: carry on with {under_way}."
+    try:
+        radius = int(params.get("radius", mc_ores.DEFAULT_RADIUS))
+    except (TypeError, ValueError):
+        radius = mc_ores.DEFAULT_RADIUS
+    choice, passed = mc_ores.choose(
+        state, ore, radius, within_reach=mc_aiming.SHARED.within_reach)
+    if choice is None:
+        return (f"{mc_ores.none_chosen(state, ore, radius, passed)} "
+                f"Nothing was started.")
+    skipped = (f" Passed over: {'; '.join(passed[:3])}." if passed else "")
+    return f"Plan: {choice.describe()}.{skipped}"
 
 
 def _source_label(source) -> str:

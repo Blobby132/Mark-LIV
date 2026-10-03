@@ -22,6 +22,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from minecraft import digging
+
 DEFAULT_RADIUS = 16
 """How far find_ores looks unless asked otherwise. The scan is a box -- 24
 sideways, 32 down, 16 up -- so a radius is capped at its farthest reach."""
@@ -165,5 +167,143 @@ def describe(state, hits, ore=None, radius=DEFAULT_RADIUS,
     return "\n".join([head] + lines) + (f"\n{more.strip()}" if more else "")
 
 
-__all__ = ["DEFAULT_RADIUS", "ORE_KINDS", "Hit", "kind_of", "wanted_kind",
-           "refusal", "find", "radius_used", "describe", "depth_words"]
+DROPS = {
+    "coal": ("coal",), "iron": ("raw_iron",), "copper": ("raw_copper",),
+    "gold": ("raw_gold", "gold_nugget"), "redstone": ("redstone",),
+    "lapis": ("lapis_lazuli",), "diamond": ("diamond",),
+    "emerald": ("emerald",), "quartz": ("quartz",),
+}
+"""What each kind of ore drops, for counting what mine_ore got from the
+inventory."""
+
+
+@dataclass(frozen=True)
+class Choice:
+    """The ore mine_ore goes for, where it will stand to mine it, and how
+    much digging that is."""
+    hit: Hit
+    stand: tuple | None        # the feet cell to dig to; None: in reach now
+    stairs: int
+    blocks: int                # most it will break on the way
+
+    def describe(self) -> str:
+        where = ", ".join(str(v) for v in self.hit.position)
+        ore = " ".join(self.hit.name.split("_"))
+        head = (f"the {ore} at ({where}), {self.hit.distance} blocks away "
+                f"and {depth_words(self.hit.depth)}")
+        if self.stand is None:
+            return f"{head}: it is exposed and within reach, so no digging"
+        stand = ", ".join(str(v) for v in self.stand)
+        return (f"{head}: a staircase of {self.stairs} stair(s) to "
+                f"({stand}) beside it, breaking at most {self.blocks} "
+                f"blocks, then the rest of the vein I can reach from there")
+
+
+def stand_cell(feet, ore) -> tuple:
+    """The cell to stand in to mine `ore`: beside it, on the player's side,
+    with the ore at feet height."""
+    dx, dz = ore[0] - feet[0], ore[2] - feet[2]
+    if dx == 0 and dz == 0:
+        return (ore[0] + 1, ore[1], ore[2])
+    if abs(dx) >= abs(dz):
+        return (ore[0] - (1 if dx > 0 else -1), ore[1], ore[2])
+    return (ore[0], ore[1], ore[2] - (1 if dz > 0 else -1))
+
+
+def dig_estimate(feet, stand) -> tuple:
+    """(stairs, the most blocks they break): three for a stair down or up,
+    two for a level one."""
+    stairs = digging.steps_left(feet, stand)
+    sloped = min(stairs, abs(stand[1] - feet[1]))
+    return stairs, 3 * sloped + 2 * (stairs - sloped)
+
+
+def choose(state, ore=None, radius=DEFAULT_RADIUS, skip=(),
+           within_reach=None, start=None, broken=0):
+    """(the Choice, why others were passed over): the nearest listed ore of
+    the wanted kind that can be reached safely within the limits, or None.
+
+    Passed over: an ore with water or lava within 2 of it, one deeper than
+    MAX_DEPTH below `start` or further than MAX_HORIZONTAL from it (the
+    feet, unless a task under way began elsewhere), one that would take
+    more than the MAX_BROKEN blocks left after `broken`, and those in
+    `skip` (ore an earlier try found unsafe)."""
+    passed = []
+    feet = digging.feet_of(state.position)
+    start = tuple(start) if start is not None else feet
+    skipped = {tuple(c) for c in skip}
+    for hit in find(state, ore, radius):
+        where = ", ".join(str(v) for v in hit.position)
+        if hit.position in skipped:
+            continue
+        if hit.fluid_near:
+            passed.append(f"({where}): water or lava within 2 blocks of it")
+            continue
+        if hit.exposed and within_reach is not None \
+                and within_reach(state.position, hit.position):
+            return Choice(hit=hit, stand=None, stairs=0, blocks=0), passed
+        stand = stand_cell(feet, hit.position)
+        if start[1] - stand[1] > digging.MAX_DEPTH:
+            passed.append(f"({where}): more than {digging.MAX_DEPTH} "
+                          f"blocks down")
+            continue
+        if math.hypot(stand[0] - start[0], stand[2] - start[2]) \
+                > digging.MAX_HORIZONTAL:
+            passed.append(f"({where}): more than {digging.MAX_HORIZONTAL} "
+                          f"blocks away")
+            continue
+        stairs, blocks = dig_estimate(feet, stand)
+        if blocks + broken >= digging.MAX_BROKEN:
+            passed.append(f"({where}): it would take about {blocks} blocks "
+                          f"of digging, more than the "
+                          f"{digging.MAX_BROKEN - broken} this task may "
+                          f"still break")
+            continue
+        return Choice(hit=hit, stand=stand, stairs=stairs,
+                      blocks=blocks), passed
+    return None, passed
+
+
+def none_chosen(state, ore=None, radius=DEFAULT_RADIUS, passed=(),
+                skip=()) -> str:
+    """Why choose() found nothing: the scan lists none, or every one listed
+    was passed over -- each with its reason."""
+    kind = wanted_kind(ore)
+    what = f"{kind} ore" if kind else "ore"
+    if not find(state, ore, radius):
+        return (f"{describe(state, [], ore, radius)} So I am not digging "
+                f"for any: I only go for ore the scan lists.")
+    reasons = list(passed[:3])
+    if len(passed) > 3:
+        reasons.append(f"and {len(passed) - 3} more")
+    if skip:
+        reasons.append("the vein I stopped short of before")
+    return (f"There is no {what} I can safely reach in the scan: "
+            f"{'; '.join(reasons)}.")
+
+
+def vein_of(state, position) -> set:
+    """The listed ore joined to `position` face to face, of its kind: one
+    vein, as far as the scan lists it."""
+    listed = {hit.position: kind_of(hit.name) for hit in state.ores.ores}
+    start = tuple(position)
+    kind = listed.get(start)
+    if kind is None:
+        return {start}
+    vein, todo = set(), [start]
+    while todo:
+        cell = todo.pop()
+        if cell in vein:
+            continue
+        vein.add(cell)
+        for d in digging.SIDES:
+            side = (cell[0] + d[0], cell[1] + d[1], cell[2] + d[2])
+            if listed.get(side) == kind and side not in vein:
+                todo.append(side)
+    return vein
+
+
+__all__ = ["DEFAULT_RADIUS", "ORE_KINDS", "DROPS", "Hit", "Choice",
+           "kind_of", "wanted_kind", "refusal", "find", "radius_used",
+           "describe", "depth_words", "stand_cell", "dig_estimate",
+           "choose", "none_chosen", "vein_of"]

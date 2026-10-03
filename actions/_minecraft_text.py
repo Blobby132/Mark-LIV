@@ -69,7 +69,7 @@ TOOL_DESCRIPTION = (
     "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
     "craft_item, place_block_at, build_line, build_blueprint, "
     "navigate_to, flee, fight, eat_food, aim_at_block, "
-    "mine_block, dig_to. The mining tasks (break_block, collect_logs, fell_tree, "
+    "mine_block, dig_to, mine_ore. The mining tasks (break_block, collect_logs, fell_tree, "
     "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
     "slot back afterwards. When the tool that harvests the block -- or "
     "one much faster -- is only in the main inventory, they first move "
@@ -213,7 +213,21 @@ TOOL_DESCRIPTION = (
     "near, a block falls in, or the player falls. If it opens into a "
     "cave it stops there and says so. Before calling it, tell the user "
     "where it will dig and how deep. A task digs a few stairs; if the "
-    "report says to ask again, call dig_to with the same x, y, z.\n"
+    "report says to ask again, call dig_to with the same x, y, z. "
+    "mine_ore (ore, count 1-16, radius) goes for the nearest ore of that "
+    "kind the scan lists that it can reach safely -- ONLY when the user "
+    "asks for ore, and only in a single-player world. It passes over ore "
+    "with water or lava beside it, digs a staircase to the cell beside "
+    "the ore under every dig_to rule (an exposed ore within reach needs "
+    "none), then breaks the ore of that vein it can reach and see, steps "
+    "into the hole for the rest and to pick the drops up, and reports "
+    "what the inventory gained. If a rule refuses the way (lava near, "
+    "water, sand or gravel) it stops and names the nearest other ore it "
+    "could go for. BEFORE calling it, call find_ores and tell the user "
+    "the plan: which ore, how far, how deep, about how many blocks it "
+    "will dig. Never promise ore the scan did not list, and never say "
+    "how much it got until the report gives the inventory count. If the "
+    "report says to ask again, call mine_ore with the same ore.\n"
     "AT DUSK OR NIGHT: when look_around says it is getting dark or "
     "night, or a task result notes it with a hostile mob about, tell "
     "the user before anything else and offer to build a shelter "
@@ -308,7 +322,7 @@ TOOL_PARAMETERS = {
                             "craft_item | place_block_at | build_line | "
                             "build_blueprint | navigate_to | flee | "
                             "fight | eat_food | aim_at_block | "
-                            "mine_block | dig_to."),
+                            "mine_block | dig_to | mine_ore."),
         },
         "x": {
             "type": "INTEGER",
@@ -373,6 +387,7 @@ TOOL_PARAMETERS = {
         "count": {
             "type": "INTEGER",
             "description": ("For build_line: how many blocks (1 to "
+                            "16). For mine_ore: how many ore blocks (1 to "
                             "16). For collect_logs and collect_blocks: how "
                             "many logs or items to get. With "
                             "the bridge mod they are counted in the "
@@ -394,15 +409,17 @@ TOOL_PARAMETERS = {
         },
         "ore": {
             "type": "STRING",
-            "description": ("For find_ores: which ore -- coal | iron | "
-                            "copper | gold | redstone | lapis | diamond | "
-                            "emerald | quartz. Leave it out for any."),
+            "description": ("For find_ores and run_task mine_ore: which "
+                            "ore -- coal | iron | copper | gold | redstone "
+                            "| lapis | diamond | emerald | quartz. Leave it "
+                            "out for any."),
         },
         "radius": {
             "type": "INTEGER",
-            "description": ("For find_ores: how far to look, in blocks "
-                            "(default 16, at most 32 -- the scan's "
-                            "reach: 24 sideways, 32 down, 16 up)."),
+            "description": ("For find_ores and run_task mine_ore: how "
+                            "far to look, in blocks (default 16, at most "
+                            "32 -- the scan's reach: 24 sideways, 32 down, "
+                            "16 up)."),
         },
         "max_steps": {
             "type": "INTEGER",

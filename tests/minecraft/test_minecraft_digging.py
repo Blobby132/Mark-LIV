@@ -352,8 +352,8 @@ class R8AbortTests(unittest.TestCase):
         cells = hollow(rock(), (1, 60, 0))
         done = progress()
         done.swung[(1, 60, 0)] = "stone"
-        self.assertEqual(done.settle(cells), 1)
-        self.assertEqual(done.settle(cells), 0)
+        self.assertEqual(done.settle(cells), [((1, 60, 0), "stone")])
+        self.assertEqual(done.settle(cells), [])
         self.assertEqual((done.broken, done.cleared), (1, {(1, 60, 0)}))
 
     def test_a_fall(self):
@@ -415,6 +415,60 @@ class CheckBreakTests(unittest.TestCase):
 
     def test_stone_is_known(self):
         self.assertEqual(STONE, ("stone", True, None))
+
+
+class CheckWalkTests(unittest.TestCase):
+    """One stair on foot into air already there -- to pick up a drop. It
+    breaks nothing, so only the rules about where a foot may go apply."""
+
+    def east(self):
+        return shape(FEET, "east", 1, 0, 0)
+
+    def test_into_an_open_pocket(self):
+        cells = hollow(rock(), (1, 60, 0), (1, 61, 0))
+        self.assertIsNone(digging.check_walk(cells, FEET, self.east()))
+
+    def test_each_rule(self):
+        pocket = (1, 60, 0), (1, 61, 0)
+        cases = {
+            "walk": rock(),
+            "R2": put(hollow(rock(), (1, 61, 0)), (1, 60, 0), WATER),
+            "R4": put(hollow(rock(), *pocket), (1, 59, 0), AIR),
+            "R7": put(hollow(rock(), *pocket), (3, 61, 1), LAVA),
+            "unknown": {c: e for c, e in hollow(rock(), *pocket).items()
+                        if c != (1, 59, 0)},
+        }
+        for rule, cells in cases.items():
+            with self.subTest(rule=rule):
+                refusal = digging.check_walk(cells, FEET, self.east())
+                self.assertIsNotNone(refusal)
+                self.assertEqual(refusal.rule, rule)
+
+    def test_without_each_rule(self):
+        """The R2, R4 and R7 cases go ahead with that rule's function
+        removed: each refusal is the rule's own."""
+        pocket = (1, 60, 0), (1, 61, 0)
+        cases = {
+            "_r2_fluid": put(hollow(rock(), (1, 61, 0)), (1, 60, 0),
+                             block("water", False, "water")),
+            "_r4_staircase": put(hollow(rock(), *pocket), (1, 59, 0), AIR),
+            "_r7_lava": put(hollow(rock(), *pocket), (3, 61, 1), LAVA),
+        }
+        for rule, cells in cases.items():
+            with self.subTest(rule=rule):
+                if rule == "_r2_fluid":
+                    # The water cell is not air either: count it as open so
+                    # only R2 stands between it and a step.
+                    with mock.patch.object(digging, rule, allow), \
+                            mock.patch.object(digging, "is_air",
+                                              lambda e: e is not None
+                                              and not e[1]):
+                        self.assertIsNone(digging.check_walk(
+                            cells, FEET, self.east()))
+                    continue
+                with mock.patch.object(digging, rule, allow):
+                    self.assertIsNone(digging.check_walk(cells, FEET,
+                                                         self.east()))
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ WHERE THINGS ARE
         craft        craft_item
         place_build  place_block, place_block_at, build_line, build_blueprint
         combat       flee, fight
-        dig          dig_to
+        dig          dig_to, mine_ore
 
     Each imports only from the ones above it in that list (craft also from
     place_build, dig only from collect), so there is no import cycle. docs/ARCHITECTURE.md maps
@@ -76,7 +76,7 @@ from minecraft.skills.place_build import (
 )
 from minecraft.skills.craft import CraftItem
 from minecraft.skills.combat import Fight, Flee
-from minecraft.skills.dig import DigTo
+from minecraft.skills.dig import DigTo, MineOre
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -102,6 +102,7 @@ BUILTIN_SKILLS = {
     "aim_at_block": AimAtBlock,
     "mine_block": _mine_block,
     "dig_to": DigTo,
+    "mine_ore": MineOre,
 }
 
 
@@ -127,11 +128,11 @@ def available() -> tuple:
 # Named here rather than in prose so the tool description, the status report
 # and the manual check all quote the same list.
 NOT_YET_POSSIBLE = {
-    "find_iron": "find_ores lists buried ore (single-player only) and "
-                 "dig_to digs a staircase to a cell under hard rules, but "
-                 "choosing the ore, digging to it and taking the whole vein "
-                 "in one request is not built yet; and a long tunnel is "
-                 "not lit.",
+    "light_a_tunnel": "mine_ore digs a staircase to ore the scan lists and "
+                      "takes the vein it can reach, but it places no "
+                      "torches, so a tunnel stays dark and mobs can spawn "
+                      "in it. Nor does it strip-mine or search past what "
+                      "the ore scan lists.",
     "attack_players_or_animals": "attack only ever hits a mob the game "
                                  "calls hostile: never a player, a pet, a "
                                  "villager or an animal. That is deliberate, "
@@ -183,7 +184,7 @@ __all__ = [
     "Skill", "WalkForward", "Survey", "FindBlock", "BreakBlock",
     "PlaceBlock", "PlaceBlockAt", "BuildLine", "BuildBlueprint",
     "CollectLogs", "CollectBlocks", "AimAtBlock", "NavigateTo", "EatFood",
-    "CraftItem", "Flee", "Fight", "DigTo",
+    "CraftItem", "Flee", "Fight", "DigTo", "MineOre",
     # Constants used outside the package.
     "MIN_USEFUL_MINE_S", "LOG_BLOCKS", "FOODS", "NOT_YET_POSSIBLE",
     "NOW_POSSIBLE_WITH_THE_BRIDGE",

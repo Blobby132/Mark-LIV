@@ -161,17 +161,17 @@ class Progress:
     # a different block: something fell in (R8).
     swung: dict = field(default_factory=dict)
 
-    def settle(self, cells) -> int:
+    def settle(self, cells) -> list:
         """Move swung cells the reading shows as air into `cleared`, and
-        count them. Returns how many."""
-        settled = 0
+        count them. Returns [(cell, the block it was)] for those."""
+        settled = []
         for cell in list(self.swung):
             if is_air(cells.get(cell)):
-                del self.swung[cell]
+                was = self.swung.pop(cell)
                 if cell not in self.cleared:
                     self.cleared.add(cell)
                     self.broken += 1
-                    settled += 1
+                    settled.append((cell, was))
         return settled
 
 
@@ -441,6 +441,32 @@ def check_break(cells, feet, cell, progress):
     return None
 
 
+def check_walk(cells, feet, step):
+    """May the player walk this one stair without breaking anything -- into
+    air that is already there, to pick up a drop? None, or the Refusal.
+    Every cell known; nothing to break and no fluid in the way (R2); the
+    floor solid, dry, and not the one underfoot (R4); no lava near (R7).
+    A cave is entered only on foot like this, never dug into."""
+    for cell in step.passes + (step.floor,):
+        if cell not in cells:
+            return Refusal("unknown", cell, f"I cannot see {_words(cell)}")
+    for cell in step.passes:
+        refusal = _r2_fluid(cells, cell, breaking=False)
+        if refusal is not None:
+            return refusal
+        if not is_air(cells[cell]):
+            return Refusal("walk", cell, f"{_words(cell)} is not open, and "
+                           f"walking breaks nothing")
+    refusal = _r4_staircase(step, feet, cells)
+    if refusal is not None:
+        return refusal
+    for cell in step.passes + (step.floor,):
+        refusal = _r7_lava(cells, cell)
+        if refusal is not None:
+            return refusal
+    return None
+
+
 # ── R8: when to stop at once ─────────────────────────────────────────────────
 
 def _r8_health(before, after):
@@ -510,6 +536,6 @@ def abort_reason(before, after, progress, expected_feet=None) -> str:
 __all__ = ["MAX_BROKEN", "MAX_DEPTH", "MAX_HORIZONTAL", "LAVA_CLEARANCE",
            "FLUID_ABORT_REACH", "MAX_SAFE_DROP", "DIGGABLE", "FALLING",
            "Refusal", "Step", "Plan", "Progress", "feet_of", "shape",
-           "steps_left", "check_step", "plan_next", "check_break",
+           "steps_left", "check_step", "plan_next", "check_break", "check_walk",
            "abort_reason", "is_diggable", "is_falling", "has_fluid",
            "is_lava", "is_air"]
