@@ -960,6 +960,16 @@ class MinecraftController:
                     "bridge mod -- and ESC with none open brings up the "
                     "pause menu. Nothing was pressed.")
         if not getattr(state, "screen", None):
+            lacks = getattr(state, "lacks", None)
+            if callable(lacks) and lacks("gui"):
+                # Not "no screen": this jar does not report screens at all,
+                # so one may well be open.
+                return ("I cannot tell whether a screen is open: the "
+                        "installed mod is older than this Jarvis and does "
+                        "not report screens -- and ESC with none open "
+                        "brings up the pause menu. Nothing was pressed. "
+                        "Quit Minecraft, run install_mod.bat, then start "
+                        "Minecraft again.")
             return ("No screen is open, so there is nothing to close -- and "
                     "ESC with none open brings up the pause menu. Nothing "
                     "was pressed.")

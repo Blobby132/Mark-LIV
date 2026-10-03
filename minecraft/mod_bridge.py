@@ -110,12 +110,11 @@ def outdated_notice(missing, old_schema: bool = False) -> str:
         lost.insert(0, OLD_SCHEMA_LOSS)
     if not lost:
         return ""
-    what = (lost[0] if len(lost) == 1
-            else ", ".join(lost[:-1]) + " and " + lost[-1])
-    verb = "is" if len(lost) == 1 else "are"
-    return (f"The installed Minecraft mod is older than this Jarvis: {what} "
-            f"{verb} unavailable. Quit Minecraft, run install_mod.bat, then "
-            f"start Minecraft again.")
+    # Semicolons, because the descriptions have "and" in them.
+    these = "this is" if len(lost) == 1 else "these are"
+    return (f"The installed Minecraft mod is older than this Jarvis, so "
+            f"{these} unavailable: {'; '.join(lost)}. Quit Minecraft, run "
+            f"install_mod.bat, then start Minecraft again.")
 
 MAX_AGE_SECONDS = 3.0
 """How old a reading may be before it is treated as no reading at all.

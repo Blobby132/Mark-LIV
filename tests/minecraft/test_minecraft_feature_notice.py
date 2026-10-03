@@ -78,8 +78,10 @@ class FeatureNoticeTests(unittest.TestCase):
         return self.adapter.minecraft_control(params, player=self.player)
 
     def notices(self, text):
+        """The notice lines in a reply. A task that ends at once may put its
+        own reason, which can name the old jar too, in the same reply."""
         return [line for line in text.splitlines()
-                if "older than this Jarvis" in line]
+                if line.startswith("The installed Minecraft mod")]
 
     def hud_notices(self):
         """The notice itself. Each task's log also starts by naming the

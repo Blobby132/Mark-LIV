@@ -49,6 +49,23 @@ def _held_name(state):
     return ""
 
 
+def _no_game_mode(state) -> str:
+    """Why craft_item cannot start without game_mode, naming the field. Three
+    different causes, and only one of them is fixed by reinstalling."""
+    lacks = getattr(state, "lacks", None)
+    if callable(lacks) and lacks("gui"):
+        return ("I cannot craft: the installed mod is older than this Jarvis "
+                "and does not report game_mode or the open screen, which "
+                "crafting needs. Quit Minecraft, run install_mod.bat, then "
+                "start Minecraft again.")
+    if getattr(state, "features", None) is not None:
+        return ("I cannot craft yet: this reading from the bridge mod had no "
+                "game_mode, so I cannot tell survival from creative. Try "
+                "again in a moment.")
+    return ("I cannot craft: nothing I can read reports game_mode or the "
+            "open screen -- that needs the bridge mod running in the game.")
+
+
 @dataclass
 class CraftItem:
     """craft_item: make `count` of `item` by clicking in the crafting grid.
@@ -233,10 +250,7 @@ class CraftItem:
         self._recipe = recipe
         mode = getattr(state, "game_mode", None)
         if mode is None:
-            return self._stop(
-                "I cannot see the game's screens. Crafting needs the bridge "
-                "mod, and a version that reports screens -- run "
-                "install_mod.bat with Minecraft closed.")
+            return self._stop(_no_game_mode(state))
         if mode not in gui_mod.CLICKABLE_MODES:
             return self._stop(f"The game is in {mode} mode, and I only craft "
                               f"in survival or adventure.")
