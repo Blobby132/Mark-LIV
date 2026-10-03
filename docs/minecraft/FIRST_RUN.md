@@ -143,7 +143,7 @@ anything other than the zombie was hit.
 ## i. Ore (single-player only)
 
 In the single-player test world, in this order: i1-i3 only read; i4-i5 dig
-a short tunnel into a hill; i6-i8 go for a real ore. F12 stops it at any
+a short tunnel into a hill; i6-i8 go for a real ore; i9 is an optional check of a rule. F12 stops it at any
 moment.
 
 | # | Check | Pass | Fail |
@@ -156,6 +156,7 @@ moment.
 | i6 | Stand on dry ground with a stone pickaxe in the hotbar, and note how much raw iron the inventory holds (E). "Find iron ore", then "mine one iron ore". Before it starts it says the plan: which ore (coordinates from the i6 list), how far, how deep and about how many blocks it will dig. It does not name ore the list did not have. | ☐ | ☐ |
 | i7 | During i6: a staircase like i4, never the block you stood on; it stops beside the ore and breaks it with the crosshair on it (F3 `Targeted Block` at those coordinates). If the report says to ask again, ask again: it carries on, it does not start a new staircase. | ☐ | ☐ |
 | i8 | At the end the report's "more raw iron than when I started" matches what the inventory (E) gained since i6. If the ore had more of its vein beside it, it took the ones it could reach or said which it left and why. If it stopped instead (lava, water, gravel, a cave), it said which rule, and named another ore or said there was none. | ☐ | ☐ |
+| i9 | (Optional, creative or a spare world.) In the tunnel from i4, put a magma block where the next stair down would land -- one block ahead of the tunnel's end and two below your feet -- then ask it to dig one step down from there. It refuses, names the magma block, and breaks nothing. | ☐ | ☐ |
 
 **If it fails, write down:** the step, Jarvis's exact words, the task result
 text with all its step lines, and for i2, i4 and i6 the coordinates it gave and

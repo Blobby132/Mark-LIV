@@ -69,13 +69,14 @@ widen what the session allows.
 
 | Module | Job |
 |---|---|
-| `navigation.py` | The local terrain map and the pathfinder. Imports only heapq, math, dataclasses and `aiming` (which imports only math and dataclasses). |
+| `navigation.py` | The local terrain map and the pathfinder. Imports only heapq, math, dataclasses, `aiming` (which imports only math and dataclasses) and `blocks`. |
+| `blocks.py` | Block names more than one rule judges by: `HAZARDS` (not to stand on or walk into), shared by the pathfinder and the dig planner, and `CONTACT_HAZARDS` (not to brush against). Names only: no imports, no functions. |
 | `aiming.py` | "Look at that" → mouse pixels, with calibration. |
 | `mining.py` | Break times, the right tool, whether a block drops. |
 | `building.py` | Which cell may take a block, and the face to click. |
 | `gui.py` | When a click inside a screen may happen (the click gate). Imports only heapq, math, dataclasses. |
 | `recipes.py` | The recipes `craft_item` knows. Data. |
-| `digging.py` | Where a staircase may be dug: the next one to three cells to clear and the floor to keep, from the cells the mod reported (never an unknown one), or a refusal naming the hard rule (R1-R7); `abort_reason` (R8). Imports only math and dataclasses. |
+| `digging.py` | Where a staircase may be dug: the next one to three cells to clear and the floor to keep, from the cells the mod reported (never an unknown one), or a refusal naming the hard rule (R1-R7); `abort_reason` (R8). Imports only math, dataclasses and `blocks`. |
 | `ores.py` | What the mod's ore scan lists, filtered and put in words for `find_ores`; refuses outside a single-player world. `choose`: the ore `mine_ore` goes for -- the nearest listed one with no water or lava beside it that the dig limits allow -- where to stand, and about how many blocks that is; `vein_of`. Imports only math, dataclasses and `digging`. |
 | `danger.py` | Should a task stop for health or a mob; the dusk note. |
 | `verification.py` | Did that step actually work? |
@@ -97,9 +98,9 @@ its own; a layer is the longest chain of imports beneath it:
 
 | Layer | Modules |
 |---|---|
-| 0 | `aiming` `building` `capabilities` `danger` `digging` `emergency` `errors` `gui` `ledger` `mining` `process` `recipes` `session` `state` |
-| 1 | `action_spec` `debug_overlay` `input_backend` `mod_bridge` `navigation` `ores` `perception` `task_slot` `verification` `window` |
-| 2 | `controller` `observation` `progress` `stuck` `skills.base` |
+| 0 | `aiming` `blocks` `building` `capabilities` `danger` `emergency` `errors` `gui` `ledger` `mining` `process` `recipes` `session` `state` |
+| 1 | `action_spec` `debug_overlay` `digging` `input_backend` `mod_bridge` `navigation` `perception` `task_slot` `verification` `window` |
+| 2 | `controller` `observation` `ores` `progress` `stuck` `skills.base` |
 | 3 | `task_runner` |
 | 4 | `skills.hotbar` `skills.navigate` |
 | 5 | `skills.collect` `skills.combat` `skills.eat` `skills.place_build` |
@@ -107,7 +108,7 @@ its own; a layer is the longest chain of imports beneath it:
 | 7 | `skills.aim` |
 | 8 | `skills` (the registry) |
 
-The 30 top-level modules stay in one folder, on purpose. Grouped by role
+The 31 top-level modules stay in one folder, on purpose. Grouped by role
 -- control, perception, rules, tasks, as the tables above do -- the groups
 would import each other in a circle: `controller` uses `gui` (the click
 gate, a rule), `verification` (a rule) reads `state` (perception), and

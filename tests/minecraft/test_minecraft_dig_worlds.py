@@ -135,6 +135,13 @@ class HardRuleTests(_Worlds):
         for cell, feet in w.broken:
             self.assertNotEqual(cell, (feet[0], feet[1] - 1, feet[2]))
 
+    def test_r4_no_stair_onto_a_hazard(self):
+        skill, result, w = self.with_and_without(
+            "_r4_hazards", worlds.magma_floor, "dig_to",
+            lambda w: (1, 59, 0) in w.visited, x=4, y=56, z=0)
+        self.assertIn("R4", said(skill, result))
+        self.assertIn("magma block", said(skill, result))
+
     def test_r5_forty_blocks_a_task(self):
         skill, result, w = self.with_and_without(
             "_r5_limits", worlds.stone_volume, "dig_to",

@@ -47,6 +47,7 @@ import math
 from dataclasses import dataclass, field
 
 from minecraft import aiming
+from minecraft.blocks import HAZARDS
 
 PLAYER_HEIGHT = 2
 """How many blocks of empty space a standing player needs."""
@@ -82,19 +83,9 @@ MAX_PATH_LENGTH = 64
 """Longest route returned. A path longer than the scan radius would be
 mostly invention anyway."""
 
-# Blocks you should not stand on even though they are solid enough to walk
-# over, and blocks that are not ground at all.
-HAZARDS = frozenset({
-    "lava", "flowing_lava", "fire", "soul_fire", "magma_block", "cactus",
-    "sweet_berry_bush", "wither_rose", "powder_snow", "campfire",
-    "soul_campfire", "cobweb",
-    # Hurts to land on; a floor of them is no floor.
-    "pointed_dripstone", "lava_cauldron",
-    # Somewhere else entirely, one step in.
-    "nether_portal", "end_portal", "end_gateway",
-    # Wakes the warden, or springs a temple's trap.
-    "sculk_shrieker", "sculk_sensor", "calibrated_sculk_sensor", "tripwire",
-})
+# HAZARDS -- blocks you should not stand on even though they are solid
+# enough to walk over, and blocks that are not ground at all -- is in
+# minecraft/blocks.py, shared with the dig planner.
 
 LIQUIDS = frozenset({"water", "flowing_water", "lava", "flowing_lava"})
 

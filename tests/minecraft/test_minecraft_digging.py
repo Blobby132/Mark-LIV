@@ -331,6 +331,115 @@ class R7LavaTests(unittest.TestCase):
         self.assertIn("lava at (1, 63, 0)", plan.why)
 
 
+FLOOR_HAZARDS = ("cactus", "campfire", "soul_campfire", "magma_block",
+                 "powder_snow", "sweet_berry_bush", "wither_rose", "cobweb",
+                 "fire", "soul_fire")
+"""The names the brief listed for the floor check. Each is in the one shared
+HAZARDS (minecraft/blocks.py), which the planner and navigation both use."""
+
+STAIR_FLOOR = (1, 58, 0)        # the floor of the first stair down, east
+
+
+class FloorHazardTests(unittest.TestCase):
+    """R4: what a step lands on, and every cell the body goes through, is no
+    hazard -- solid and dry is not enough (magma burns, a campfire burns,
+    powder snow swallows) -- and no cactus is beside the tunnel."""
+
+    def plan(self, cells):
+        return plan_next(cells, FEET, EAST_DOWN, progress())
+
+    def test_one_definition(self):
+        from minecraft import blocks, navigation
+        self.assertIs(navigation.HAZARDS, blocks.HAZARDS)
+        self.assertIs(digging.HAZARDS, blocks.HAZARDS)
+        for name in FLOOR_HAZARDS:
+            self.assertIn(name, blocks.HAZARDS)
+
+    def test_blocks_is_constants_only(self):
+        import ast
+        import inspect
+        from minecraft import blocks
+        tree = ast.parse(inspect.getsource(blocks))
+        for node in tree.body:
+            with self.subTest(line=node.lineno):
+                self.assertTrue(
+                    isinstance(node, (ast.Assign, ast.Expr))
+                    or (isinstance(node, ast.ImportFrom)
+                        and node.module == "__future__"),
+                    "minecraft/blocks.py holds names, nothing else")
+
+    def test_each_hazard_as_the_floor(self):
+        for name in FLOOR_HAZARDS:
+            with self.subTest(floor=name):
+                # Marked solid: the name alone must refuse it.
+                cells = put(rock(), STAIR_FLOOR, block(name, True))
+                plan = self.plan(cells)
+                self.assertEqual(plan.status, "refused", plan.why)
+                self.assertEqual(plan.refusal.rule, "R4")
+                self.assertIn(" ".join(name.split("_")), plan.why)
+
+    def test_each_hazard_in_the_body_s_way(self):
+        """A hazard in a cell the body would pass through is refused as a
+        hazard -- not as "not natural stone", which would hide why."""
+        for name in FLOOR_HAZARDS:
+            with self.subTest(cell=name):
+                cells = put(rock(), (1, 60, 0), block(name, False))
+                plan = plan_next(cells, FEET, EAST_LEVEL, progress())
+                self.assertEqual(plan.status, "refused", plan.why)
+                self.assertEqual(plan.refusal.rule, "R4")
+                self.assertIn("hazard", plan.why)
+
+    def test_a_cactus_beside_the_tunnel(self):
+        """The level stair east would pass beside it: refused. The planner
+        may find another stair, but none whose body brushes the cactus."""
+        level = shape(FEET, "east", 1, 0, 0)
+        for side in ((1, 60, 1), (1, 61, -1), (1, 62, 0)):
+            with self.subTest(cactus=side):
+                cells = put(rock(), side, block("cactus"))
+                checked, refusal = check_step(cells, FEET, level, progress())
+                self.assertIsNone(checked)
+                self.assertEqual(refusal.rule, "R4")
+                self.assertIn("cactus", refusal.why)
+                plan = plan_next(cells, FEET, EAST_LEVEL, progress())
+                if plan.step is not None:
+                    for cell in plan.step.passes:
+                        self.assertNotEqual(
+                            sum(abs(a - b) for a, b in zip(cell, side)), 1,
+                            f"{plan.why} brushes the cactus")
+
+    def test_a_cactus_further_off_is_fine(self):
+        cells = put(rock(), (1, 60, 2), block("cactus"))
+        self.assertEqual(plan_next(cells, FEET, EAST_LEVEL,
+                                   progress()).status, "dig")
+
+    def test_plain_rock_is_fine(self):
+        self.assertEqual(self.plan(rock()).status, "dig")
+
+    def test_without_the_rule(self):
+        """With only the hazard check removed, a magma floor and a cactus
+        beside the tunnel are dug to: the refusals are its doing."""
+        magma = put(rock(), STAIR_FLOOR, block("magma_block"))
+        cactus = put(rock(), (1, 60, 1), block("cactus"))
+        level = shape(FEET, "east", 1, 0, 0)
+        with mock.patch.object(digging, "_r4_hazards", allow):
+            self.assertEqual(self.plan(magma).status, "dig")
+            checked, _ = check_step(cactus, FEET, level, progress())
+            self.assertIsNotNone(checked)
+
+    def test_walking_onto_one(self):
+        """check_walk -- a step into open air, to pick up a drop -- has the
+        same floor rule."""
+        cells = put(hollow(rock(), (1, 60, 0), (1, 61, 0)), (1, 59, 0),
+                    block("magma_block"))
+        refusal = digging.check_walk(cells, FEET,
+                                     shape(FEET, "east", 1, 0, 0))
+        self.assertEqual(refusal.rule, "R4")
+        self.assertIn("magma block", refusal.why)
+        with mock.patch.object(digging, "_r4_hazards", allow):
+            self.assertIsNone(digging.check_walk(
+                cells, FEET, shape(FEET, "east", 1, 0, 0)))
+
+
 def reading(health=20.0, position=(0.5, 60.0, 0.5), cells=None):
     near = SimpleNamespace(cells=cells if cells is not None else rock())
     return SimpleNamespace(health=health, position=position, near=near)

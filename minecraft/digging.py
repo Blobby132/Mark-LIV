@@ -22,7 +22,11 @@ proving the dangerous step is taken if that one function is removed)
         a dragon egg (FALLING) directly above the column being cleared.
     R4  Never the block underfoot, never the floor of the next step, never
         straight down or straight up: a staircase, at most one down (or
-        up) per one forward, onto a known solid floor.
+        up) per one forward, onto a known solid floor. The floor, and every
+        cell the body goes through, is no hazard (HAZARDS, shared with the
+        pathfinder in minecraft/blocks.py: magma, a campfire, powder snow,
+        a cobweb ...), and no cactus is beside a cell the body goes
+        through.
     R5  At most MAX_BROKEN blocks a task, MAX_DEPTH below where it began,
         MAX_HORIZONTAL from it (the runner's 45 steps a run besides).
     R6  When the tunnel opens into air it did not dig (a cave), stop there
@@ -47,6 +51,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+
+from minecraft.blocks import CONTACT_HAZARDS, HAZARDS
 
 MAX_BROKEN = 40
 MAX_DEPTH = 16
@@ -283,6 +289,34 @@ def _r4_staircase(step, feet, cells):
     return None
 
 
+def _r4_hazards(cells, step):
+    """The floor stepped onto and every cell the body goes through are no
+    hazard, and nothing that hurts to touch is beside those cells. Unknown
+    cells are another rule's: this judges only what was reported."""
+    for cell in step.passes:
+        entry = cells.get(cell)
+        if entry is not None and entry[0] in HAZARDS:
+            return Refusal("R4", cell, f"{_words(cell)} is "
+                           f"{' '.join(entry[0].split('_'))}, a hazard: I "
+                           f"will not dig or walk into it")
+    floor = cells.get(step.floor)
+    if floor is not None and floor[0] in HAZARDS:
+        return Refusal("R4", step.floor, f"the floor at "
+                       f"{_words(step.floor)} is "
+                       f"{' '.join(floor[0].split('_'))}, a hazard to stand "
+                       f"on")
+    for cell in step.passes:
+        for d in SIDES:
+            side = _offset(cell, *d)
+            entry = cells.get(side)
+            if entry is not None and entry[0] in CONTACT_HAZARDS:
+                return Refusal("R4", side, f"a "
+                               f"{' '.join(entry[0].split('_'))} at "
+                               f"{_words(side)} is beside {_words(cell)}: it "
+                               f"hurts to brush against")
+    return None
+
+
 def _r5_limits(step, progress, breaking):
     start = progress.start
     if progress.broken + breaking > MAX_BROKEN:
@@ -377,7 +411,7 @@ def check_step(cells, feet, step, progress):
     opening = _r6_opening(cells, step, progress)
     if opening is not None:
         return "opening", opening
-    refusal = _r4_staircase(step, feet, cells)
+    refusal = _r4_hazards(cells, step) or _r4_staircase(step, feet, cells)
     if refusal is not None:
         return None, refusal
     for cell in clear:
@@ -481,6 +515,10 @@ def check_walk(cells, feet, step):
         refusal = _r2_fluid(cells, cell, breaking=False)
         if refusal is not None:
             return refusal
+    refusal = _r4_hazards(cells, step)
+    if refusal is not None:
+        return refusal
+    for cell in step.passes:
         if not is_air(cells[cell]):
             return Refusal("walk", cell, f"{_words(cell)} is not open, and "
                            f"walking breaks nothing")
@@ -564,5 +602,6 @@ __all__ = ["MAX_BROKEN", "MAX_DEPTH", "MAX_HORIZONTAL", "LAVA_CLEARANCE",
            "FLUID_ABORT_REACH", "MAX_SAFE_DROP", "DIGGABLE", "FALLING",
            "Refusal", "Step", "Plan", "Progress", "feet_of", "shape",
            "steps_left", "check_step", "plan_next", "check_break", "check_walk",
+           "HAZARDS", "CONTACT_HAZARDS",
            "abort_reason", "is_diggable", "is_falling", "has_fluid",
            "is_lava", "is_air"]

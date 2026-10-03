@@ -461,12 +461,18 @@ def hidden_shaft(**options):
                   **options)
 
 
+def magma_floor(**options):
+    """Magma under the first stair down east: solid and dry, and it burns
+    whoever stands on it."""
+    return _world({(1, 58, 0): block("magma_block")}, **options)
+
+
 WORLDS = {
     "stone_volume": stone_volume, "buried_vein": buried_vein,
     "lava_pocket": lava_pocket, "water_pocket": water_pocket,
     "gravel_ceiling": gravel_ceiling, "cave_opening": cave_opening,
     "floating_ore": floating_ore, "mineshaft": mineshaft,
-    "hidden_shaft": hidden_shaft,
+    "hidden_shaft": hidden_shaft, "magma_floor": magma_floor,
 }
 
 
@@ -488,4 +494,4 @@ __all__ = ["AIR", "STONE", "WATER", "LAVA", "DROPS", "block", "rock", "put",
            "hollow", "DigWorld", "START", "HOLE", "VEIN", "WORLDS",
            "stone_volume", "buried_vein", "lava_pocket", "water_pocket",
            "gravel_ceiling", "cave_opening", "floating_ore", "mineshaft",
-           "hidden_shaft"]
+           "hidden_shaft", "magma_floor"]
