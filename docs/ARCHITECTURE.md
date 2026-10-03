@@ -75,6 +75,7 @@ widen what the session allows.
 | `building.py` | Which cell may take a block, and the face to click. |
 | `gui.py` | When a click inside a screen may happen (the click gate). Imports only heapq, math, dataclasses. |
 | `recipes.py` | The recipes `craft_item` knows. Data. |
+| `ores.py` | What the mod's ore scan lists, filtered and put in words for `find_ores`; refuses outside a single-player world. Imports only math and dataclasses. |
 | `danger.py` | Should a task stop for health or a mob; the dusk note. |
 | `verification.py` | Did that step actually work? |
 | `stuck.py`, `progress.py` | Why a walk stopped; noticing nothing is happening. |
@@ -95,7 +96,7 @@ its own; a layer is the longest chain of imports beneath it:
 
 | Layer | Modules |
 |---|---|
-| 0 | `aiming` `building` `capabilities` `danger` `emergency` `errors` `gui` `ledger` `mining` `process` `recipes` `session` `state` |
+| 0 | `aiming` `building` `capabilities` `danger` `emergency` `errors` `gui` `ledger` `mining` `ores` `process` `recipes` `session` `state` |
 | 1 | `action_spec` `debug_overlay` `input_backend` `mod_bridge` `navigation` `perception` `task_slot` `verification` `window` |
 | 2 | `controller` `observation` `progress` `stuck` `skills.base` |
 | 3 | `task_runner` |
@@ -105,7 +106,7 @@ its own; a layer is the longest chain of imports beneath it:
 | 7 | `skills.aim` |
 | 8 | `skills` (the registry) |
 
-The 28 top-level modules stay in one folder, on purpose. Grouped by role
+The 29 top-level modules stay in one folder, on purpose. Grouped by role
 -- control, perception, rules, tasks, as the tables above do -- the groups
 would import each other in a circle: `controller` uses `gui` (the click
 gate, a rule), `verification` (a rule) reads `state` (perception), and
@@ -223,7 +224,7 @@ precondition can only refuse; it never redirects.
 | `progress_probe` | `expect_at` / `expect_face`: the crosshair is on the exact block and face meant. |
 | `entity_probe` | Every `attack`: a mob the game calls hostile is under the crosshair. Never a player, pet, villager or animal. No opt-out. |
 | `held_item_probe` | `place` and `interact` refuse buckets, flint and steel, TNT, spawn eggs and similar. `use_item` pours lava or water or starts a fire only when the item is named (`expect_item`). |
-| `gui_probe` | With any screen open, `attack`, `mine`, `place`, `interact`, `use_item`, `eat` and `drop` are refused. `inventory close` presses ESC only while a screen is reported open. `hotbar_select` is refused in a screen. |
+| `gui_probe` | With any screen open, `attack`, `mine`, `place`, `interact`, `use_item`, `eat` and `drop` are refused. `inventory close` presses ESC only while a screen is reported open. `hotbar_select` is refused in a screen. Every one of these is judged on a reading taken after the last key that could open or close a screen, waiting up to a second for one; opening and closing wait for a reading that shows it, and say "opened", "closed" or "not confirmed". |
 
 **Tests:** `test_minecraft_attack_default.py`,
 `test_minecraft_attack_precondition.py`,

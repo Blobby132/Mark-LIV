@@ -139,3 +139,17 @@ full health, and F12 ready.
 **If it fails, write down:** the step, Jarvis's exact words, the task result
 text with its step lines, your health before and after, and whether
 anything other than the zombie was hit.
+
+## i. Ore (single-player only)
+
+This part only reads until the digging steps are added. Stand on open
+ground over stone, in the single-player test world.
+
+| # | Check | Pass | Fail |
+|---|---|---|---|
+| i1 | "Find iron ore." It lists iron ore nearest first, each with coordinates, how far, how many blocks below your feet, exposed or buried, and whether water or lava is near. Nothing is pressed and no session is needed. | ☐ | ☐ |
+| i2 | Pick one it called **exposed** within sight, perhaps in a cave wall or on a cliff. Walk to it and look at it with F3 open: `Targeted Block` is that ore at those coordinates. | ☐ | ☐ |
+| i3 | "Find diamond ore" (or any ore it did not list in i1): it says the scan lists none within the radius. It does not make one up. | ☐ | ☐ |
+
+**If it fails, write down:** the step, Jarvis's exact words, and for i2 the
+coordinates it gave and what F3 showed there.

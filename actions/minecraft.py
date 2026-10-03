@@ -32,6 +32,7 @@ from core import ocr as core_ocr
 
 from minecraft import capabilities as mc_phase
 from minecraft import navigation as mc_nav
+from minecraft import ores as mc_ores
 from minecraft import perception as mc_perception
 from minecraft import skills as mc_skills
 from minecraft import danger as mc_danger
@@ -346,6 +347,9 @@ _CAPABILITY_BY_ACTION = {
     # the same file read, summarised -- it presses nothing and needs no
     # session.
     "look_around":   capabilities.MINECRAFT_READ_STATE,
+    # The ore the bridge's scan lists. A read like look_around: it presses
+    # nothing. Single-player worlds only -- see minecraft/ores.py.
+    "find_ores":     capabilities.MINECRAFT_READ_STATE,
     "toggle_debug":  capabilities.MINECRAFT_READ_STATE,
 
     # THE confirmation, and the way out of it.
@@ -519,6 +523,7 @@ only a mob the mod calls hostile, so without the categories it sees none."""
 _ACTION_NEEDS = {
     "inventory": ("gui",),
     "attack": ("mob_categories",),
+    "find_ores": ("singleplayer", "ores"),
 }
 
 
@@ -683,6 +688,9 @@ def _minecraft_control(parameters: dict = None, player=None,
             summary["crosshair"] = seen.as_dict()
             return (f"{_around_line(state, summary)} Under the crosshair: "
                     f"{seen.describe()}.\n{summary}")
+
+        if action == "find_ores":
+            return _find_ores(params)
 
         if action == "toggle_debug":
             return _result_line(controller.toggle_debug_overlay(), player)
@@ -1057,6 +1065,28 @@ def _what_is_under_the_crosshair(state):
     except Exception:
         frame = None
     return mc_perception.crosshair(None, frame)
+
+
+def _find_ores(params: dict) -> str:
+    """The ore the bridge's scan lists near the player, nearest first.
+    Read-only; refused outside a single-player world (minecraft/ores.py)."""
+    state = _get_state_source().read()
+    problem = mc_ores.refusal(state)
+    if problem:
+        return problem
+    try:
+        radius = int(params.get("radius", mc_ores.DEFAULT_RADIUS))
+    except (TypeError, ValueError):
+        radius = mc_ores.DEFAULT_RADIUS
+    ore = params.get("ore")
+    hits = mc_ores.find(state, ore, radius)
+    listed = [{"name": h.name, "position": list(h.position),
+               "distance": h.distance, "depth": h.depth,
+               "exposed": h.exposed, "fluid_near": h.fluid_near}
+              for h in hits[:10]]
+    return (f"{mc_ores.describe(state, hits, ore, radius)}\n"
+            f"Tell the user only what this lists. Do not promise ore it "
+            f"does not list.\n{ {'ores': listed} }")
 
 
 def _source_label(source) -> str:

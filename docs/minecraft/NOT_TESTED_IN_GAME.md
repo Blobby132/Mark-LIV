@@ -51,6 +51,7 @@ round, **R-O** the ore-finding and digging round.
 | After a key that opens or closes a screen (inventory, interact with a table or chest), waiting up to 1 s for a reading taken after it and saying "opened", "closed" or "not confirmed"; every screen-dependent refusal judged on a reading newer than the last such key | `minecraft/controller.py` (`_screen_reading`, `_confirm_screen`) | `tests/minecraft/test_minecraft_screen_freshness.py` (a fake bridge 200 ms behind the game) | R-O |
 | An older jar told apart from "no screen open": `inventory close` and `craft_item` say the mod is older and name the field (`game_mode`) | `minecraft/controller.py` (`_close_refusal`), `minecraft/skills/craft.py` (`_no_game_mode`) | `tests/minecraft/test_minecraft_screen_messages.py` | R-F |
 | The one-line "older than this Jarvis" notice, once, at session start or the first task that needs a missing feature; HUD and reply | `actions/minecraft.py` (`_feature_notice`), `minecraft/mod_bridge.py` (`outdated_notice`) | `tests/minecraft/test_minecraft_feature_notice.py` | R-F |
+| `find_ores`: the scan's ore nearest first with depth, exposed or buried, water or lava near; refused unless the reading says single-player; never more than the scan listed | `minecraft/ores.py`, `actions/minecraft.py` (`_find_ores`) | `tests/minecraft/test_minecraft_find_ores.py` | R-O |
 | `bridge_check`'s table of the features in the live payload | `tools/bridge_check.py` (`feature_rows`) | `tests/bridge/test_bridge_check_features.py` | R-F |
 
 ## Placing and building

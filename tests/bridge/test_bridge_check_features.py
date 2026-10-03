@@ -21,6 +21,7 @@ from unittest import mock
 
 from minecraft import mod_bridge
 from minecraft.mod_bridge import ModBridgeStateSource, SCHEMA
+from tests.support.bridge_payloads import near_grid
 from tools import bridge_check
 
 NOW_MS = 1_700_000_000_000
@@ -46,11 +47,15 @@ def old_jar(**extra):
 
 
 def new_jar(**extra):
+    """The current jar: the feature list, the screen fields, near_blocks
+    with its grid, and -- in a single-player world -- the ore scan."""
     data = old_jar(
         features=list(mod_bridge.REQUIRED_FEATURES), game_mode="survival",
         scan={"radius": 10, "up": 4, "down": 5, "tree_up": 12},
-        near_blocks={"origin": [0, 64, 0], "radius": 4, "below": 4,
-                     "above": 4, "complete_within": 4, "blocks": []},
+        near_blocks=near_grid(),
+        singleplayer=True,
+        ores={"origin": [0, 64, 0], "radius": 24, "down": 32, "up": 16,
+              "complete": True, "complete_within": None, "ores": []},
         nearby_entities=[DROP_NEW, ZOMBIE_NEW])
     data.update(extra)
     return data
@@ -102,6 +107,22 @@ class FeatureRowTests(unittest.TestCase):
         seen = rows(new_jar(nearby_entities=[ZOMBIE_NEW]))
         self.assertEqual(seen["item names on dropped items"],
                          bridge_check.NOT_SEEN)
+
+    def test_the_ore_rows(self):
+        old = rows(old_jar())
+        for row in ("singleplayer", "ores (single-player only)",
+                    "near_blocks grid (digging)"):
+            with self.subTest(row=row):
+                self.assertEqual(old[row], bridge_check.MISSING)
+        server = rows(new_jar(singleplayer=False, ores=None))
+        self.assertEqual(server["singleplayer"], bridge_check.PRESENT)
+        self.assertEqual(server["ores (single-player only)"],
+                         bridge_check.NOT_SEEN)
+        single = rows(new_jar(singleplayer=True, ores={
+            "origin": [0, 64, 0], "radius": 24, "down": 32, "up": 16,
+            "complete": True, "complete_within": None, "ores": []}))
+        self.assertEqual(single["ores (single-player only)"],
+                         bridge_check.PRESENT)
 
     def test_the_older_rows_are_kept(self):
         seen = rows(new_jar())

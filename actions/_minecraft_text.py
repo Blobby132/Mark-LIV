@@ -26,6 +26,14 @@ TOOL_DESCRIPTION = (
     "(name, x, y, z, face) and the terrain around the player. Without "
     "it, read_state falls back to the F3 overlay (toggle_debug presses "
     "F3, and like every key press needs a session).\n"
+    "find_ores (ore = coal, iron, copper, gold, redstone, lapis, diamond, "
+    "emerald or quartz, or leave it out for any; radius default 16, up "
+    "to 32) lists the ore the bridge's scan found, buried ones included, "
+    "nearest first: where, how far, how deep below your feet, exposed or "
+    "buried, and whether water or lava is near it. It presses nothing. It "
+    "works only in a single-player world (on a server, finding ore inside "
+    "rock is x-ray) and says so otherwise. Name only ore it lists; never "
+    "promise ore it did not list.\n"
     "look_around is the one to use for 'what is around me', 'is there a "
     "tree nearby', 'any mobs'. It returns the nearest log, stone, water, "
     "ores and mobs with coordinates, from the bridge mod's terrain scan. "
@@ -227,6 +235,7 @@ TOOL_PARAMETERS = {
             "type": "STRING",
             "description": (
                 "status | observe | read_state | look_around | "
+                "find_ores | "
                 "task_status | toggle_debug | "
                 "start_session | end_session | move | move_and_jump | "
                 "look | jump | "
@@ -370,6 +379,18 @@ TOOL_PARAMETERS = {
                 "name that must be there, e.g. 'oak_log'. If something "
                 "else is, the task stops rather than break the wrong "
                 "thing."),
+        },
+        "ore": {
+            "type": "STRING",
+            "description": ("For find_ores: which ore -- coal | iron | "
+                            "copper | gold | redstone | lapis | diamond | "
+                            "emerald | quartz. Leave it out for any."),
+        },
+        "radius": {
+            "type": "INTEGER",
+            "description": ("For find_ores: how far to look, in blocks "
+                            "(default 16, at most 32 -- the scan's "
+                            "reach: 24 sideways, 32 down, 16 up)."),
         },
         "max_steps": {
             "type": "INTEGER",

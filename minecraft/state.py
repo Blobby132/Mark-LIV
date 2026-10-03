@@ -190,6 +190,54 @@ class GuiView:
                 "cursor_px": list(self.cursor_px)}
 
 
+def _cell_key(cell):
+    try:
+        return (int(cell[0]), int(cell[1]), int(cell[2]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+@dataclass(frozen=True)
+class OreHit:
+    """One ore block the bridge's ore scan listed: buried or not."""
+    name: str                              # short: iron_ore, deepslate_...
+    x: int
+    y: int
+    z: int
+    exposed: bool                          # air or fluid beside it
+    fluid_near: bool                       # water or lava within 2 cells
+
+    @property
+    def position(self) -> tuple:
+        return (self.x, self.y, self.z)
+
+    def as_dict(self) -> dict:
+        return {"name": self.name, "x": self.x, "y": self.y, "z": self.z,
+                "exposed": self.exposed, "fluid_near": self.fluid_near}
+
+
+@dataclass(frozen=True)
+class OreSnapshot:
+    """The bridge's ore scan (`ores`), single-player worlds only: the
+    nearest ore within `radius` sideways, `down` below and `up` above the
+    feet block `origin`, nearest first. `complete` is false when a chunk
+    was not loaded or ore was left out by a cap -- then there may be more
+    beyond `complete_within`."""
+    origin: tuple
+    radius: int
+    down: int
+    up: int
+    complete: bool
+    complete_within: float | None = None
+    ores: tuple = ()                       # tuple[OreHit, ...]
+
+    def as_dict(self) -> dict:
+        return {"origin": list(self.origin), "radius": self.radius,
+                "down": self.down, "up": self.up, "complete": self.complete,
+                "complete_within": self.complete_within,
+                "ores": [o.as_dict() for o in self.ores]}
+
+
 @dataclass(frozen=True)
 class NearSnapshot:
     """Every non-air block in a small box around the player, from the bridge
@@ -206,9 +254,17 @@ class NearSnapshot:
     above: int
     complete_within: float | None = None
     blocks: tuple = ()                     # tuple[NearbyBlock, ...]
+    # From a jar with the `grid`: EVERY cell of the box, air included --
+    # (x, y, z) -> (name, solid, fluid), the fluid's short name or None. A
+    # cell in an unloaded chunk is absent. None from an older jar.
+    cells: dict | None = None
+    complete: bool | None = None           # every cell of the box known
 
     def covers(self, cell) -> bool:
         """Can this snapshot say what is at `cell`, air included?"""
+        if self.cells is not None:
+            key = _cell_key(cell)
+            return key is not None and key in self.cells
         try:
             dx = int(cell[0]) - int(self.origin[0])
             dy = int(cell[1]) - int(self.origin[1])
@@ -221,12 +277,34 @@ class NearSnapshot:
         return self.complete_within is None or \
             (dx * dx + dy * dy + dz * dz) ** 0.5 < self.complete_within
 
+    def name_at(self, cell):
+        """The block at `cell` by name -- "air" included -- from the grid;
+        None when the grid does not say (no grid, or not known there)."""
+        if self.cells is None:
+            return None
+        entry = self.cells.get(_cell_key(cell))
+        return None if entry is None else entry[0]
+
+    def fluid_at(self, cell):
+        """The fluid at `cell` ("water", "flowing_lava", ...) from the
+        grid, or None for no fluid -- or when the grid cannot say: check
+        covers() first."""
+        if self.cells is None:
+            return None
+        entry = self.cells.get(_cell_key(cell))
+        return None if entry is None else entry[2]
+
     def block_at(self, cell):
         """The listed block at `cell`, or None."""
         try:
             want = (int(cell[0]), int(cell[1]), int(cell[2]))
         except (TypeError, ValueError, IndexError):
             return None
+        if self.cells is not None:
+            entry = self.cells.get(want)
+            if entry is None or entry[0] == "air":
+                return None
+            return NearbyBlock(*want, entry[0], entry[1])
         for block in self.blocks:
             if block.position == want:
                 return block
@@ -302,6 +380,14 @@ class WorldState:
     # A log there may have more above it that was not looked for. Like
     # `features`, it describes the scan, so it is not in _FIELDS.
     log_ceiling: int | None = None
+
+    # A single-player world (the client runs its own server): True, False,
+    # or None when the bridge does not say. Ore finding and digging refuse
+    # unless it is True.
+    singleplayer: bool | None = None
+    # The bridge's ore scan, single-player only (see OreSnapshot). Not in
+    # _FIELDS: read through find_ores, not dumped into every read_state.
+    ores: OreSnapshot | None = None
 
     # Provenance — never None, because "where did this come from" always has
     # an answer even when every value is missing.

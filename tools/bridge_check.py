@@ -205,6 +205,30 @@ def feature_rows(payload: dict, state) -> list:
         f"logs up to {tree_up} above the feet" if isinstance(tree_up, int)
         else "logs only up to 4 above the feet")
 
+    single = payload.get("singleplayer")
+    row("singleplayer", PRESENT if isinstance(single, bool) else MISSING,
+        "" if not isinstance(single, bool)
+        else ("a single-player world" if single else "a server"))
+    ores = payload.get("ores")
+    if isinstance(ores, dict):
+        listed = ores.get("ores") if isinstance(ores.get("ores"), list) \
+            else []
+        row("ores (single-player only)", PRESENT,
+            f"{len(listed)} listed within {ores.get('radius')}")
+    elif single is False:
+        row("ores (single-player only)", NOT_SEEN,
+            "not scanned on a server")
+    elif "ores" in payload and single is True:
+        row("ores (single-player only)", NOT_SEEN,
+            "the first scan is not finished -- run this again")
+    else:
+        row("ores (single-player only)", MISSING, "")
+    near = state.near
+    grid = near is not None and near.cells is not None
+    row("near_blocks grid (digging)", PRESENT if grid else MISSING,
+        f"{len(near.cells)} cells, {near.below} below to {near.above} above"
+        if grid else "")
+
     has_clearance = any(b.clearance is not None
                         for b in (state.surface or ()))
     row("head clearance", PRESENT if has_clearance else MISSING, "")

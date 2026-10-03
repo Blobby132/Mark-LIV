@@ -63,7 +63,7 @@ from dataclasses import replace as _copy_with
 
 from minecraft.state import (
     BlockRef, EXACT, EntityRef, GuiSlot, GuiView, ItemStack, NearbyBlock,
-    NearSnapshot, WorldState, empty_state,
+    NearSnapshot, OreHit, OreSnapshot, WorldState, empty_state,
 )
 
 SCHEMA = "markliv.minecraft.state/4"
@@ -430,6 +430,10 @@ class ModBridgeStateSource:
             features=tuple(sorted(_feature_set(payload.get("features")))),
             log_ceiling=_log_ceiling(payload.get("scan"),
                                      payload.get("position")),
+            singleplayer=(payload["singleplayer"]
+                          if isinstance(payload.get("singleplayer"), bool)
+                          else None),
+            ores=_ores(payload.get("ores")),
             on_ground=(payload["on_ground"]
                        if isinstance(payload.get("on_ground"), bool) else None),
             scan_radius=_integer((payload.get("scan") or {}).get("radius")
@@ -783,9 +787,111 @@ def _near(value):
         blocks.append(NearbyBlock(x=x, y=y, z=z,
                                   name=_short_name(name) or "unknown",
                                   solid=solid))
+    cells = _grid(value.get("grid"), origin, radius, below, above)
+    if cells is not None:
+        # The grid lists every cell, so the non-air ones are the whole
+        # list -- not the nearest few under a quota.
+        blocks = [NearbyBlock(x=k[0], y=k[1], z=k[2], name=v[0], solid=v[1])
+                  for k, v in sorted(cells.items(),
+                                     key=lambda kv: (kv[0][1], kv[0][2],
+                                                     kv[0][0]))
+                  if v[0] != "air"]
     return NearSnapshot(origin=origin, radius=radius, below=below,
                         above=above, complete_within=complete,
-                        blocks=tuple(blocks))
+                        blocks=tuple(blocks), cells=cells,
+                        complete=(None if cells is None
+                                  else value.get("complete") is True
+                                  and len(cells) == (2 * radius + 1) ** 2
+                                  * (below + above + 1)))
+
+
+def _grid(value, origin, radius, below, above):
+    """near_blocks' grid as {(x, y, z): (name, solid, fluid)}, or None.
+
+    The runs must add up to exactly the box, and every palette entry must
+    be [name, solid, fluid]: anything else and the grid is not used at all
+    -- a cell read wrongly as air next to the player is the one mistake
+    digging cannot afford. Index -1, a cell in an unloaded chunk, is left
+    out: not known, so not air."""
+    if not isinstance(value, dict) or value.get("order") != "yzx":
+        return None
+    palette, runs = value.get("palette"), value.get("runs")
+    if not isinstance(palette, list) or not isinstance(runs, list) \
+            or len(runs) % 2:
+        return None
+    entries = []
+    for entry in palette:
+        if not isinstance(entry, list) or len(entry) != 3 \
+                or not isinstance(entry[1], bool):
+            return None
+        name = _short_name(entry[0])
+        fluid = _short_name(entry[2]) if entry[2] is not None else None
+        if name is None or (entry[2] is not None and fluid is None):
+            return None
+        entries.append((name, entry[1], fluid))
+    side, height = 2 * radius + 1, below + above + 1
+    total = side * side * height
+    flat = []
+    for index, count in zip(runs[0::2], runs[1::2]):
+        if not isinstance(index, int) or isinstance(index, bool) \
+                or not isinstance(count, int) or isinstance(count, bool) \
+                or count <= 0 or not -1 <= index < len(entries):
+            return None
+        flat.extend([index] * count)
+        if len(flat) > total:
+            return None
+    if len(flat) != total:
+        return None
+    ox, oy, oz = origin
+    cells = {}
+    for n, index in enumerate(flat):
+        if index < 0:
+            continue
+        dx = n % side - radius
+        dz = (n // side) % side - radius
+        dy = n // (side * side) - below
+        cells[(ox + dx, oy + dy, oz + dz)] = entries[index]
+    return cells
+
+
+def _ores(value):
+    """The ore scan, or None when there is none (a server, an older jar, or
+    the first pass not finished). A garbled entry is dropped -- a missing
+    ore only means one not offered -- and the list then counts as
+    incomplete."""
+    if not isinstance(value, dict):
+        return None
+    origin = _triple(value.get("origin"))
+    try:
+        radius, down, up = (int(value[k]) for k in ("radius", "down", "up"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    entries = value.get("ores")
+    if origin is None or not isinstance(entries, list):
+        return None
+    complete = value.get("complete") is True
+    ores = []
+    for entry in entries:
+        try:
+            name = _short_name(entry["name"])
+            x, y, z = (entry[k] for k in ("x", "y", "z"))
+            exposed, fluid = entry["exposed"], entry["fluid_near"]
+        except (KeyError, TypeError):
+            complete = False
+            continue
+        if name is None or not all(
+                isinstance(v, int) and not isinstance(v, bool)
+                for v in (x, y, z)) \
+                or not isinstance(exposed, bool) \
+                or not isinstance(fluid, bool):
+            complete = False
+            continue
+        ores.append(OreHit(name=name, x=x, y=y, z=z, exposed=exposed,
+                           fluid_near=fluid))
+    return OreSnapshot(origin=tuple(int(v) for v in origin), radius=radius,
+                       down=down, up=up, complete=complete,
+                       complete_within=_number(value.get("complete_within")),
+                       ores=tuple(ores))
 
 
 def _carried(value):
