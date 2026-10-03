@@ -125,17 +125,16 @@ def _grid_problem(state) -> str:
     return ""
 
 
-def _goal_limits(goal, start) -> str:
-    """R5 for the goal itself, before anything is broken."""
-    if start[1] - goal[1] > digging.MAX_DEPTH:
-        return (f"R5: {_words(goal)} is more than {digging.MAX_DEPTH} "
-                f"blocks below where I started. Nothing was broken.")
-    if ((goal[0] - start[0]) ** 2 + (goal[2] - start[2]) ** 2) ** 0.5 \
-            > digging.MAX_HORIZONTAL:
-        return (f"R5: {_words(goal)} is more than "
-                f"{digging.MAX_HORIZONTAL} blocks from where I started. "
-                f"Nothing was broken.")
-    return ""
+def _goal_limits(goal, progress, feet) -> str:
+    """R5 for the goal itself, before anything is broken: deeper or further
+    than a dig may go, or more blocks than the task has left -- with the
+    furthest cell toward it that is allowed."""
+    refusal = digging.goal_refusal(progress.start, feet, goal,
+                                   progress.broken)
+    if refusal is None:
+        return ""
+    more = " more" if progress.broken else ""
+    return f"{refusal.describe()}. Nothing{more} was broken."
 
 
 @dataclass
@@ -226,7 +225,8 @@ class DigTo(_HoldsTheRightTool):
         if progress is None:
             progress = digging.Progress(start=digging.feet_of(state.position))
         self._progress = progress
-        problem = _goal_limits(goal, progress.start)
+        problem = _goal_limits(goal, progress,
+                               digging.feet_of(state.position))
         if problem:
             return problem
         _DIGS[goal] = progress
@@ -593,7 +593,7 @@ class MineOre(DigTo):
             return ""
         self.x, self.y, self.z = mine.stand
         self._goal = tuple(mine.stand)
-        return _goal_limits(self._goal, mine.progress.start)
+        return _goal_limits(self._goal, mine.progress, feet)
 
     def _finished(self) -> bool:
         return self._done or bool(self._reason)

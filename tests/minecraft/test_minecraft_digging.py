@@ -528,6 +528,59 @@ class R9WardenTests(unittest.TestCase):
                                        progress()).status, "dig")
 
 
+class GoalLimitTests(unittest.TestCase):
+    """R5 before anything is broken: a goal deeper than MAX_DEPTH, further
+    than MAX_HORIZONTAL, or needing more than the blocks a task has left is
+    refused, saying the limit and the furthest cell toward the goal that
+    every limit allows (along the straight line from the feet)."""
+
+    def refuse(self, goal, feet=FEET, broken=0, start=FEET):
+        return digging.goal_refusal(start, feet, goal, broken)
+
+    def test_within_every_limit(self):
+        for goal in ((5, 55, 0), (8, 52, 0), (19, 60, 0), (-6, 54, 4)):
+            with self.subTest(goal=goal):
+                self.assertIsNone(self.refuse(goal))
+
+    def test_too_deep(self):
+        refusal = self.refuse((2, 40, 1))
+        self.assertEqual(refusal.rule, "R5")
+        self.assertIn("20 blocks below where I started", refusal.why)
+        self.assertIn("at most 16 down (to y 44)", refusal.why)
+        self.assertIn("furthest I may dig toward it is (1, 47, 0)",
+                      refusal.why)
+
+    def test_too_far(self):
+        refusal = self.refuse((40, 60, 0))
+        self.assertIn("40 blocks across", refusal.why)
+        self.assertIn("at most 32 across", refusal.why)
+        self.assertIn("is (20, 60, 0)", refusal.why, "32 across is 64 "
+                      "blocks: the budget brings it to 20")
+        diagonal = self.refuse((30, 60, 30))
+        self.assertIn("42 blocks across", diagonal.why)
+        self.assertIn("is (10, 60, 10)", diagonal.why)
+
+    def test_more_blocks_than_a_task_may_break(self):
+        refusal = self.refuse((25, 60, 0))
+        self.assertIn("about 50 blocks", refusal.why)
+        self.assertIn("40 a task may break", refusal.why)
+        self.assertIn("(20, 60, 0)", refusal.why)
+
+    def test_what_is_broken_already_counts(self):
+        self.assertIsNone(self.refuse((12, 60, 0), broken=16))
+        refusal = self.refuse((12, 60, 0), broken=17)
+        self.assertIn("23 left", refusal.why)
+        self.assertIn("(11, 60, 0)", refusal.why)
+
+    def test_the_nearest_allowed_is_allowed(self):
+        for goal, broken in (((2, 40, 1), 0), ((40, 60, 0), 0),
+                             ((30, 60, 30), 0), ((25, 60, 0), 0),
+                             ((12, 60, 0), 17), ((20, 30, 25), 5)):
+            with self.subTest(goal=goal):
+                near = digging.nearest_allowed(FEET, FEET, goal, broken)
+                self.assertIsNone(self.refuse(near, broken=broken))
+
+
 def reading(health=20.0, position=(0.5, 60.0, 0.5), cells=None):
     near = SimpleNamespace(cells=cells if cells is not None else rock())
     return SimpleNamespace(health=health, position=position, near=near)

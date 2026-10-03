@@ -227,13 +227,30 @@ class DigToTests(unittest.TestCase):
         self.assertEqual(w.broken, [])
 
     def test_a_goal_past_the_limits(self):
-        for goal in ((0, 40, 30), (40, 60, 0)):
+        cases = {(0, 40, 30): "(0, 52, 16)", (40, 60, 0): "(20, 60, 0)",
+                 (25, 60, 0): "(20, 60, 0)"}
+        for goal, nearest in cases.items():
             with self.subTest(goal=goal):
                 w = world()
-                skill, _result = dig(w, goal)
+                skill, result = dig(w, goal)
                 self.assertTrue(skill.failed)
                 self.assertIn("R5", skill.done_reason)
+                self.assertIn("furthest I may dig toward it",
+                              skill.done_reason)
+                self.assertIn(nearest, skill.done_reason)
                 self.assertEqual(w.broken, [])
+                self.assertEqual(result.steps_taken, 0)
+
+    def test_without_the_check_up_front_it_digs_to_the_budget(self):
+        """The 40-block budget was only enforced as the dig went: with the
+        up-front check removed, a 50-block tunnel is dug until R5 stops it
+        at 40."""
+        w = world()
+        with mock.patch.object(digging, "goal_refusal",
+                               lambda *a, **k: None):
+            skill, _result = dig(w, (25, 60, 0), runs=10)
+        self.assertIn("R5", skill.done_reason)
+        self.assertEqual(len(w.broken), digging.MAX_BROKEN)
 
 
 

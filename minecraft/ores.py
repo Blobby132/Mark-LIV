@@ -213,11 +213,8 @@ def stand_cell(feet, ore) -> tuple:
 
 
 def dig_estimate(feet, stand) -> tuple:
-    """(stairs, the most blocks they break): three for a stair down or up,
-    two for a level one."""
-    stairs = digging.steps_left(feet, stand)
-    sloped = min(stairs, abs(stand[1] - feet[1]))
-    return stairs, 3 * sloped + 2 * (stairs - sloped)
+    """(stairs, the most blocks they break): digging.blocks_needed."""
+    return digging.blocks_needed(feet, stand)
 
 
 def choose(state, ore=None, radius=DEFAULT_RADIUS, skip=(),

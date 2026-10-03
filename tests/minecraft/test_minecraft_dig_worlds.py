@@ -152,12 +152,29 @@ class HardRuleTests(_Worlds):
         self.assertIn("monster room", said(skill, result))
 
     def test_r5_forty_blocks_a_task(self):
-        skill, result, w = self.with_and_without(
-            "_r5_limits", worlds.stone_volume, "dig_to",
-            lambda w: len(w.broken) > digging.MAX_BROKEN,
-            runs=10, x=25, y=60, z=0)
+        """A 50-block tunnel. R5 is enforced twice: up front, the goal is
+        refused before anything is broken; as the dig goes, no stair takes
+        the count past 40. Each is shown on its own, and with both removed
+        the dig goes past 40."""
+        w = worlds.stone_volume()
+        skill, result = run(w, "dig_to", x=25, y=60, z=0)
         self.assertIn("R5", said(skill, result))
-        self.assertEqual(len(w.broken), digging.MAX_BROKEN)
+        self.assertIn("furthest I may dig toward it is (20, 60, 0)",
+                      said(skill, result))
+        self.assertEqual(w.broken, [])
+        no_goal_check = mock.patch.object(digging, "goal_refusal",
+                                          lambda *a, **k: None)
+        dig_mod.forget_digs()
+        stair = worlds.stone_volume()
+        with no_goal_check:
+            skill, result = run(stair, "dig_to", runs=10, x=25, y=60, z=0)
+        self.assertIn("R5", said(skill, result))
+        self.assertEqual(len(stair.broken), digging.MAX_BROKEN)
+        dig_mod.forget_digs()
+        bare = worlds.stone_volume()
+        with no_goal_check, mock.patch.object(digging, "_r5_limits", allow):
+            run(bare, "dig_to", runs=10, x=25, y=60, z=0)
+        self.assertGreater(len(bare.broken), digging.MAX_BROKEN)
 
     def test_r6_a_cave_is_reported_not_entered(self):
         cave = {(3, 60, 0), (4, 60, 0), (3, 60, 1), (4, 60, 1)}

@@ -28,7 +28,10 @@ proving the dangerous step is taken if that one function is removed)
         a cobweb ...), and no cactus is beside a cell the body goes
         through.
     R5  At most MAX_BROKEN blocks a task, MAX_DEPTH below where it began,
-        MAX_HORIZONTAL from it (the runner's 45 steps a run besides).
+        MAX_HORIZONTAL from it (the runner's 45 steps a run besides). A
+        goal past any of them is refused before anything is broken
+        (goal_refusal), naming the furthest cell toward it that is allowed;
+        each stair is checked again as the dig goes.
     R6  When the tunnel opens into air it did not dig (a cave), stop there
         and report the opening: whether its floor is solid and how far the
         drop is.
@@ -42,9 +45,10 @@ proving the dangerous step is taken if that one function is removed)
         dry, and lava beside air flows into it, into view.
     R8  Abort on health lost, fluid within 2 cells, a block appearing in a
         cleared cell, the player's position changing unexpectedly, or one
-        of R9's blocks within WARDEN_REACH of the body (abort_reason). Hostile mobs are the task runner's danger watch,
-        which digging never stands down; a pickaxe that cannot harvest the
-        block is the skill's check before each swing.
+        of R9's blocks within WARDEN_REACH of the body (abort_reason).
+        Hostile mobs are the task runner's danger watch, which digging
+        never stands down; a pickaxe that cannot harvest the block is the
+        skill's check before each swing.
     R9  No planned cell -- a cell to clear, a cell the body goes through,
         the floor -- within WARDEN_REACH of sculk, a sculk sensor or
         shrieker or catalyst, reinforced deepslate or a spawner
@@ -219,6 +223,15 @@ def shape(feet, direction, dx, dz, dy) -> Step:
         to, floor = (nx, y, nz), (nx, y - 1, nz)
     return Step(direction=direction, dx=dx, dz=dz, dy=dy, passes=passes,
                 clear=(), to=to, floor=floor)
+
+
+def blocks_needed(feet, goal) -> tuple:
+    """(stairs, the most blocks they break): three for a stair down or up,
+    two for a level one -- every cell solid. Air on the way breaks fewer
+    (and a cave stops the dig, R6)."""
+    stairs = steps_left(feet, goal)
+    sloped = min(stairs, abs(goal[1] - feet[1]))
+    return stairs, 3 * sloped + 2 * (stairs - sloped)
 
 
 def steps_left(feet, goal) -> int:
@@ -437,6 +450,70 @@ def _r9_warden(cells, planned):
 def _warden_words(name, where, how) -> str:
     return (f"a {' '.join(name.split('_'))} at {_words(where)} {how}: this "
             f"looks like an ancient city (warden) or a monster room")
+
+
+def _within_reach(start, cell) -> bool:
+    return (start[1] - cell[1] <= MAX_DEPTH
+            and math.hypot(cell[0] - start[0], cell[2] - start[2])
+            <= MAX_HORIZONTAL)
+
+
+def nearest_allowed(start, feet, goal, broken=0) -> tuple:
+    """The furthest cell toward `goal`, on the straight line from the feet,
+    that every R5 limit allows: no deeper than MAX_DEPTH below `start`, no
+    further than MAX_HORIZONTAL from it, and reachable with the blocks the
+    task has left after `broken`. The feet themselves if none."""
+    start, feet, goal = tuple(start), tuple(feet), tuple(goal)
+    x, y, z = goal
+    y = max(y, start[1] - MAX_DEPTH)
+    across = math.hypot(x - start[0], z - start[2])
+    if across > MAX_HORIZONTAL:
+        scale = MAX_HORIZONTAL / across
+        x = start[0] + int((x - start[0]) * scale)
+        z = start[2] + int((z - start[2]) * scale)
+    target = (x, y, z)
+    left = MAX_BROKEN - broken
+    stairs = steps_left(feet, target)
+    for k in range(stairs, 0, -1):
+        cell = tuple(f + int((t - f) * k / stairs)
+                     for f, t in zip(feet, target))
+        if blocks_needed(feet, cell)[1] <= left \
+                and _within_reach(start, cell):
+            return cell
+    return feet
+
+
+def goal_refusal(start, feet, goal, broken=0):
+    """R5 before anything is broken: None, or the Refusal saying which
+    limit the goal is past and the furthest cell toward it that is
+    allowed."""
+    start, feet, goal = tuple(start), tuple(feet), tuple(goal)
+    deep = start[1] - goal[1]
+    across = math.hypot(goal[0] - start[0], goal[2] - start[2])
+    need = blocks_needed(feet, goal)[1]
+    left = MAX_BROKEN - broken
+    if deep > MAX_DEPTH:
+        why = (f"{_words(goal)} is {deep} blocks below where I started at "
+               f"{_words(start)}; a dig goes at most {MAX_DEPTH} down (to y "
+               f"{start[1] - MAX_DEPTH})")
+    elif across > MAX_HORIZONTAL:
+        why = (f"{_words(goal)} is {across:.0f} blocks across from where I "
+               f"started at {_words(start)}; a dig goes at most "
+               f"{MAX_HORIZONTAL} across")
+    elif need > left:
+        budget = (f"the {MAX_BROKEN} a task may break" if not broken
+                  else f"the {left} left of the {MAX_BROKEN} a task may "
+                       f"break")
+        why = (f"digging to {_words(goal)} would break about {need} blocks, "
+               f"more than {budget}")
+    else:
+        return None
+    nearest = nearest_allowed(start, feet, goal, broken)
+    if nearest == feet:
+        why += "; I cannot dig any further toward it within the limits"
+    else:
+        why += f". The furthest I may dig toward it is {_words(nearest)}"
+    return Refusal("R5", goal, why)
 
 
 def check_step(cells, feet, step, progress):
@@ -669,6 +746,7 @@ __all__ = ["MAX_BROKEN", "MAX_DEPTH", "MAX_HORIZONTAL", "LAVA_CLEARANCE",
            "FLUID_ABORT_REACH", "MAX_SAFE_DROP", "DIGGABLE", "FALLING",
            "Refusal", "Step", "Plan", "Progress", "feet_of", "shape",
            "steps_left", "check_step", "plan_next", "check_break", "check_walk",
+           "blocks_needed", "nearest_allowed", "goal_refusal",
            "HAZARDS", "CONTACT_HAZARDS", "WARDEN_OR_SPAWNER", "WARDEN_REACH",
            "abort_reason", "is_diggable", "is_falling", "has_fluid",
            "is_lava", "is_air"]

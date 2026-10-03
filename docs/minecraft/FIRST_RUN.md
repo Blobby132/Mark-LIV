@@ -143,7 +143,7 @@ anything other than the zombie was hit.
 ## i. Ore (single-player only)
 
 In the single-player test world, in this order: i1-i3 only read; i4-i5 dig
-a short tunnel into a hill; i6-i8 go for a real ore; i9-i10 are optional checks of two rules; i11, last, opens the world to LAN. F12 stops it at any
+a short tunnel into a hill; i6-i8 go for a real ore; i9-i11 check rules (i9 and i10 optional); i12, last, opens the world to LAN. F12 stops it at any
 moment.
 
 | # | Check | Pass | Fail |
@@ -158,7 +158,8 @@ moment.
 | i8 | At the end the report's "more raw iron than when I started" matches what the inventory (E) gained since i6. If the ore had more of its vein beside it, it took the ones it could reach or said which it left and why. If it stopped instead (lava, water, gravel, a cave), it said which rule, and named another ore or said there was none. | ☐ | ☐ |
 | i9 | (Optional, creative or a spare world.) In the tunnel from i4, put a magma block where the next stair down would land -- one block ahead of the tunnel's end and two below your feet -- then ask it to dig one step down from there. It refuses, names the magma block, and breaks nothing. | ☐ | ☐ |
 | i10 | (Optional, creative.) Put a spawner three blocks below and two ahead of the tunnel's end from i4, then ask it to dig one step further. It refuses with "R9" and "this looks like an ancient city (warden) or a monster room", and breaks nothing. | ☐ | ☐ |
-| i11 | Press Esc, **Open to LAN**, start it, and ask "find iron ore". It refuses and says LAN worlds count as multiplayer; `bridge_check.bat` shows singleplayer as "a server, or a world opened to LAN". (A LAN world stays open until you quit to the title screen; reopen the world for the next session.) | ☐ | ☐ |
+| i11 | Ask it to dig to a cell 40 blocks east of your feet, same height. Before pressing anything it refuses with "R5", says a dig goes at most 32 across, and names the furthest cell it may dig toward it -- 20 blocks east, since a level tunnel breaks two blocks a step and a task may break 40. Nothing is broken. | ☐ | ☐ |
+| i12 | Press Esc, **Open to LAN**, start it, and ask "find iron ore". It refuses and says LAN worlds count as multiplayer; `bridge_check.bat` shows singleplayer as "a server, or a world opened to LAN". (A LAN world stays open until you quit to the title screen; reopen the world for the next session.) | ☐ | ☐ |
 
 **If it fails, write down:** the step, Jarvis's exact words, the task result
 text with all its step lines, and for i2, i4 and i6 the coordinates it gave and
