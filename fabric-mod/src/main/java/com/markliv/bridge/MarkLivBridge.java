@@ -785,7 +785,7 @@ public class MarkLivBridge implements ClientModInitializer {
     /**
      * The open screen, and for an inventory-like screen its slots and the
      * pointer -- what a click inside it would land on. Additive fields, sent
-     * only while a screen is open; see docs/minecraft-gui.md. The game mode
+     * only while a screen is open; see docs/minecraft/gui.md. The game mode
      * is sent always, because "never click in creative" needs it.
      */
     private void writeScreen(Json out, Minecraft client) {

@@ -106,6 +106,10 @@ class DigWorld:
         self.actions = 0
         self.script = {}                    # action number -> fn(world)
         self.reads = 0
+        self.mobs = []                      # [name, (x, y, z)]: hostile
+        self.falls = []                     # blocks fallen, each time
+        self.visited = {self.feet()}        # every feet cell stood in
+        self.guard = ""                     # e.g. "session_expired"
 
     # -- the world --
     def at(self, cell):
@@ -153,6 +157,11 @@ class DigWorld:
                                                    (self.x, self.y, self.z)),
                                 item=ItemStack(name=name, count=1))
                       for name, where in self.drops)
+        drops += tuple(EntityRef(name=name, category="monster", hostile=True,
+                                 position=where,
+                                 distance=math.dist(where,
+                                                    (self.x, self.y, self.z)))
+                       for name, where in self.mobs)
         return WorldState(
             position=(self.x, self.y, self.z), rotation=(self.yaw, self.pitch),
             health=self.health, hunger=20.0, inventory=stacks,
@@ -217,7 +226,7 @@ class DigWorld:
 
     # -- the controller --
     def _guard(self):
-        return ""
+        return self.guard
 
     def _result(self, name, params, ms=200, **extra):
         self.actions += 1
@@ -345,8 +354,11 @@ class DigWorld:
         while not self._supported() and fell < 64:
             self.y -= 1
             fell += 1
+        if fell:
+            self.falls.append(fell)
         if fell > 3:
             self.health = max(0.0, self.health - (fell - 3))
+        self.visited.add(self.feet())
         here = self.at(self.feet())
         if here[2] is not None:
             self.entered_fluid.append(self.feet())
@@ -369,6 +381,95 @@ class DigWorld:
         self.slots[free] = [name, 1]
 
 
+# ── The named worlds ─────────────────────────────────────────────────────────
+#
+# Stone everywhere (DigWorld's default), the player standing at (0, 60, 0)
+# in a two-high hole, a stone pickaxe in the hotbar. Each world is the one
+# danger it is named for, placed on or beside the obvious route.
+
+START = (0.5, 60.0, 0.5)
+HOLE = {(0, 60, 0): AIR, (0, 61, 0): AIR}
+VEIN = {(6, 56, 0): block("iron_ore"), (6, 56, 1): block("iron_ore"),
+        (7, 56, 0): block("iron_ore")}
+"""Three iron ore four below the feet and six east, joined face to face."""
+
+
+def _world(*parts, **options):
+    cells = dict(HOLE)
+    for part in parts:
+        cells.update(part)
+    return DigWorld(cells, position=START, **options)
+
+
+def stone_volume(**options):
+    """Nothing but stone: the level tunnel and the staircase."""
+    return _world(**options)
+
+
+def buried_vein(**options):
+    """VEIN, buried: no air beside any of it."""
+    return _world(VEIN, **options)
+
+
+def lava_pocket(**options):
+    """VEIN, with two cells of lava under the staircase to it, and another
+    iron ore far to the west."""
+    return _world(VEIN, {(3, 54, 2): LAVA, (3, 54, 3): LAVA,
+                         (-8, 56, 0): block("iron_ore")}, **options)
+
+
+def water_pocket(**options):
+    """Still water lying on the rock just above the first cells east: the
+    head cell of the first stair has water on top of it."""
+    return _world({(1, 62, 0): WATER, (2, 62, 0): WATER,
+                   (1, 62, 1): WATER}, **options)
+
+
+def gravel_ceiling(**options):
+    """Gravel two cells along the level tunnel east, just above its head
+    height."""
+    return _world({(2, 62, 0): block("gravel"), (3, 62, 0): block("gravel"),
+                   (2, 63, 0): block("gravel")}, **options)
+
+
+def cave_opening(**options):
+    """A cave two and three cells east, its floor level with the feet."""
+    return _world(hollow({}, (3, 60, 0), (3, 61, 0), (4, 60, 0), (4, 61, 0),
+                         (3, 60, 1), (3, 61, 1), (4, 60, 1), (4, 61, 1)),
+                  **options)
+
+
+def floating_ore(**options):
+    """Coal ore hanging in the middle of a cave four to six east: exposed,
+    out of reach, with nothing under the cell beside it for a long way."""
+    cave = hollow({}, *[(x, y, z) for x in range(4, 7)
+                       for y in range(55, 64) for z in range(-1, 2)])
+    cave[(5, 60, 0)] = block("coal_ore")
+    return _world(cave, **options)
+
+
+def mineshaft(**options):
+    """Planks -- a buried mineshaft -- across the level tunnel east."""
+    return _world({(2, 60, 0): block("oak_planks"),
+                   (2, 61, 0): block("oak_planks")}, **options)
+
+
+def hidden_shaft(**options):
+    """Air three deep under the first stair down east: the floor it would
+    land on is not there."""
+    return _world({(1, 58, 0): AIR, (1, 57, 0): AIR, (1, 56, 0): AIR},
+                  **options)
+
+
+WORLDS = {
+    "stone_volume": stone_volume, "buried_vein": buried_vein,
+    "lava_pocket": lava_pocket, "water_pocket": water_pocket,
+    "gravel_ceiling": gravel_ceiling, "cave_opening": cave_opening,
+    "floating_ore": floating_ore, "mineshaft": mineshaft,
+    "hidden_shaft": hidden_shaft,
+}
+
+
 def _entered(previous, cell) -> str:
     dx, dy, dz = (previous[0] - cell[0], previous[1] - cell[1],
                   previous[2] - cell[2])
@@ -384,4 +485,7 @@ def _entered(previous, cell) -> str:
 
 
 __all__ = ["AIR", "STONE", "WATER", "LAVA", "DROPS", "block", "rock", "put",
-           "hollow", "DigWorld"]
+           "hollow", "DigWorld", "START", "HOLE", "VEIN", "WORLDS",
+           "stone_volume", "buried_vein", "lava_pocket", "water_pocket",
+           "gravel_ceiling", "cave_opening", "floating_ore", "mineshaft",
+           "hidden_shaft"]

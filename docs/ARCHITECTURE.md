@@ -286,8 +286,11 @@ walks into it:
 | `tests/support/` | What several tests share; nothing here is a test |
 
 `tests/support/` holds the simulated worlds (`sim_world.py`, `mob_world.py`,
-`regression_worlds.py`, `gui_world.py`, `build_world.py`, and the rock and
-caves digging is tested in, `dig_world.py`), fakes
+`regression_worlds.py`, `gui_world.py`, `build_world.py`, and
+`dig_world.py`: DigWorld, the voxel rock digging is tested in, and its
+named worlds -- a lava pocket, a water pocket, a gravel ceiling, a cave
+opening, a buried vein, a floating ore, a mineshaft, a hidden shaft),
+fakes
 (`fakes.py`), payload and fixture data (`bridge_payloads.py`,
 `held_items.py`, `voice_paths.py`), the Java harness the bridge tests
 compile against the mod's source (`java/`), and `paths.py`, which says
@@ -315,16 +318,6 @@ and safety in brief. Everything else is in `docs/`, indexed by
 [docs/README.md](README.md); Minecraft has its own folder,
 [docs/minecraft/](minecraft/README.md). `tests/core/test_repo_hygiene.py`
 fails on a relative link that does not resolve.
-
-## Known stale (fix at the next mod rebuild)
-
-The mod's source cannot change without rebuilding
-`mods/markliv-bridge-1.0.0.jar`, and the jar stays byte-identical until it
-has been tried in the real game. So these wait for the next rebuild:
-
-| Where | What is stale | Should say |
-|---|---|---|
-| `fabric-mod/src/main/java/com/markliv/bridge/MarkLivBridge.java`, line 637 (a comment) | `docs/minecraft-gui.md` | [`docs/minecraft/gui.md`](minecraft/gui.md) -- the doc moved |
 
 ## Where new code goes
 
