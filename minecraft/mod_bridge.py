@@ -263,6 +263,12 @@ class ModBridgeStateSource:
         payload = self._payload()
         return None if payload is None else payload.get("schema")
 
+    def payload(self):
+        """The latest payload as the mod wrote it (a copy), or None. For
+        tools/bridge_check.py, which shows what actually arrived."""
+        payload = self._payload()
+        return None if payload is None else dict(payload)
+
     def features(self):
         """What the running mod says it reports, or None if it cannot be
         read. An empty set is a jar from before the list: it reports none of

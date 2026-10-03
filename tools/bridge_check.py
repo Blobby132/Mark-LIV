@@ -11,17 +11,23 @@ writes and prints what arrived.
 from __future__ import annotations
 
 import sys
+import textwrap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from minecraft import navigation
 from minecraft.mod_bridge import (                                      # noqa: E402
-    SCHEMA, ModBridgeStateSource, state_file_path,
+    REQUIRED_FEATURES, SCHEMA, ModBridgeStateSource, state_file_path,
 )
 from minecraft.state import EXACT                                       # noqa: E402
 
 RULE = "─" * 72
+
+PRESENT = "present"
+MISSING = "MISSING"
+OPEN_INVENTORY = "open your inventory first"
+NOT_SEEN = "not seen"
 
 
 def inspect_running_game() -> dict:
@@ -95,6 +101,12 @@ def explain_outdated(source) -> None:
     print(f"\n{RULE}\n  WHY IS THE OLD MOD STILL RUNNING?\n{RULE}")
     print(f"  Running mod reports : {source.schema()}")
     print(f"  This JARVIS expects : {SCHEMA}")
+    features = getattr(source, "features", None)
+    if callable(features):
+        listed = features()
+        print(f"  Running mod lists   : "
+              f"{', '.join(sorted(listed)) if listed else '(no feature list)'}")
+        print(f"  This JARVIS needs   : {', '.join(REQUIRED_FEATURES)}")
     game = inspect_running_game()
     bundled = bundled_jar()
     if not game["game_dir"] or bundled is None:
@@ -121,6 +133,89 @@ def explain_outdated(source) -> None:
         print("  one running is loaded from somewhere else. Quit Minecraft,")
         print("  then run:")
     print(f"    py tools\\install_mod.py --into \"{game['game_dir']}\"")
+
+
+def feature_rows(payload: dict, state) -> list:
+    """(row, verdict, detail) for each feature, judged from what arrived in
+    this one reading -- not from the schema, which older /4 jars share.
+
+    A verdict is PRESENT, MISSING, OPEN_INVENTORY (the screen rows: nothing
+    is open, so there is nothing to see yet) or NOT_SEEN (nothing nearby
+    that would carry it)."""
+    payload = payload if isinstance(payload, dict) else {}
+    lacks = getattr(state, "lacks", lambda _name: False)
+    rows = []
+
+    def row(name, verdict, detail=""):
+        rows.append((name, verdict, detail))
+
+    mode = payload.get("game_mode")
+    row("game_mode", PRESENT if isinstance(mode, str) else MISSING,
+        mode if isinstance(mode, str) else "")
+
+    screen = state.screen
+    if screen:
+        row("screen (when open)", PRESENT, screen)
+        slots = state.slots or ()
+        row("slots", PRESENT if slots else MISSING,
+            f"{len(slots)} slot(s)" if slots else "")
+    elif lacks("gui") or not isinstance(mode, str):
+        # game_mode is sent always by a jar that reports screens.
+        row("screen (when open)", MISSING, "this jar does not report screens")
+        row("slots", MISSING, "this jar does not report screens")
+    else:
+        row("screen (when open)", OPEN_INVENTORY,
+            "press E in the game, then run this again")
+        row("slots", OPEN_INVENTORY, "")
+
+    near = state.near
+    row("near_blocks", PRESENT if near is not None else MISSING,
+        f"{len(near.blocks)} block(s) within {near.radius}"
+        if near is not None else "")
+
+    entities = payload.get("nearby_entities")
+    entities = entities if isinstance(entities, list) else []
+    drops = [e for e in entities if isinstance(e, dict)
+             and (e.get("category") == "item"
+                  or e.get("name") == "minecraft:item")]
+    named = [e for e in drops if isinstance(e.get("item"), dict)]
+    if named:
+        row("item names on dropped items", PRESENT,
+            str(named[0]["item"].get("name", "")))
+    elif drops:
+        row("item names on dropped items", MISSING,
+            f"{len(drops)} dropped item(s), none named")
+    else:
+        row("item names on dropped items", NOT_SEEN,
+            "no dropped item nearby -- drop one (Q) to check")
+
+    seen = [e for e in entities if isinstance(e, dict)]
+    if any("category" in e for e in seen):
+        row("mob categories", PRESENT, "")
+    elif seen:
+        row("mob categories", MISSING,
+            f"{len(seen)} entit{'y' if len(seen) == 1 else 'ies'}, "
+            f"none categorised")
+    else:
+        row("mob categories", NOT_SEEN, "nothing nearby")
+
+    scan = payload.get("scan") if isinstance(payload.get("scan"), dict) else {}
+    tree_up = scan.get("tree_up")
+    row("tree_up", PRESENT if isinstance(tree_up, int) else MISSING,
+        f"logs up to {tree_up} above the feet" if isinstance(tree_up, int)
+        else "logs only up to 4 above the feet")
+
+    has_clearance = any(b.clearance is not None
+                        for b in (state.surface or ()))
+    row("head clearance", PRESENT if has_clearance else MISSING, "")
+    floors = payload.get("schema") == SCHEMA       # the floor came with /4
+    row("ground under trees", PRESENT if floors else MISSING,
+        "" if floors else f"schema {payload.get('schema')}")
+    row("mouse sensitivity",
+        PRESENT if state.mouse_sensitivity is not None else MISSING,
+        "" if state.mouse_sensitivity is None
+        else str(state.mouse_sensitivity))
+    return rows
 
 
 def explain_why_not() -> None:
@@ -232,22 +327,25 @@ def main() -> int:
         print(f"  {name:<16} {value}")
 
     print(f"\n{RULE}\n  IS THE MOD UP TO DATE?\n{RULE}")
-    has_clearance = any(b.clearance is not None for b in (state.surface or ()))
-    has_sensitivity = state.mouse_sensitivity is not None
-    sees_floors = source.schema() == SCHEMA       # the floor came with /4
-    print(f"  Head clearance reported:   {'yes' if has_clearance else 'NO'}")
-    print(f"  Ground under trees:        {'yes' if sees_floors else 'NO'}")
-    print(f"  Mouse sensitivity:         "
-          f"{state.mouse_sensitivity if has_sensitivity else 'NOT REPORTED'}")
-    print(f"  Standing on the ground:    {state.on_ground}")
-    if not (has_clearance and has_sensitivity and sees_floors):
-        print("\n  An OLDER jar is loaded. It still works, but without these")
-        print("  JARVIS cannot tell a low branch from open ground, cannot see")
-        print("  the ground under a tree (so it may find no way to one), and")
-        print("  has to guess how far your mouse turns. Reinstall and restart:")
-        print("    install_mod.bat")
-        if not sees_floors:
-            explain_outdated(source)
+    print("  What arrived in this reading, feature by feature:\n")
+    rows = feature_rows(source.payload(), state)
+    for name, verdict, detail in rows:
+        print(f"  {name:<30} {verdict:<26} {detail}".rstrip())
+    missing = [name for name, verdict, _detail in rows if verdict == MISSING]
+    if source.outdated() or missing:
+        notice = source.outdated_notice()
+        print("")
+        for text in (notice, missing and
+                     f"Missing from this reading: {', '.join(missing)}."):
+            if text:
+                print(textwrap.fill(text, width=72, initial_indent="  ",
+                                    subsequent_indent="  "))
+        explain_outdated(source)
+    else:
+        print("\n  Up to date: the mod lists every feature this JARVIS needs.")
+        if any(v == OPEN_INVENTORY for _n, v, _d in rows):
+            print("  To see the screen rows filled in, open your inventory")
+            print("  first (E), then run this again.")
 
     print(f"\n{RULE}\n  CAN IT NAVIGATE?\n{RULE}")
     local = navigation.LocalMap.from_state(state)

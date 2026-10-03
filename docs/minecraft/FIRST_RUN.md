@@ -31,7 +31,7 @@ keeps the session open.
 | a1 | Quit Minecraft completely. Run `install_mod.bat`. It ends with `Installed: …markliv-bridge-1.0.0.jar` and `Done. Restart Minecraft, load a world…` (or `Already up to date`). | ☐ | ☐ |
 | a2 | Run it once with Minecraft open: it refuses, saying `Minecraft is running (process …)` and to quit it first. | ☐ | ☐ |
 | a3 | Run `doctor.bat`. It ends `[ ok ] Nothing wrong found. MARK LIV should start.` | ☐ | ☐ |
-| a4 | Start Minecraft, load the test world (part b), then run `bridge_check.bat`. Under "IS THE MOD UP TO DATE?": head clearance `yes`, ground under trees `yes`, a mouse sensitivity number. Under "CAN IT NAVIGATE?": `YES — … columns of ground`. | ☐ | ☐ |
+| a4 | Start Minecraft, load the test world (part b), then run `bridge_check.bat`. Under "IS THE MOD UP TO DATE?": every row `present`, and `Up to date`. The two screen rows say `open your inventory first`: press E, run it again, and they read `present`. `item names on dropped items` and `mob categories` say `not seen` until something is nearby (drop an item with Q). Under "CAN IT NAVIGATE?": `YES — … columns of ground`. | ☐ | ☐ |
 
 **If it fails, write down:** the step (a1–a4), and everything the window
 printed, from the first line to the last.
