@@ -41,10 +41,20 @@ proving the dangerous step is taken if that one function is removed)
         does show: R2 has every neighbour of every cell broken known and
         dry, and lava beside air flows into it, into view.
     R8  Abort on health lost, fluid within 2 cells, a block appearing in a
-        cleared cell, or the player's position changing unexpectedly
-        (abort_reason). Hostile mobs are the task runner's danger watch,
+        cleared cell, the player's position changing unexpectedly, or one
+        of R9's blocks within WARDEN_REACH of the body (abort_reason). Hostile mobs are the task runner's danger watch,
         which digging never stands down; a pickaxe that cannot harvest the
         block is the skill's check before each swing.
+    R9  No planned cell -- a cell to clear, a cell the body goes through,
+        the floor -- within WARDEN_REACH of sculk, a sculk sensor or
+        shrieker or catalyst, reinforced deepslate or a spawner
+        (WARDEN_OR_SPAWNER): an ancient city, where noise brings the
+        warden, or a monster room. Like R7, only the grid's box can be
+        looked at: a cell inside it that is not reported refuses, and what
+        lies outside it is out of view. The box reaches four sideways and
+        three up, less than five past a planned cell, so a block off to
+        the side may come into view only after a step: R8 watches for
+        that, and stops the dig the moment one is within five.
 """
 
 from __future__ import annotations
@@ -52,7 +62,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from minecraft.blocks import CONTACT_HAZARDS, HAZARDS
+from minecraft.blocks import CONTACT_HAZARDS, HAZARDS, WARDEN_OR_SPAWNER
 
 MAX_BROKEN = 40
 MAX_DEPTH = 16
@@ -60,6 +70,7 @@ MAX_HORIZONTAL = 32
 LAVA_CLEARANCE = 3
 FLUID_ABORT_REACH = 2
 MAX_SAFE_DROP = 3
+WARDEN_REACH = 5
 
 DIGGABLE = frozenset({
     "stone", "deepslate", "tuff", "andesite", "diorite", "granite", "dirt",
@@ -391,6 +402,43 @@ def _r7_lava(cells, cell):
     return None
 
 
+def _r9_warden(cells, planned):
+    """No cell in `planned` within WARDEN_REACH (on every axis) of one of
+    WARDEN_OR_SPAWNER, nor of a cell inside the grid's box it cannot see."""
+    reach = WARDEN_REACH
+    box = _box(cells)
+    unseen = None
+    looked = set()
+    for cell in planned:
+        for dx in range(-reach, reach + 1):
+            for dy in range(-reach, reach + 1):
+                for dz in range(-reach, reach + 1):
+                    near = _offset(cell, dx, dy, dz)
+                    if near in looked:
+                        continue
+                    looked.add(near)
+                    entry = cells.get(near)
+                    if entry is not None and entry[0] in WARDEN_OR_SPAWNER:
+                        return Refusal("R9", cell, _warden_words(
+                            entry[0], near, f"is within {reach} blocks of "
+                            f"{_words(cell)}"))
+                    if entry is None and unseen is None and box is not None \
+                            and all(lo <= v <= hi
+                                    for v, (lo, hi) in zip(near, box)):
+                        unseen = (near, cell)
+    if unseen is not None:
+        near, cell = unseen
+        return Refusal("R9", cell, f"I cannot see {_words(near)}, within "
+                       f"{reach} blocks of {_words(cell)}, so I cannot rule "
+                       f"out sculk or a spawner there")
+    return None
+
+
+def _warden_words(name, where, how) -> str:
+    return (f"a {' '.join(name.split('_'))} at {_words(where)} {how}: this "
+            f"looks like an ancient city (warden) or a monster room")
+
+
 def check_step(cells, feet, step, progress):
     """(the step with what to clear, None) or (None, the Refusal), or
     ("opening", details) when it reaches a cave (R6)."""
@@ -423,6 +471,9 @@ def check_step(cells, feet, step, progress):
         refusal = _r7_lava(cells, cell)
         if refusal is not None:
             return None, refusal
+    refusal = _r9_warden(cells, step.passes + (step.floor,))
+    if refusal is not None:
+        return None, refusal
     refusal = _r5_limits(step, progress, len(clear))
     if refusal is not None:
         return None, refusal
@@ -496,7 +547,8 @@ def check_break(cells, feet, cell, progress):
         return Refusal("R5", cell, f"that would be more than {MAX_BROKEN} "
                        f"blocks broken in one task")
     for rule in (_r1_diggable(cells, cell), _r2_fluid(cells, cell),
-                 _r3_falling(cells, cell, set()), _r7_lava(cells, cell)):
+                 _r3_falling(cells, cell, set()), _r7_lava(cells, cell),
+                 _r9_warden(cells, (cell,))):
         if rule is not None:
             return rule
     return None
@@ -529,7 +581,7 @@ def check_walk(cells, feet, step):
         refusal = _r7_lava(cells, cell)
         if refusal is not None:
             return refusal
-    return None
+    return _r9_warden(cells, step.passes + (step.floor,))
 
 
 # ── R8: when to stop at once ─────────────────────────────────────────────────
@@ -571,6 +623,20 @@ def _r8_cave_in(cells, progress):
     return ""
 
 
+def _r8_warden(cells, feet):
+    """One of R9's blocks within WARDEN_REACH of the feet or the head."""
+    reach = WARDEN_REACH
+    for dx in range(-reach, reach + 1):
+        for dy in range(-reach, reach + 2):          # feet and head
+            for dz in range(-reach, reach + 1):
+                cell = _offset(feet, dx, dy, dz)
+                entry = cells.get(cell)
+                if entry is not None and entry[0] in WARDEN_OR_SPAWNER:
+                    return _warden_words(entry[0], cell,
+                                         f"came within {reach} blocks")
+    return ""
+
+
 def _r8_position(feet, expected_feet):
     if feet[1] < expected_feet[1] or \
             abs(feet[0] - expected_feet[0]) + \
@@ -590,6 +656,7 @@ def abort_reason(before, after, progress, expected_feet=None) -> str:
     position = getattr(after, "position", None)
     if cells is not None and position is not None:
         why = (_r8_fluid(cells, feet_of(position))
+               or _r8_warden(cells, feet_of(position))
                or _r8_cave_in(cells, progress))
         if why:
             return why
@@ -602,6 +669,6 @@ __all__ = ["MAX_BROKEN", "MAX_DEPTH", "MAX_HORIZONTAL", "LAVA_CLEARANCE",
            "FLUID_ABORT_REACH", "MAX_SAFE_DROP", "DIGGABLE", "FALLING",
            "Refusal", "Step", "Plan", "Progress", "feet_of", "shape",
            "steps_left", "check_step", "plan_next", "check_break", "check_walk",
-           "HAZARDS", "CONTACT_HAZARDS",
+           "HAZARDS", "CONTACT_HAZARDS", "WARDEN_OR_SPAWNER", "WARDEN_REACH",
            "abort_reason", "is_diggable", "is_falling", "has_fluid",
            "is_lava", "is_air"]

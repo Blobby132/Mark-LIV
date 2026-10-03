@@ -311,7 +311,10 @@ class R7LavaTests(unittest.TestCase):
         plan = plan_next(cells, FEET, EAST_LEVEL, progress())
         self.assertEqual(plan.refusal.rule, "R7")
         self.assertIn("cannot see (4, 60, 0)", plan.why)
-        with mock.patch.object(digging, "_r7_lava", allow):
+        # R9 (five blocks) would refuse the same unseen cell: it is set
+        # aside too, so this shows R7's own refusal.
+        with mock.patch.object(digging, "_r7_lava", allow), \
+                mock.patch.object(digging, "_r9_warden", allow):
             self.assertEqual(plan_next(cells, FEET, EAST_LEVEL,
                                        progress()).status, "dig")
 
@@ -440,6 +443,91 @@ class FloorHazardTests(unittest.TestCase):
                 cells, FEET, shape(FEET, "east", 1, 0, 0)))
 
 
+R9_NAMES = ("sculk", "sculk_sensor", "calibrated_sculk_sensor",
+            "sculk_shrieker", "sculk_catalyst", "reinforced_deepslate",
+            "spawner")
+
+
+class R9WardenTests(unittest.TestCase):
+    """R9: no step whose cells come within five blocks of sculk, reinforced
+    deepslate or a spawner -- an ancient city's warden, or a monster
+    room. Within five is per axis, like R7: a block four across, two up
+    and five along is within five although six and more away in a line."""
+
+    level = shape(FEET, "east", 1, 0, 0)       # passes (1, 61, 0), (1, 60, 0)
+
+    def check(self, cells):
+        return check_step(cells, FEET, self.level, progress())
+
+    def test_each_name_five_away(self):
+        for name in R9_NAMES:
+            with self.subTest(name=name):
+                checked, refusal = self.check(put(rock(), (6, 60, 0),
+                                                  block(name)))
+                self.assertIsNone(checked)
+                self.assertEqual(refusal.rule, "R9")
+                self.assertIn(" ".join(name.split("_")), refusal.why)
+                self.assertIn("this looks like an ancient city (warden) or "
+                              "a monster room", refusal.why)
+
+    def test_six_away_is_fine(self):
+        checked, _ = self.check(put(rock(), (7, 60, 0), block("spawner")))
+        self.assertIsNotNone(checked)
+
+    def test_diagonally_within_five(self):
+        """(5, 63, 5) is 4, 2 and 5 from the head cell (1, 61, 0) -- about
+        6.7 in a straight line, but within five on every axis."""
+        cells = put(rock(), (5, 63, 5), block("sculk_shrieker"))
+        checked, refusal = self.check(cells)
+        self.assertIsNone(checked)
+        self.assertEqual(refusal.rule, "R9")
+        plan = plan_next(cells, FEET, (5, 60, 0), progress())
+        self.assertNotEqual(plan.status, "dig", plan.why)
+
+    def test_the_floor_counts(self):
+        """The floor of a stair down is two below the new feet: a spawner
+        five below that is within five of a planned cell."""
+        cells = put(rock(), (1, 53, 0), block("spawner"))
+        checked, refusal = check_step(cells, FEET,
+                                      shape(FEET, "east", 1, 0, -1),
+                                      progress())
+        self.assertIsNone(checked)
+        self.assertEqual(refusal.rule, "R9")
+
+    def test_an_unseen_cell_within_five_inside_the_grid(self):
+        cells = rock()
+        del cells[(5, 58, 2)]
+        checked, refusal = self.check(cells)
+        self.assertIsNone(checked)
+        self.assertEqual(refusal.rule, "R9")
+        self.assertIn("cannot see (5, 58, 2)", refusal.why)
+
+    def test_outside_the_grid_is_outside_its_view(self):
+        """Like R7: only cells inside the grid's box are looked at. The grid
+        reaches three above the feet; a spawner five above is not seen."""
+        cells = {c: e for c, e in rock().items() if c[1] <= FEET[1] + 3}
+        checked, _ = self.check(cells)
+        self.assertIsNotNone(checked)
+
+    def test_a_vein_s_ore_and_a_walk_too(self):
+        cells = put(put(rock(), (1, 60, 0), block("iron_ore")),
+                    (5, 62, 3), block("spawner"))
+        refusal = digging.check_break(cells, FEET, (1, 60, 0), progress())
+        self.assertEqual(refusal.rule, "R9")
+        open_ = put(hollow(rock(), (1, 60, 0), (1, 61, 0)), (4, 64, 3),
+                    block("sculk"))
+        refusal = digging.check_walk(open_, FEET, self.level)
+        self.assertEqual(refusal.rule, "R9")
+
+    def test_without_the_rule(self):
+        cells = put(rock(), (5, 63, 5), block("sculk_shrieker"))
+        with mock.patch.object(digging, "_r9_warden", allow):
+            checked, _ = self.check(cells)
+            self.assertIsNotNone(checked)
+            self.assertEqual(plan_next(cells, FEET, (5, 60, 0),
+                                       progress()).status, "dig")
+
+
 def reading(health=20.0, position=(0.5, 60.0, 0.5), cells=None):
     near = SimpleNamespace(cells=cells if cells is not None else rock())
     return SimpleNamespace(health=health, position=position, near=near)
@@ -506,6 +594,31 @@ class R8AbortTests(unittest.TestCase):
         self.assertEqual(digging.abort_reason(
             reading(), reading(position=(1.5, 59.0, 0.5)), progress(),
             expected_feet=(1, 59, 0)), "")
+
+
+class R8WardenTests(unittest.TestCase):
+    """R8 for R9's blocks: one comes within five of the body while
+    digging -- revealed by a step, or there all along just outside what
+    the grid showed -- and the dig stops and says so."""
+
+    def test_one_appears(self):
+        for name in R9_NAMES:
+            with self.subTest(name=name):
+                after = reading(cells=put(rock(), (4, 56, 3), block(name)))
+                why = digging.abort_reason(reading(), after, progress())
+                self.assertIn(" ".join(name.split("_")), why)
+                self.assertIn("ancient city (warden) or a monster room", why)
+
+    def test_six_away_does_not_stop_it(self):
+        after = reading(cells=put(rock(), (6, 60, 0), block("spawner")))
+        self.assertEqual(digging.abort_reason(reading(), after, progress()),
+                         "")
+
+    def test_without_the_check(self):
+        after = reading(cells=put(rock(), (4, 56, 3), block("spawner")))
+        with mock.patch.object(digging, "_r8_warden", lambda *a: ""):
+            self.assertEqual(digging.abort_reason(reading(), after,
+                                                  progress()), "")
 
 
 class UnknownCellTests(unittest.TestCase):

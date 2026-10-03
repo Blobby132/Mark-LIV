@@ -142,6 +142,15 @@ class HardRuleTests(_Worlds):
         self.assertIn("R4", said(skill, result))
         self.assertIn("magma block", said(skill, result))
 
+    def test_r9_not_within_five_of_a_spawner(self):
+        spawner = (3, 56, 0)
+        skill, result, w = self.with_and_without(
+            "_r9_warden", worlds.monster_room, "dig_to",
+            lambda w: any(within(c, spawner, digging.WARDEN_REACH)
+                          for c in broken(w)), x=5, y=60, z=0)
+        self.assertIn("R9", said(skill, result))
+        self.assertIn("monster room", said(skill, result))
+
     def test_r5_forty_blocks_a_task(self):
         skill, result, w = self.with_and_without(
             "_r5_limits", worlds.stone_volume, "dig_to",
@@ -241,6 +250,33 @@ class AbortTests(_Worlds):
             again, _ = self.dig(bare, {9: cave_in})
         self.assertNotIn("cave-in", again.done_reason)
         self.assertGreater(len(bare.broken), len(w.broken))
+
+    def test_sculk_coming_into_view_and_without_the_check(self):
+        """Sculk turns up four behind the player mid-dig. R8 looks before
+        the next plan, so it is what stops the dig -- and it still does
+        with R9 removed; with both removed, the dig goes on. (Anything in
+        the grid's view within five of the body is also within five of
+        the next stair, so R9 would refuse that stair too: R8 is the
+        backstop, and the one that names what came into view.)"""
+        def sculk(world):
+            x, y, z = world.feet()
+            world.cells[(x - 4, y, z)] = block("sculk")
+        w = worlds.stone_volume()
+        skill, result = self.dig(w, {6: sculk}, x=6, y=60, z=0)
+        self.assertIn("came within 5 blocks", said(skill, result))
+        self.assertIn("ancient city (warden)", said(skill, result))
+        dig_mod.forget_digs()
+        alone = worlds.stone_volume()
+        with mock.patch.object(digging, "_r9_warden", allow):
+            again, result = self.dig(alone, {6: sculk}, x=6, y=60, z=0)
+        self.assertIn("came within 5 blocks", said(again, result))
+        dig_mod.forget_digs()
+        bare = worlds.stone_volume()
+        with mock.patch.object(digging, "_r9_warden", allow), \
+                mock.patch.object(digging, "_r8_warden", lambda *a: ""):
+            self.dig(bare, {6: sculk}, x=6, y=60, z=0)
+        self.assertGreater(len(bare.broken), len(w.broken),
+                           "without both checks it did not dig on")
 
     def test_a_hostile_mob(self):
         w = worlds.stone_volume()

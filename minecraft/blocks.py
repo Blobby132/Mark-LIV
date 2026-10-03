@@ -22,6 +22,13 @@ HAZARDS = frozenset({
 """Blocks not to stand on or walk into, even when solid enough to walk
 over: they burn, prick, trap, teleport or wake something."""
 
+WARDEN_OR_SPAWNER = frozenset({
+    "sculk", "sculk_sensor", "calibrated_sculk_sensor", "sculk_shrieker",
+    "sculk_catalyst", "reinforced_deepslate", "spawner",
+})
+"""Signs of an ancient city, where noise brings the warden, or of a monster
+room: no dig goes within five blocks of one."""
+
 CONTACT_HAZARDS = frozenset({"cactus"})
 """Blocks that hurt to brush against: none may be beside a cell the body
 goes through."""

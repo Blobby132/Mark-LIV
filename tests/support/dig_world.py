@@ -467,12 +467,22 @@ def magma_floor(**options):
     return _world({(1, 58, 0): block("magma_block")}, **options)
 
 
+def monster_room(**options):
+    """A spawner in a small mossy room below and ahead, in view from the
+    start: the first stair east is within five blocks of it."""
+    room = hollow({}, (3, 56, -1), (3, 56, 1), (4, 56, 0), (2, 56, 0))
+    room.update({(3, 56, 0): block("spawner"),
+                 (3, 55, 0): block("mossy_cobblestone")})
+    return _world(room, **options)
+
+
 WORLDS = {
     "stone_volume": stone_volume, "buried_vein": buried_vein,
     "lava_pocket": lava_pocket, "water_pocket": water_pocket,
     "gravel_ceiling": gravel_ceiling, "cave_opening": cave_opening,
     "floating_ore": floating_ore, "mineshaft": mineshaft,
     "hidden_shaft": hidden_shaft, "magma_floor": magma_floor,
+    "monster_room": monster_room,
 }
 
 
@@ -494,4 +504,4 @@ __all__ = ["AIR", "STONE", "WATER", "LAVA", "DROPS", "block", "rock", "put",
            "hollow", "DigWorld", "START", "HOLE", "VEIN", "WORLDS",
            "stone_volume", "buried_vein", "lava_pocket", "water_pocket",
            "gravel_ceiling", "cave_opening", "floating_ore", "mineshaft",
-           "hidden_shaft", "magma_floor"]
+           "hidden_shaft", "magma_floor", "monster_room"]
