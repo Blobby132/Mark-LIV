@@ -38,6 +38,8 @@ from minecraft import danger as mc_danger
 from minecraft.controller import MinecraftController
 from minecraft.debug_overlay import DebugOverlayStateSource
 from minecraft.mod_bridge import ModBridgeStateSource
+from minecraft.mod_bridge import SCHEMA
+from minecraft.mod_bridge import outdated_notice as _jar_notice
 from minecraft.errors import (
     CapabilityDisabled, InvalidAction, MinecraftError, TaskAlreadyRunning,
 )
@@ -67,6 +69,10 @@ _state_source_pinned = False
 _bridge = None
 _bridge_ok_at = None
 BRIDGE_STICKY_SECONDS = 3.0
+
+# The outdated-mod notice last said (see _feature_notice): said once, early,
+# and again only if what the jar lacks changes.
+_feature_notice_said = None
 
 # The one background task, if any. See minecraft/task_slot.py: run_task starts
 # a task here and returns at once, so the conversation -- including "stop" --
@@ -316,7 +322,8 @@ def _reset_for_tests(controller=None, observer=None, state_source=None) -> None:
     """Swap in fakes. Only the tests call this; it exists so they can exercise
     the real adapter rather than a copy of its logic."""
     global _controller, _observer, _state_source, _state_source_pinned, _slot
-    global _bridge, _bridge_ok_at
+    global _bridge, _bridge_ok_at, _feature_notice_said
+    _feature_notice_said = None
     _controller = controller
     _observer = observer
     _state_source = state_source
@@ -494,8 +501,100 @@ def _result_line(result, player=None) -> str:
 
 # ── The handler ──────────────────────────────────────────────────────────────
 
+_TASK_NEEDS = {
+    "craft_item": ("gui",),
+    "place_block_at": ("near_blocks",),
+    "build_line": ("near_blocks",),
+    "build_blueprint": ("near_blocks",),
+    "collect_logs": ("tree_up", "item_names"),
+    "fell_tree": ("tree_up", "item_names"),
+    "collect_blocks": ("item_names",),
+}
+"""The mod's features each task depends on (mod_bridge.FEATURES), besides
+mob_categories, which every task needs: the danger watch between steps sees
+only a mob the mod calls hostile, so without the categories it sees none."""
+
+_ACTION_NEEDS = {
+    "inventory": ("gui",),
+    "attack": ("mob_categories",),
+}
+
+
+def _needs_of(params: dict):
+    """The features an action depends on. None for start_session, where any
+    missing feature is worth saying; () for one that needs none."""
+    action = str(params.get("action", "")).lower().strip()
+    if action == "start_session":
+        return None
+    if action == "run_task":
+        task = str(params.get("task", "")).strip().lower()
+        return ("mob_categories",) + _TASK_NEEDS.get(task, ()) if task else ()
+    return _ACTION_NEEDS.get(action, ())
+
+
+def _bridge_for_notice():
+    """The bridge reader, whichever source is answering: the notice is about
+    the installed jar. A pinned test source is used only if it can say."""
+    global _bridge
+    if _state_source_pinned:
+        source = _state_source
+    else:
+        if _bridge is None:
+            _bridge = ModBridgeStateSource()
+        source = _bridge
+    return source if callable(getattr(source, "missing_features", None)) \
+        else None
+
+
+def _feature_notice(params: dict) -> str:
+    """One line when the installed mod is older than this Jarvis, or "".
+
+    Said once, early: when a session starts, or -- if nothing could be read
+    then -- the first time an action or task needs a feature the jar lacks.
+    Again only if what it lacks changes."""
+    global _feature_notice_said
+    needs = _needs_of(params)
+    if needs == ():
+        return ""
+    bridge = _bridge_for_notice()
+    if bridge is None:
+        return ""
+    try:
+        schema = bridge.schema()
+        missing = tuple(bridge.missing_features())
+    except Exception:
+        return ""
+    if schema is None:
+        return ""
+    old_schema = schema != SCHEMA
+    if needs is not None and not old_schema and not set(needs) & set(missing):
+        return ""
+    notice = _jar_notice(missing, old_schema=old_schema)
+    if not notice or notice == _feature_notice_said:
+        return ""
+    _feature_notice_said = notice
+    return notice
+
+
 def minecraft_control(parameters: dict = None, player=None,
                       session_memory=None, response=None, speak=None) -> str:
+    """The tool. An older mod jar is named here, once, in one line on the
+    HUD and at the top of the reply, so the model reports the real cause of
+    what it cannot do instead of guessing."""
+    reply = _minecraft_control(parameters, player=player,
+                               session_memory=session_memory,
+                               response=response, speak=speak)
+    notice = _feature_notice(parameters or {})
+    if not notice:
+        return reply
+    if player:
+        player.write_log(f"[minecraft] {notice}")
+    return f"{notice}\n{reply}"
+
+
+def _minecraft_control(parameters: dict = None, player=None,
+                       session_memory=None, response=None,
+                       speak=None) -> str:
     params = parameters or {}
     action = str(params.get("action", "")).lower().strip()
 
@@ -967,15 +1066,13 @@ def _source_label(source) -> str:
     name = type(source).__name__
     if name.startswith("ModBridge"):
         try:
-            outdated = bool(source.outdated())
+            notice = source.outdated_notice() if source.outdated() else ""
         except Exception:
-            outdated = False
-        if outdated:
-            return ("the bridge mod — but an OLDER version, which cannot see "
-                    "the ground under trees, so it may find no way to one. "
-                    "Quit Minecraft, run install_mod.bat, then start "
-                    "Minecraft again; if this line is still here after "
-                    "that, py tools\\bridge_check.py says why")
+            notice = ""
+        if notice:
+            return (f"the bridge mod — but an OLDER version. {notice} If "
+                    f"this line is still here after that, "
+                    f"py tools\\bridge_check.py says why")
         return "the bridge mod — exact, including the terrain around you"
     if name.startswith("DebugOverlay"):
         return ("the F3 overlay via OCR — position and the block under the "

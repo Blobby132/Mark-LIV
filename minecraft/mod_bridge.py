@@ -95,6 +95,28 @@ FEATURES in MarkLivBridge.java (tests/bridge/test_bridge_features.py)."""
 
 REQUIRED_FEATURES = tuple(FEATURES)
 
+OLD_SCHEMA_LOSS = "seeing the ground under trees"
+"""What a jar from before schema /4 cannot do, besides every feature."""
+
+
+def outdated_notice(missing, old_schema: bool = False) -> str:
+    """One line: the installed mod is older than this Jarvis, what goes
+    without what it lacks, and the fix. "" when it lacks nothing.
+
+    Said to the user and to the model, so Jarvis gives the real cause
+    instead of guessing at one."""
+    lost = [FEATURES[name] for name in missing if name in FEATURES]
+    if old_schema:
+        lost.insert(0, OLD_SCHEMA_LOSS)
+    if not lost:
+        return ""
+    what = (lost[0] if len(lost) == 1
+            else ", ".join(lost[:-1]) + " and " + lost[-1])
+    verb = "is" if len(lost) == 1 else "are"
+    return (f"The installed Minecraft mod is older than this Jarvis: {what} "
+            f"{verb} unavailable. Quit Minecraft, run install_mod.bat, then "
+            f"start Minecraft again.")
+
 MAX_AGE_SECONDS = 3.0
 """How old a reading may be before it is treated as no reading at all.
 
@@ -258,6 +280,15 @@ class ModBridgeStateSource:
         if have is None:
             return ()
         return tuple(name for name in REQUIRED_FEATURES if name not in have)
+
+    def outdated_notice(self) -> str:
+        """outdated_notice() for the running mod: "" when it is current or
+        cannot be read."""
+        found = self.schema()
+        if found is None:
+            return ""
+        return outdated_notice(self.missing_features(),
+                               old_schema=found != SCHEMA)
 
     def outdated(self) -> bool:
         """Is a jar older than this code expects loaded? Yes when its schema
@@ -745,4 +776,5 @@ def _entities(value):
 
 
 __all__ = ["ModBridgeStateSource", "state_file_path", "SCHEMA",
+           "FEATURES", "REQUIRED_FEATURES", "outdated_notice",
            "MAX_AGE_SECONDS", "ENV_OVERRIDE"]
