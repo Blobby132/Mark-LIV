@@ -303,6 +303,33 @@ class R7LavaTests(unittest.TestCase):
         plan = plan_next(cells, FEET, (2, 60, 0), progress())
         self.assertEqual(plan.status, "dig")
 
+    def test_an_unseen_cell_within_three_is_not_taken_for_rock(self):
+        """A chunk not loaded leaves a hole in the grid: within three of a
+        planned cell, R7 cannot rule out lava there."""
+        cells = rock()
+        del cells[(4, 60, 0)]
+        plan = plan_next(cells, FEET, EAST_LEVEL, progress())
+        self.assertEqual(plan.refusal.rule, "R7")
+        self.assertIn("cannot see (4, 60, 0)", plan.why)
+        with mock.patch.object(digging, "_r7_lava", allow):
+            self.assertEqual(plan_next(cells, FEET, EAST_LEVEL,
+                                       progress()).status, "dig")
+
+    def test_outside_the_grid_is_outside_its_view(self):
+        """The grid reaches three above the feet; R7's cube round the head
+        cell reaches four. That layer is never reported, so it is not
+        refused -- safe because lava there could only reach the dig
+        through a cell the grid shows, and R2 has every neighbour of a
+        broken cell known and dry. Pinned so a change is noticed; lava in
+        the top layer the grid does show is refused."""
+        cells = {c: e for c, e in rock().items() if c[1] <= FEET[1] + 3}
+        plan = plan_next(cells, FEET, EAST_LEVEL, progress())
+        self.assertEqual(plan.status, "dig")
+        cells[(1, 63, 0)] = LAVA                     # the top seen layer
+        plan = plan_next(cells, FEET, EAST_LEVEL, progress())
+        self.assertEqual(plan.refusal.rule, "R7")
+        self.assertIn("lava at (1, 63, 0)", plan.why)
+
 
 def reading(health=20.0, position=(0.5, 60.0, 0.5), cells=None):
     near = SimpleNamespace(cells=cells if cells is not None else rock())

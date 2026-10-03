@@ -28,7 +28,14 @@ proving the dangerous step is taken if that one function is removed)
     R6  When the tunnel opens into air it did not dig (a cave), stop there
         and report the opening: whether its floor is solid and how far the
         drop is.
-    R7  No planned cell within LAVA_CLEARANCE of lava.
+    R7  No planned cell within LAVA_CLEARANCE of lava; a cell within it
+        that is inside the grid's box but not reported (an unloaded chunk)
+        refuses too. What lies outside the box -- four and five above the
+        feet, since the grid reaches three; beyond four sideways, around a
+        vein's ore further off -- is out of its view and not refused. Lava
+        there cannot reach the dig without passing through a cell the grid
+        does show: R2 has every neighbour of every cell broken known and
+        dry, and lava beside air flows into it, into view.
     R8  Abort on health lost, fluid within 2 cells, a block appearing in a
         cleared cell, or the player's position changing unexpectedly
         (abort_reason). Hostile mobs are the task runner's danger watch,
@@ -317,16 +324,36 @@ def _r6_opening(cells, step, progress):
             "walkable": walkable}
 
 
+def _box(cells):
+    """((min x, max x), (min y, max y), (min z, max z)) of the cells
+    reported, or None for none: the grid's view."""
+    if not cells:
+        return None
+    xs, ys, zs = zip(*cells)
+    return (min(xs), max(xs)), (min(ys), max(ys)), (min(zs), max(zs))
+
+
 def _r7_lava(cells, cell):
     reach = LAVA_CLEARANCE
+    box = _box(cells)
+    unseen = None
     for dx in range(-reach, reach + 1):
         for dy in range(-reach, reach + 1):
             for dz in range(-reach, reach + 1):
                 near = _offset(cell, dx, dy, dz)
-                if is_lava(cells.get(near)):
+                entry = cells.get(near)
+                if is_lava(entry):
                     return Refusal("R7", cell, f"lava at {_words(near)} is "
                                    f"within {reach} blocks of "
                                    f"{_words(cell)}")
+                if entry is None and unseen is None and box is not None \
+                        and all(lo <= v <= hi
+                                for v, (lo, hi) in zip(near, box)):
+                    unseen = near
+    if unseen is not None:
+        return Refusal("R7", cell, f"I cannot see {_words(unseen)}, within "
+                       f"{reach} blocks of {_words(cell)}, so I cannot rule "
+                       f"out lava there")
     return None
 
 
