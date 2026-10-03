@@ -297,6 +297,12 @@ class WorldState:
     # observation, so not in _FIELDS: it says what the fields can hold.
     features: tuple | None = None
 
+    # The highest y the bridge reports logs at in this reading -- the feet
+    # plus the scan's tree_up, or plus its `up` from a jar before tree_up.
+    # A log there may have more above it that was not looked for. Like
+    # `features`, it describes the scan, so it is not in _FIELDS.
+    log_ceiling: int | None = None
+
     # Provenance — never None, because "where did this come from" always has
     # an answer even when every value is missing.
     source: str = "none"

@@ -45,6 +45,9 @@ round.
 | The runner pressing ESC to close a screen its task opened, after a cancel, a timeout or an error | `minecraft/task_runner.py` (`_track_screen`, `_close_own_screen`) | `tests/minecraft/test_minecraft_screen_guard.py` | R-1 |
 | No gameplay input while a screen is open | `minecraft/controller.py` (`SCREEN_BLOCKED_ACTIONS`) | `tests/minecraft/test_minecraft_screen_guard.py` | R-1 |
 | `inventory close` refused when the bridge reports no screen | `minecraft/controller.py` (`_close_refusal`) | `tests/minecraft/test_minecraft_inventory_close.py` | R-1 |
+| An older jar told apart from "no screen open": `inventory close` and `craft_item` say the mod is older and name the field (`game_mode`) | `minecraft/controller.py` (`_close_refusal`), `minecraft/skills/craft.py` (`_no_game_mode`) | `tests/minecraft/test_minecraft_screen_messages.py` | R-F |
+| The one-line "older than this Jarvis" notice, once, at session start or the first task that needs a missing feature; HUD and reply | `actions/minecraft.py` (`_feature_notice`), `minecraft/mod_bridge.py` (`outdated_notice`) | `tests/minecraft/test_minecraft_feature_notice.py` | R-F |
+| `bridge_check`'s table of the features in the live payload | `tools/bridge_check.py` (`feature_rows`) | `tests/bridge/test_bridge_check_features.py` | R-F |
 
 ## Placing and building
 
@@ -76,6 +79,7 @@ round.
 | Going round a mob in a gap; diagonal steps not cutting corners; a failed hop counted as a stall; detour tries refilling; not skipping a new route's first waypoints | `minecraft/skills/navigate.py`, `minecraft/navigation.py`, `minecraft/stuck.py` | `tests/minecraft/test_minecraft_navigation.py`, `test_minecraft_navigate_fixes.py` | R-A (N1–N5) |
 | Step pacing: counting the wait for a fresh reading toward the pause (about 400 ms a step, measured in a timed simulation) | `minecraft/task_runner.py` | `tests/minecraft/test_minecraft_step_pacing.py` | R-A (N6) |
 | Re-planning when the target log changes mid-walk; picking up what was broken before giving up; trying every drop | `minecraft/skills/collect.py` | `tests/minecraft/test_collect_logs_walker.py`, `test_collect_logs_trees.py`, `test_live_run_regressions.py` | R-A (N9), R-D |
+| `fell_tree` not calling a tree gone when it reached the highest row the scan reports logs in (`log_ceiling`) | `minecraft/skills/collect_logs.py` (`_note_ceiling`), `minecraft/mod_bridge.py` (`_log_ceiling`) | `tests/minecraft/test_fell_tree_scan_ceiling.py` (simulated tree, read through old- and new-jar payloads) | R-F |
 | Taking up the best hotbar tool before each swing, and putting the slot back | `minecraft/skills/collect.py` (`_HoldsTheRightTool`), `minecraft/mining.py` | `tests/minecraft/test_minecraft_tools.py` | R-B (B1) |
 | `collect_blocks` (stone, dirt, sand, gravel, ores): only exposed blocks, never the one underfoot, none beside water or lava | `minecraft/skills/collect_blocks.py` | `tests/minecraft/test_collect_blocks.py` | R-B (B2) |
 | `eat_food`: choosing food, eating for each food's own time (capped at 3 s), looking up first if a chest or door is under the crosshair | `minecraft/skills/eat.py` | `tests/minecraft/test_minecraft_eating.py` | R-D, R-A (C8) |

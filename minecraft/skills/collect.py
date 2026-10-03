@@ -375,6 +375,9 @@ class _Gatherer(_HoldsTheRightTool):
     _tree_of: dict = field(default_factory=dict)
     _tree_done: bool = False
     _tree_left: tuple = ()
+    # The highest y the scan reported logs at, when this tree reached it:
+    # there may be more of the trunk above, which the scan never looked at.
+    _tree_ceiling: int | None = None
 
     @property
     def _done(self) -> int:

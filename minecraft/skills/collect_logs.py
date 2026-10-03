@@ -74,6 +74,7 @@ class CollectLogs(_Gatherer):
         if self._tree:
             logs = nav.tree_logs(state, self._tree)
             self._adopt(logs)
+            self._note_ceiling(state, logs)
             target = nav.nearest_of(state, logs, reachable_only=True,
                                     exclude=self._skip)
             if target is not None:
@@ -90,8 +91,17 @@ class CollectLogs(_Gatherer):
                                       exclude=self._skip)
         if start is None:
             return None
-        self._adopt(nav.tree_logs(state, {start.position}) or (start,))
+        logs = nav.tree_logs(state, {start.position}) or (start,)
+        self._adopt(logs)
+        self._note_ceiling(state, logs)
         return start
+
+    def _note_ceiling(self, state, logs) -> None:
+        """Remember when this tree reaches the highest row the scan reports
+        logs in: past that, the scan cannot say whether the trunk goes on."""
+        ceiling = getattr(state, "log_ceiling", None)
+        if ceiling is not None and any(b.y >= ceiling for b in logs):
+            self._tree_ceiling = ceiling
 
     def _adopt(self, logs) -> None:
         """Make `logs` the tree being worked on, keeping the name it was
@@ -135,6 +145,13 @@ class CollectLogs(_Gatherer):
                     else f"y {heights[0]}–{heights[-1]}")
             text += (f"; {len(self._tree_left)} more log(s) of it are still "
                      f"standing ({span}) where I cannot reach or hit them")
+        elif self._tree_done and self._tree_ceiling is not None:
+            # Not "none left": the tree reached the top of what the scan
+            # reports, so the rest of the trunk may stand above it unseen.
+            text += (f"; I cannot tell whether any of it is still standing: "
+                     f"the scan reports logs only up to y "
+                     f"{self._tree_ceiling}, and this tree reached that "
+                     f"height, so there may be more of it above")
         elif self._tree_done:
             text += "; none of it is left standing that I can see"
         return text

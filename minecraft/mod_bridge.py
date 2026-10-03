@@ -53,6 +53,7 @@ THE MOD CANNOT BE TOLD TO DO ANYTHING
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 # Imported by name: `dataclasses.replace(...)` reads, to the boundary test, as
@@ -424,6 +425,8 @@ class ModBridgeStateSource:
             game_mode=_text(payload.get("game_mode")),
             near=_near(payload.get("near_blocks")),
             features=tuple(sorted(_feature_set(payload.get("features")))),
+            log_ceiling=_log_ceiling(payload.get("scan"),
+                                     payload.get("position")),
             on_ground=(payload["on_ground"]
                        if isinstance(payload.get("on_ground"), bool) else None),
             scan_radius=_integer((payload.get("scan") or {}).get("radius")
@@ -660,6 +663,23 @@ def _floor_under(block):
     return NearbyBlock(x=block.x, y=block.y - depth, z=block.z,
                        name="ground", solid=None, clearance=clearance,
                        cover=block.name)
+
+
+def _log_ceiling(scan, position):
+    """The highest y logs are reported at: the feet plus scan.tree_up, or
+    plus scan.up from a jar before tree_up, which reported logs no higher
+    than that. None when the scan or the position is not known."""
+    if not isinstance(scan, dict):
+        return None
+    up = scan.get("tree_up")
+    if not isinstance(up, int) or isinstance(up, bool):
+        up = scan.get("up")
+    if not isinstance(up, int) or isinstance(up, bool):
+        return None
+    where = _triple(position)
+    if where is None:
+        return None
+    return math.floor(where[1]) + up
 
 
 def _feature_set(value) -> frozenset:
