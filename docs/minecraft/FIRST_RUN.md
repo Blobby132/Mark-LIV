@@ -143,7 +143,8 @@ anything other than the zombie was hit.
 ## i. Ore (single-player only)
 
 In the single-player test world, in this order: i1-i3 only read; i4-i5 dig
-a short tunnel into a hill; i6-i8 go for a real ore; i9-i11 check rules (i9 and i10 optional); i12, last, opens the world to LAN. F12 stops it at any
+a short tunnel into a hill; i6 digs down from open ground; i7-i9 go for a real ore;
+i10-i12 check rules (i10 and i11 optional); i13, last, opens the world to LAN. F12 stops it at any
 moment.
 
 | # | Check | Pass | Fail |
@@ -153,14 +154,15 @@ moment.
 | i3 | "Find diamond ore" (or any ore it did not list in i1): it says the scan lists none within the radius. It does not make one up. | ☐ | ☐ |
 | i4 | Face a hill of plain stone or dirt with a stone pickaxe in the hotbar and F3 open. Note your feet's `XYZ`; ask it to dig a level tunnel five blocks into the hill ("dig to x+5, same y, z" -- say the numbers). Before it starts it says where and how deep. It digs two blocks high, one block at a time, picks up what drops, and ends five blocks in, with F3's `XYZ` matching. | ☐ | ☐ |
 | i5 | During i4: it never broke the block you stood on, never dug straight down, and the slot it selected went back afterwards. | ☐ | ☐ |
-| i6 | Stand on dry ground with a stone pickaxe in the hotbar, and note how much raw iron the inventory holds (E). "Find iron ore", then "mine one iron ore". Before it starts it says the plan: which ore (coordinates from the i6 list), how far, how deep and about how many blocks it will dig. It does not name ore the list did not have. | ☐ | ☐ |
-| i7 | During i6: a staircase like i4, never the block you stood on; it stops beside the ore and breaks it with the crosshair on it (F3 `Targeted Block` at those coordinates). If the report says to ask again, ask again: it carries on, it does not start a new staircase. | ☐ | ☐ |
-| i8 | At the end the report's "more raw iron than when I started" matches what the inventory (E) gained since i6. If the ore had more of its vein beside it, it took the ones it could reach or said which it left and why. If it stopped instead (lava, water, gravel, a cave), it said which rule, and named another ore or said there was none. | ☐ | ☐ |
-| i9 | (Optional, creative or a spare world.) In the tunnel from i4, put a magma block where the next stair down would land -- one block ahead of the tunnel's end and two below your feet -- then ask it to dig one step down from there. It refuses, names the magma block, and breaks nothing. | ☐ | ☐ |
-| i10 | (Optional, creative.) Put a spawner three blocks below and two ahead of the tunnel's end from i4, then ask it to dig one step further. It refuses with "R9" and "this looks like an ancient city (warden) or a monster room", and breaks nothing. | ☐ | ☐ |
-| i11 | Ask it to dig to a cell 40 blocks east of your feet, same height. Before pressing anything it refuses with "R5", says a dig goes at most 32 across, and names the furthest cell it may dig toward it -- 20 blocks east, since a level tunnel breaks two blocks a step and a task may break 40. Nothing is broken. | ☐ | ☐ |
-| i12 | Press Esc, **Open to LAN**, start it, and ask "find iron ore". It refuses and says LAN worlds count as multiplayer; `bridge_check.bat` shows singleplayer as "a server, or a world opened to LAN". (A LAN world stays open until you quit to the title screen; reopen the world for the next session.) | ☐ | ☐ |
+| i6 | Stand on flat grass with open sky above and nothing within a few blocks, a stone pickaxe in the hotbar, F3 open. Note your feet's `XYZ` and ask it to dig down to x+6, y-6, same z (say the numbers). The first stairs go down through the grass with open air over them: it must NOT stop there with "opening" or "cave". It ends six across and six down, F3's `XYZ` matching. Then "find iron ore" and ask it to dig toward a buried one it listed (dig_to the cell beside it): it digs on underground, and stops only at a real hollow, which it reports with how far below the start it is. | ☐ | ☐ |
+| i7 | Stand on dry ground with a stone pickaxe in the hotbar, and note how much raw iron the inventory holds (E). "Find iron ore", then "mine one iron ore". Before it starts it says the plan: which ore (coordinates from the i7 list), how far, how deep and about how many blocks it will dig. It does not name ore the list did not have. | ☐ | ☐ |
+| i8 | During i7: a staircase like i4, never the block you stood on; it stops beside the ore and breaks it with the crosshair on it (F3 `Targeted Block` at those coordinates). If the report says to ask again, ask again: it carries on, it does not start a new staircase. | ☐ | ☐ |
+| i9 | At the end the report's "more raw iron than when I started" matches what the inventory (E) gained since i7. If the ore had more of its vein beside it, it took the ones it could reach or said which it left and why. If it stopped instead (lava, water, gravel, a cave), it said which rule, and named another ore or said there was none. | ☐ | ☐ |
+| i10 | (Optional, creative or a spare world.) In the tunnel from i4, put a magma block where the next stair down would land -- one block ahead of the tunnel's end and two below your feet -- then ask it to dig one step down from there. It refuses, names the magma block, and breaks nothing. | ☐ | ☐ |
+| i11 | (Optional, creative.) Put a spawner three blocks below and two ahead of the tunnel's end from i4, then ask it to dig one step further. It refuses with "R9" and "this looks like an ancient city (warden) or a monster room", and breaks nothing. | ☐ | ☐ |
+| i12 | Ask it to dig to a cell 40 blocks east of your feet, same height. Before pressing anything it refuses with "R5", says a dig goes at most 32 across, and names the furthest cell it may dig toward it -- 20 blocks east, since a level tunnel breaks two blocks a step and a task may break 40. Nothing is broken. | ☐ | ☐ |
+| i13 | Press Esc, **Open to LAN**, start it, and ask "find iron ore". It refuses and says LAN worlds count as multiplayer; `bridge_check.bat` shows singleplayer as "a server, or a world opened to LAN". (A LAN world stays open until you quit to the title screen; reopen the world for the next session.) | ☐ | ☐ |
 
 **If it fails, write down:** the step, Jarvis's exact words, the task result
-text with all its step lines, and for i2, i4 and i6 the coordinates it gave and
+text with all its step lines, and for i2, i4, i6 and i7 the coordinates it gave and
 what F3 showed there.

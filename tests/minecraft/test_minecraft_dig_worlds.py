@@ -197,6 +197,51 @@ class HardRuleTests(_Worlds):
         self.assertEqual(w.entered_fluid, [])
 
 
+class OpenAirTests(_Worlds):
+    """R6 in a running dig: the open air over the ground is not a cave.
+    From a real run that stopped after one grass block, "the tunnel opened
+    into a cave" one cell above it, in the sky."""
+
+    def test_down_from_flat_grass(self):
+        w = worlds.flat_grass()
+        skill, result = run(w, "dig_to", x=6, y=-6, z=0)
+        self.assertFalse(skill.failed, said(skill, result))
+        self.assertEqual(w.feet(), (6, -6, 0))
+        self.assertNotIn("opening", said(skill, result))
+        self.assertEqual(w.falls, [1] * 6, "a stair down is a one-block drop")
+
+    def test_down_a_slope_like_the_log(self):
+        w = worlds.slope()
+        x, y, z = worlds.SLOPE_START
+        skill, result = run(w, "dig_to", x=x + 8, y=y - 8, z=z)
+        self.assertFalse(skill.failed, said(skill, result))
+        self.assertEqual(w.feet(), (x + 8, y - 8, z))
+
+    def test_into_the_side_of_a_hill_and_a_hollow_in_it(self):
+        w = worlds.hill()
+        skill, result = run(w, "dig_to", x=8, y=0, z=0)
+        self.assertFalse(skill.failed, said(skill, result))
+        w = worlds.hill(hollow_at=((5, 0, 0), (5, 1, 0)))
+        skill, result = run(w, "dig_to", x=8, y=0, z=0)
+        self.assertTrue(skill.failed)
+        self.assertIn("(5, 1, 0)", said(skill, result))
+        self.assertEqual(w.feet(), (4, 0, 0))
+
+    def test_the_dig_records_what_it_stood_in(self):
+        """The skill tells the planner whether it began under open sky, and
+        which natural air the player stood in."""
+        w = worlds.tunnel()
+        skill, _result = run(w, "dig_to", x=6, y=60, z=0)
+        self.assertFalse(skill.failed, skill.done_reason)
+        done = skill._progress
+        self.assertIs(done.surface, False)
+        self.assertIn((3, 60, 0), done.walked)
+        self.assertIn((3, 61, 0), done.walked)
+        sky = worlds.flat_grass()
+        skill, _ = run(sky, "dig_to", x=2, y=0, z=0)
+        self.assertIs(skill._progress.surface, True)
+
+
 class OreWorldTests(_Worlds):
 
     def test_the_buried_vein(self):
@@ -345,7 +390,8 @@ class EveryWorldTests(unittest.TestCase):
         for name, build in worlds.WORLDS.items():
             with self.subTest(world=name):
                 w = build()
-                self.assertEqual(w.feet(), (0, 60, 0))
+                self.assertEqual(w.at(w.feet())[0], "air")
+                self.assertTrue(w._supported(), "it starts in mid-air")
                 self.assertTrue(build.__doc__)
                 self.assertIs(w.read().singleplayer, True)
 

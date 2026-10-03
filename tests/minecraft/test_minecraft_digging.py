@@ -17,6 +17,7 @@ from unittest import mock
 
 from minecraft import digging
 from minecraft.digging import Progress, plan_next, shape, check_step
+from tests.support import dig_world as worlds
 from tests.support.dig_world import (AIR, LAVA, STONE, WATER, block, hollow,
                                      put, rock)
 
@@ -202,13 +203,17 @@ class R3FallingTests(unittest.TestCase):
 class R4StaircaseTests(unittest.TestCase):
 
     def test_a_floor_that_is_not_there(self):
-        cells = hollow(rock(), (1, 59, 0), (1, 58, 0), (1, 57, 0))
-        plan = plan_next(cells, FEET, (4, 57, 0), progress())
-        self.assertEqual(plan.refusal.rule, "R4")
-        self.assertIn("I would fall", plan.why)
+        # The shaft is under the stair's floor, not in the cells it passes
+        # through: enclosed air there is an opening (R6) before R4 is asked.
+        cells = hollow(rock(), (1, 58, 0), (1, 57, 0), (1, 56, 0))
+        down = shape(FEET, "east", 1, 0, -1)
+        checked, refusal = check_step(cells, FEET, down, progress())
+        self.assertIsNone(checked)
+        self.assertEqual(refusal.rule, "R4")
+        self.assertIn("I would fall", refusal.why)
         with mock.patch.object(digging, "_r4_staircase", allow):
-            self.assertEqual(plan_next(cells, FEET, (4, 57, 0),
-                                       progress()).status, "dig")
+            checked, _ = check_step(cells, FEET, down, progress())
+            self.assertIsNotNone(checked)
 
     def test_a_floor_it_cannot_see(self):
         """Open air ahead, so nothing is broken (R2's neighbour check would
@@ -263,9 +268,17 @@ class R6CaveTests(unittest.TestCase):
             hollow(cells, (1, 59 - n, 0))
         return cells
 
+    # The player stands in cells this dig made, having come down from
+    # further back: the cave touches only dug cells, so it is a new
+    # opening. (Air the dig began in, or natural air the player stands in,
+    # joins whatever air touches it: that is R6OpenAirTests.)
+    DUG_HERE = {(0, 60, 0), (0, 61, 0)}
+    CAME_FROM = (-3, 63, 0)
+
     def test_it_stops_at_the_opening_and_says_so(self):
         plan = plan_next(self.cave(), FEET, EAST_LEVEL,
-                         progress(broken=3, cleared={(0, 60, 0)}))
+                         progress(broken=3, cleared=self.DUG_HERE,
+                                  start=self.CAME_FROM))
         self.assertEqual(plan.status, "opening")
         self.assertEqual(plan.opening["at"], (1, 61, 0))
         self.assertTrue(plan.opening["floor_solid"])
@@ -276,13 +289,218 @@ class R6CaveTests(unittest.TestCase):
 
     def test_a_deep_drop_is_not_walkable(self):
         plan = plan_next(self.cave(depth=5), FEET, EAST_DOWN,
-                         progress(broken=3))
+                         progress(broken=3, cleared=self.DUG_HERE,
+                                  start=self.CAME_FROM))
         self.assertEqual(plan.status, "opening")
         self.assertFalse(plan.opening["walkable"])
 
-    def test_before_any_digging_open_air_is_just_walked(self):
-        plan = plan_next(self.cave(), FEET, EAST_LEVEL, progress(broken=0))
-        self.assertEqual(plan.status, "walk")
+    def test_air_joined_to_where_it_started_is_just_walked(self):
+        """The cave touches the hole the player started in: it is the same
+        air, not something the dig broke into."""
+        for broken in (0, 3):
+            with self.subTest(broken=broken):
+                plan = plan_next(self.cave(), FEET, EAST_LEVEL,
+                                 progress(broken=broken))
+                self.assertEqual(plan.status, "walk")
+
+
+def grid(world, feet):
+    """The grid the mod would send with the feet at `feet`."""
+    world.x, world.y, world.z = feet[0] + 0.5, float(feet[1]), feet[2] + 0.5
+    return world.read().near.cells
+
+
+def carry_out(world, start, goal, stairs, progress=None):
+    """Dig `stairs` stairs with the planner alone, as the skill does: plan,
+    break the cells, settle them, check the same stair again on the new
+    reading (where the real stop came from), step. Returns the plans --
+    the last one "opening" or "refused" if it stopped -- the feet, and
+    the progress."""
+    progress = progress or Progress(start=start)
+    if progress.surface is None:
+        progress.note_start(grid(world, start))
+    feet, plans = tuple(start), []
+    for _ in range(stairs):
+        if feet == tuple(goal):
+            break
+        cells = grid(world, feet)
+        progress.note_body(cells, feet)
+        plan = plan_next(cells, feet, goal, progress)
+        plans.append(plan)
+        if plan.status not in ("dig", "walk"):
+            break
+        for cell in plan.step.clear:
+            progress.swung[cell] = world.at(cell)[0]
+            world.cells[cell] = AIR
+        cells = grid(world, feet)
+        progress.settle(cells)
+        again = shape(feet, plan.step.direction, plan.step.dx, plan.step.dz,
+                      plan.step.dy)
+        checked, problem = check_step(cells, feet, again, progress)
+        if checked == "opening":
+            plans.append(digging.Plan("opening", "", opening=problem))
+            break
+        if checked is None:
+            plans.append(digging.Plan("refused", problem.describe(),
+                                      refusal=problem))
+            break
+        feet = plan.step.to
+        progress.last_direction = plan.step.direction
+    return plans, feet, progress
+
+
+def stopped(plans):
+    return [p for p in plans if p.status == "opening"]
+
+
+class R6OpenAirTests(unittest.TestCase):
+    """R6 stops at air the dig broke into -- a cave, a hollow -- and not at
+    air that is already open: the space the dig began in, cells it has
+    stood in, openings it was told to go through, and open sky at or above
+    the starting level when the dig began under open sky -- with every
+    natural air cell joined to those, through cells the dig did not break,
+    inside the grid. From a real run: the first grass block broken, then
+    "the tunnel opened into a cave" one cell over it, in the sky."""
+
+    def test_the_reproduction(self):
+        """Flat grass at y -1, air from 0 up, the player at (0, 0, 0),
+        the goal (6, -6, 0): the first stair breaks (1, -1, 0); with it
+        settled, the same stair was "a cave at (1, 1, 0)" -- the sky."""
+        world = worlds.flat_grass()
+        cells = grid(world, (0, 0, 0))
+        done = Progress(start=(0, 0, 0))
+        done.note_start(cells)
+        first = plan_next(cells, (0, 0, 0), (6, -6, 0), done)
+        self.assertEqual(first.status, "dig")
+        self.assertEqual(first.step.clear, ((1, -1, 0),))
+        cells[(1, -1, 0)] = AIR
+        done.swung[(1, -1, 0)] = "grass_block"
+        done.settle(cells)
+        again = plan_next(cells, (0, 0, 0), (6, -6, 0), done)
+        self.assertNotEqual(again.status, "opening", again.why)
+
+    def test_a_flat_surface_descent(self):
+        """No stop for the first four stairs, in or under the open air;
+        then underground to the goal."""
+        plans, feet, done = carry_out(worlds.flat_grass(), (0, 0, 0),
+                                      (6, -6, 0), 10)
+        self.assertEqual(stopped(plans), [], [p.why for p in plans])
+        self.assertEqual(feet, (6, -6, 0))
+        self.assertGreaterEqual(len(plans), 6)
+        self.assertLess(feet[1], -2, "it never went underground")
+
+    def test_an_enclosed_hollow_below_still_stops(self):
+        world = worlds.flat_grass(hollow_at=((3, -3, 0), (3, -2, 0)))
+        plans, feet, _ = carry_out(world, (0, 0, 0), (6, -6, 0), 10)
+        self.assertEqual(len(stopped(plans)), 1, [p.why for p in plans])
+        opening = stopped(plans)[0].opening
+        self.assertEqual(opening["at"], (3, -2, 0))
+        self.assertEqual(opening["below"], 3)
+        self.assertEqual(feet, (2, -2, 0))
+
+    def test_into_the_side_of_a_hill(self):
+        """No stop at the hill's face -- the air in front of it is sky --
+        and a stop at a hollow inside it."""
+        plans, feet, _ = carry_out(worlds.hill(), (0, 0, 0), (8, 0, 0), 10)
+        self.assertEqual(stopped(plans), [], [p.why for p in plans])
+        self.assertEqual(feet, (8, 0, 0))
+        hollow_hill = worlds.hill(hollow_at=((5, 0, 0), (5, 1, 0)))
+        plans, feet, _ = carry_out(hollow_hill, (0, 0, 0), (8, 0, 0), 10)
+        self.assertEqual(stopped(plans)[0].opening["at"], (5, 1, 0))
+        self.assertEqual(feet, (4, 0, 0))
+
+    def test_starting_in_a_tunnel(self):
+        """Walking along the tunnel the dig began in is fine; a chamber
+        behind its wall, reached by breaking the wall, is an opening."""
+        plans, feet, _ = carry_out(worlds.tunnel(), (0, 60, 0), (6, 60, 0),
+                                   10)
+        self.assertEqual(stopped(plans), [])
+        self.assertEqual(feet, (6, 60, 0))
+        self.assertTrue(all(p.status == "walk" for p in plans))
+        plans, feet, _ = carry_out(worlds.tunnel(chamber=True), (0, 60, 0),
+                                   (3, 60, 3), 10)
+        self.assertEqual(stopped(plans)[0].opening["at"], (3, 61, 2))
+        self.assertEqual(feet, (3, 60, 1))
+
+    def test_starting_inside_a_cave(self):
+        """The cave the dig began in is not an opening; a separate hollow
+        below it is."""
+        plans, feet, _ = carry_out(worlds.in_cave(), (0, 60, 0), (6, 55, 0),
+                                   12)
+        self.assertEqual(stopped(plans), [], [p.why for p in plans])
+        self.assertEqual(feet, (6, 55, 0))
+        plans, feet, _ = carry_out(worlds.in_cave(pocket=True), (0, 60, 0),
+                                   (6, 55, 0), 12)
+        self.assertEqual(len(stopped(plans)), 1, [p.why for p in plans])
+        self.assertIn(stopped(plans)[0].opening["at"],
+                      ((5, 57, 0), (5, 56, 0)))
+
+    def test_a_dig_that_begins_on_a_slope(self):
+        """The real run's ground: grass at 63, then down to the east with
+        open sky over it. Neither the first stairs nor the air over the
+        slope further down is an opening."""
+        start = worlds.SLOPE_START
+        goal = (start[0] + 8, start[1] - 8, start[2])
+        plans, feet, _ = carry_out(worlds.slope(), start, goal, 12)
+        self.assertEqual(stopped(plans), [], [p.why for p in plans])
+        self.assertEqual(feet, goal)
+
+    def test_the_second_stop_in_the_log(self):
+        """Asked again from (-617, 61, -124), further down the slope, with
+        one block counted: it was "a cave at (-616, 62, -124)". That cell is
+        below where the dig began (y 64) -- sky by the start level alone
+        would still call it a cave -- but it is joined, through air no dig
+        made, to the air the player stands in and to the sky over the
+        start, so it is open air."""
+        world = worlds.slope()
+        done = Progress(start=worlds.SLOPE_START)
+        done.note_start(grid(world, worlds.SLOPE_START))
+        done.cleared.add((-619, 63, -124))
+        done.broken = 1
+        world.cells[(-619, 63, -124)] = AIR
+        feet = (-617, 61, -124)
+        cells = grid(world, feet)
+        self.assertTrue(digging.is_air(cells[(-616, 62, -124)]))
+        self.assertLess(62, worlds.SLOPE_START[1])
+        plan = plan_next(cells, feet, (-612, 56, -124), done)
+        self.assertNotEqual(plan.status, "opening", plan.why)
+        self.assertIn(plan.status, ("dig", "walk"))
+
+    # ── the rule's own tests ─────────────────────────────────────────────
+
+    def caves(self):
+        """The cases that must stop, each (world, start, goal, cell)."""
+        return (
+            (worlds.flat_grass(hollow_at=((3, -3, 0), (3, -2, 0))),
+             (0, 0, 0), (6, -6, 0)),
+            (worlds.hill(hollow_at=((5, 0, 0), (5, 1, 0))), (0, 0, 0),
+             (8, 0, 0)),
+            (worlds.tunnel(chamber=True), (0, 60, 0), (3, 60, 3)),
+            (worlds.in_cave(pocket=True), (0, 60, 0), (6, 55, 0)),
+        )
+
+    def test_too_loose_and_the_cave_tests_fail(self):
+        """open_air made to call every air cell open (never an opening):
+        none of the real caves stops any more."""
+        loose = lambda cells, progress, feet=None: frozenset(   # noqa: E731
+            c for c, e in cells.items() if digging.is_air(e))
+        for world, start, goal in self.caves():
+            with self.subTest(start=start, goal=goal):
+                self.assertTrue(stopped(carry_out(world, start, goal, 12)[0]))
+        for world, start, goal in self.caves():
+            with self.subTest(loose=goal), \
+                    mock.patch.object(digging, "open_air", loose):
+                self.assertEqual(stopped(carry_out(world, start, goal,
+                                                   12)[0]), [])
+
+    def test_too_strict_and_the_surface_tests_fail(self):
+        """open_air made to know nothing is open: the flat descent stops in
+        the sky, as in the real run."""
+        with mock.patch.object(digging, "open_air",
+                               lambda *a, **k: frozenset()):
+            plans, _feet, _ = carry_out(worlds.flat_grass(), (0, 0, 0),
+                                        (6, -6, 0), 10)
+        self.assertEqual(stopped(plans)[0].opening["at"], (1, 1, 0))
 
 
 class R7LavaTests(unittest.TestCase):

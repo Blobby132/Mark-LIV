@@ -290,7 +290,8 @@ walks into it:
 `regression_worlds.py`, `gui_world.py`, `build_world.py`, and
 `dig_world.py`: DigWorld, the voxel rock digging is tested in, and its
 named worlds -- a lava pocket, a water pocket, a gravel ceiling, a cave
-opening, a buried vein, a floating ore, a mineshaft, a hidden shaft),
+opening, a buried vein, a floating ore, a mineshaft, a hidden shaft, and
+open ground: flat grass, a hill, the real run's slope, a tunnel, a cave),
 fakes
 (`fakes.py`), payload and fixture data (`bridge_payloads.py`,
 `held_items.py`, `voice_paths.py`), the Java harness the bridge tests

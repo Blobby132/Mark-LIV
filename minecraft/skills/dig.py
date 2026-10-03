@@ -224,6 +224,7 @@ class DigTo(_HoldsTheRightTool):
         progress = _DIGS.get(goal)
         if progress is None:
             progress = digging.Progress(start=digging.feet_of(state.position))
+            progress.note_start(state.near.cells)
         self._progress = progress
         problem = _goal_limits(goal, progress,
                                digging.feet_of(state.position))
@@ -255,6 +256,7 @@ class DigTo(_HoldsTheRightTool):
                               "stopped digging.")
         feet = digging.feet_of(state.position)
         self._expect = feet
+        self._progress.note_body(cells, feet)
         return self._next(state, cells, feet)
 
     def _finished(self) -> bool:
@@ -577,6 +579,7 @@ class MineOre(DigTo):
                 mine = _Mine(ore=None, stand=None,
                              progress=digging.Progress(start=feet),
                              had=0, kind=None, mined=[], skip=set())
+                mine.progress.note_start(state.near.cells)
             mine.ore, mine.stand = choice.hit.position, choice.stand
             kind = ores_mod.kind_of(choice.hit.name)
             if kind != mine.kind:           # new, or "any ore" chose anew

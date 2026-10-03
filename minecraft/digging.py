@@ -32,9 +32,18 @@ proving the dangerous step is taken if that one function is removed)
         goal past any of them is refused before anything is broken
         (goal_refusal), naming the furthest cell toward it that is allowed;
         each stair is checked again as the dig goes.
-    R6  When the tunnel opens into air it did not dig (a cave), stop there
-        and report the opening: whether its floor is solid and how far the
-        drop is.
+    R6  When a stair reaches air the dig did not make and does not know to
+        be open -- a cave, a hollow, a chamber -- stop there and report
+        the opening: where, how far below the start, whether its floor is
+        solid and how far the drop is. Known to be open (open_air): the
+        air the dig began in, cells it has stood in, openings it was told
+        to go on through, and -- when it began under open sky -- open sky
+        at or above the starting level (an air cell with nothing but air
+        over it to the grid's top); and every natural air cell joined to
+        those through cells the dig did not break, inside the grid. So
+        the sky over the surface, a hillside's open front and the tunnel
+        it started in are walked; a pocket reached only through a cell it
+        broke is an opening.
     R7  No planned cell within LAVA_CLEARANCE of lava; a cell within it
         that is inside the grid's box but not reported (an unloaded chunk)
         refuses too. What lies outside the box -- four and five above the
@@ -188,6 +197,27 @@ class Progress:
     # there. A later reading settles each one -- air: cleared and counted;
     # a different block: something fell in (R8).
     swung: dict = field(default_factory=dict)
+    # R6: natural air cells the body has stood in; openings the user asked
+    # to go on through; the last opening stopped at; and whether the dig
+    # began under open sky (None: not seen yet).
+    walked: set = field(default_factory=set)
+    accepted: set = field(default_factory=set)
+    opening: dict | None = None
+    surface: bool | None = None
+
+    def note_start(self, cells) -> None:
+        """At the first reading: did the dig begin under open sky -- the
+        start's head cell and every cell over it, to the grid's top, air?"""
+        if self.surface is None:
+            self.surface = _open_column(cells, _offset(tuple(self.start),
+                                                       0, 1, 0), set())
+
+    def note_body(self, cells, feet) -> None:
+        """The feet and head cells, where they are air the dig did not
+        make: open air the player has stood in."""
+        for cell in (tuple(feet), _offset(tuple(feet), 0, 1, 0)):
+            if is_air(cells.get(cell)) and cell not in self.cleared:
+                self.walked.add(cell)
 
     def settle(self, cells) -> list:
         """Move swung cells the reading shows as air into `cleared`, and
@@ -356,12 +386,89 @@ def _r5_limits(step, progress, breaking):
     return None
 
 
-def _r6_opening(cells, step, progress):
-    """Air this dig did not make, once it has dug: a cave. Stop there."""
-    if progress.broken == 0:
-        return None
+def _open_column(cells, cell, cleared) -> bool:
+    """`cell` and every cell over it, up to the grid's top, natural air:
+    open to the sky as far as the grid can tell."""
+    if not is_air(cells.get(cell)) or cell in cleared:
+        return False
+    above = _offset(cell, 0, 1, 0)
+    while above in cells:
+        if not is_air(cells[above]) or above in cleared:
+            return False
+        above = _offset(above, 0, 1, 0)
+    return True
+
+
+def _natural(cells, cleared, cell) -> bool:
+    return is_air(cells.get(cell)) and cell not in cleared
+
+
+def _flood(cells, cleared, seeds) -> set:
+    """Every natural air cell joined to `seeds` face to face through
+    natural air (air the dig did not make), inside the grid."""
+    found = set()
+    todo = [c for c in seeds if _natural(cells, cleared, c)]
+    while todo:
+        cell = todo.pop()
+        if cell in found:
+            continue
+        found.add(cell)
+        for d in SIDES:
+            side = _offset(cell, *d)
+            if side not in found and _natural(cells, cleared, side):
+                todo.append(side)
+    return found
+
+
+def open_air(cells, progress, feet=None) -> frozenset:
+    """The air this dig knows is open (R6): see the module's R6. `feet`:
+    where the player stands now -- natural air there is open too."""
+    cleared = progress.cleared
+    start = tuple(progress.start)
+    seeds = [start, _offset(start, 0, 1, 0)]
+    seeds += list(progress.walked) + list(progress.accepted)
+    if feet is not None:
+        seeds += [tuple(feet), _offset(tuple(feet), 0, 1, 0)]
+    surface = progress.surface
+    if surface is None:
+        surface = _open_column(cells, _offset(start, 0, 1, 0), cleared)
+    if surface:
+        tops = {}
+        for x, y, z in cells:
+            if y > tops.get((x, z), y - 1):
+                tops[(x, z)] = y
+        for (x, z), y in tops.items():
+            while y >= start[1] and _natural(cells, cleared, (x, y, z)):
+                seeds.append((x, y, z))
+                y -= 1
+    return frozenset(_flood(cells, cleared, seeds))
+
+
+def pocket(cells, progress, cell) -> frozenset:
+    """The natural air joined to `cell`: one opening, as far as the grid
+    shows it."""
+    return frozenset(_flood(cells, progress.cleared, [tuple(cell)]))
+
+
+def level_words(start, y) -> str:
+    """How far `y` is below (or above) the level the dig started at."""
+    below = start[1] - y
+    if below == 0:
+        return "level with where I started"
+    if below > 0:
+        return f"{below} block{'s' if below != 1 else ''} below where I started"
+    return f"{-below} block{'s' if below != -1 else ''} above where I started"
+
+
+def _r6_opening(cells, step, progress, feet=None):
+    """Air this dig did not make and does not know is open: an opening.
+    Stop there."""
     found = [c for c in step.passes
              if is_air(cells.get(c)) and c not in progress.cleared]
+    if not found:
+        return None
+    known = open_air(cells, progress, feet)
+    found = [c for c in found if c not in known]
     if not found:
         return None
     drop, floor_solid = 0, False
@@ -379,7 +486,8 @@ def _r6_opening(cells, step, progress):
         below = _offset(below, 0, -1, 0)
     walkable = floor_solid and drop is not None and drop <= MAX_SAFE_DROP
     return {"at": found[0], "floor_solid": floor_solid, "drop": drop,
-            "walkable": walkable}
+            "walkable": walkable, "to": step.to,
+            "below": progress.start[1] - step.to[1]}
 
 
 def _box(cells):
@@ -533,7 +641,7 @@ def check_step(cells, feet, step, progress):
             return None, refusal
     # A cave is reported, floor and drop included, before the floor rule
     # refuses the step for it: R6 only ever stops, so it may go first.
-    opening = _r6_opening(cells, step, progress)
+    opening = _r6_opening(cells, step, progress, feet)
     if opening is not None:
         return "opening", opening
     refusal = _r4_hazards(cells, step) or _r4_staircase(step, feet, cells)
@@ -587,9 +695,9 @@ def plan_next(cells, feet, goal, progress) -> Plan:
     for *_rank, step in candidates:
         checked, problem = check_step(cells, feet, step, progress)
         if checked == "opening":
-            return Plan("opening", f"the tunnel opens into a cave at "
-                        f"{_words(problem['at'])}", step=step,
-                        opening=problem)
+            return Plan("opening", f"opening at {_words(problem['at'])} "
+                        f"({level_words(progress.start, step.to[1])}): air "
+                        f"I did not dig", step=step, opening=problem)
         if checked is not None:
             what = ("dig " + ", ".join(_words(c) for c in checked.clear)
                     if checked.clear else "walk")
@@ -747,6 +855,7 @@ __all__ = ["MAX_BROKEN", "MAX_DEPTH", "MAX_HORIZONTAL", "LAVA_CLEARANCE",
            "Refusal", "Step", "Plan", "Progress", "feet_of", "shape",
            "steps_left", "check_step", "plan_next", "check_break", "check_walk",
            "blocks_needed", "nearest_allowed", "goal_refusal",
+           "open_air", "pocket", "level_words",
            "HAZARDS", "CONTACT_HAZARDS", "WARDEN_OR_SPAWNER", "WARDEN_REACH",
            "abort_reason", "is_diggable", "is_falling", "has_fluid",
            "is_lava", "is_air"]

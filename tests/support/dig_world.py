@@ -476,13 +476,111 @@ def monster_room(**options):
     return _world(room, **options)
 
 
+# ── Worlds with open sky ─────────────────────────────────────────────────────
+#
+# Above ground, the cells over the surface are air up to the top of the
+# grid, which is what the mod shows: "open air the player already stood in"
+# is the thing R6 must not take for a cave.
+
+def _terrain(floor_at, xs=(-14, 16), zs=(-8, 8), ys=(-18, 14),
+             top="grass_block"):
+    """Grass at floor_at(x, z), stone under it, air over it."""
+    cells = {}
+    for x in range(xs[0], xs[1] + 1):
+        for z in range(zs[0], zs[1] + 1):
+            floor = floor_at(x, z)
+            for y in range(ys[0], ys[1] + 1):
+                if y > floor:
+                    cells[(x, y, z)] = AIR
+                elif y == floor:
+                    cells[(x, y, z)] = block(top)
+                else:
+                    cells[(x, y, z)] = STONE
+    return cells
+
+
+def flat_grass(hollow_at=(), **options):
+    """Flat grass at y -1, stone under it, open sky from y 0 up; the
+    player on the grass at (0, 0, 0). `hollow_at`: air cells, enclosed in
+    the rock unless they touch the sky."""
+    cells = _terrain(lambda x, z: -1)
+    hollow(cells, *hollow_at)
+    return DigWorld(cells, position=(0.5, 0.0, 0.5), **options)
+
+
+def hill(hollow_at=(), **options):
+    """Flat ground at y -1 to x 1; from x 2 on, a hill of stone up to y 5
+    (grass on top). The player at (0, 0, 0) faces its side."""
+    cells = _terrain(lambda x, z: 5 if x >= 2 else -1)
+    for x in range(2, 17):
+        for z in range(-8, 9):
+            for y in range(-1, 5):
+                cells[(x, y, z)] = STONE
+    hollow(cells, *hollow_at)
+    return DigWorld(cells, position=(0.5, 0.0, 0.5), **options)
+
+
+SLOPE_START = (-620, 64, -124)
+SLOPE_FLOORS = {-619: 63, -618: 62, -617: 60, -616: 59, -615: 58,
+                -614: 57, -613: 56}
+
+
+def slope(**options):
+    """Like the real run: grass at y 63 round (-620, 64, -124), then a
+    slope down to the east -- 62, 60, 59 ... 56 -- with open sky over it.
+    The player stands at SLOPE_START."""
+    cells = _terrain(lambda x, z: SLOPE_FLOORS.get(
+        x, 63 if x < -619 else 55), xs=(-634, -600), zs=(-132, -116),
+        ys=(40, 76))
+    x, y, z = SLOPE_START
+    return DigWorld(cells, position=(x + 0.5, float(y), z + 0.5), **options)
+
+
+def tunnel(chamber=False, **options):
+    """A two-high tunnel along x through rock, from x -3 to 7 at y 60-61,
+    the player in it at (0, 60, 0). `chamber`: a room behind its south
+    wall at x 3, z 2-3, cut off from it by one solid cell."""
+    cells = hollow({}, *[(x, y, 0) for x in range(-3, 8) for y in (60, 61)])
+    if chamber:
+        hollow(cells, (3, 60, 2), (3, 61, 2), (3, 60, 3), (3, 61, 3))
+    return DigWorld(cells, position=START, **options)
+
+
+def in_cave(pocket=False, **options):
+    """A cave in the rock, x and z -3 to 3, y 60 to 63, the player on its
+    floor at (0, 60, 0). `pocket`: a separate enclosed hollow below and
+    east of it, at (5, 56-57, 0)."""
+    cells = hollow({}, *[(x, y, z) for x in range(-3, 4)
+                         for y in range(60, 64) for z in range(-3, 4)])
+    if pocket:
+        hollow(cells, (5, 56, 0), (5, 57, 0))
+    return DigWorld(cells, position=START, **options)
+
+
+def two_caves(**options):
+    """Two separate caves on the level tunnel east, each two cells long:
+    x 3-4 and x 8-9, y 60-61, floors solid and level."""
+    return _world(hollow({}, (3, 60, 0), (3, 61, 0), (4, 60, 0), (4, 61, 0),
+                         (8, 60, 0), (8, 61, 0), (9, 60, 0), (9, 61, 0)),
+                  **options)
+
+
+def deep_cave(**options):
+    """A cave on the level tunnel east whose floor is six below: a drop
+    nobody walks into."""
+    return _world(hollow({}, *[(x, y, 0) for x in (3, 4)
+                               for y in range(54, 62)]), **options)
+
+
 WORLDS = {
     "stone_volume": stone_volume, "buried_vein": buried_vein,
     "lava_pocket": lava_pocket, "water_pocket": water_pocket,
     "gravel_ceiling": gravel_ceiling, "cave_opening": cave_opening,
     "floating_ore": floating_ore, "mineshaft": mineshaft,
     "hidden_shaft": hidden_shaft, "magma_floor": magma_floor,
-    "monster_room": monster_room,
+    "monster_room": monster_room, "flat_grass": flat_grass, "hill": hill,
+    "slope": slope, "tunnel": tunnel, "in_cave": in_cave,
+    "two_caves": two_caves, "deep_cave": deep_cave,
 }
 
 
@@ -504,4 +602,6 @@ __all__ = ["AIR", "STONE", "WATER", "LAVA", "DROPS", "block", "rock", "put",
            "hollow", "DigWorld", "START", "HOLE", "VEIN", "WORLDS",
            "stone_volume", "buried_vein", "lava_pocket", "water_pocket",
            "gravel_ceiling", "cave_opening", "floating_ore", "mineshaft",
-           "hidden_shaft", "magma_floor", "monster_room"]
+           "hidden_shaft", "magma_floor", "monster_room", "flat_grass",
+           "hill", "slope", "tunnel", "in_cave", "two_caves", "deep_cave",
+           "SLOPE_START", "SLOPE_FLOORS"]
