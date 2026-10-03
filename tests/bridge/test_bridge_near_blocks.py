@@ -34,7 +34,8 @@ HARNESS = JAVA_HARNESS_DIR / "NearBlocksCheck.java"
 
 @unittest.skipUnless(shutil.which("javac") and shutil.which("java"),
                      "needs a JDK to compile the mod's helper")
-class NearBlocksJavaTests(unittest.TestCase):
+class _Harness(unittest.TestCase):
+    """Compiles NearBlocks.java with its harness, once per class."""
 
     @classmethod
     def setUpClass(cls):
@@ -55,9 +56,14 @@ class NearBlocksJavaTests(unittest.TestCase):
             input="\n".join(lines) + "\n", capture_output=True, text=True,
             check=True).stdout.splitlines()
 
+
+class NearBlocksJavaTests(_Harness):
+
     def test_the_box(self):
-        out = self.ask("inbox 4 0 4", "inbox 5 0 0", "inbox 0 -1 0",
-                       "inbox 0 -2 0", "inbox 0 4 0", "inbox 0 5 0")
+        """Five below the feet and three above (the ore and digging round:
+        it was one below and four above -- not enough to dig down)."""
+        out = self.ask("inbox 4 0 4", "inbox 5 0 0", "inbox 0 -5 0",
+                       "inbox 0 -6 0", "inbox 0 3 0", "inbox 0 4 0")
         self.assertEqual(out, ["true", "false", "true", "false", "true",
                                "false"])
 
@@ -70,7 +76,7 @@ class NearBlocksJavaTests(unittest.TestCase):
         snapshot = json.loads(out[0])
         self.assertEqual(snapshot["origin"], [10, 64, -5])
         self.assertEqual((snapshot["radius"], snapshot["below"],
-                          snapshot["above"]), (4, 1, 4))
+                          snapshot["above"]), (4, 5, 3))
         self.assertIsNone(snapshot["complete_within"])
         self.assertEqual(snapshot["blocks"][0],
                          [10, 63, -5, "minecraft:grass_block", True])
@@ -99,6 +105,96 @@ class NearBlocksJavaTests(unittest.TestCase):
     def test_a_name_that_is_not_a_registry_name_is_not_sent(self):
         out = self.ask("origin 0 64 0", 'offer 1 64 0 bad"name true', "json")
         self.assertEqual(json.loads(out[0])["blocks"][0][3], None)
+
+
+def decode_grid(field):
+    """The grid's runs, expanded: one palette entry (or None for a cell
+    not reported) per cell, y then z then x from the box's low corner."""
+    grid = field["grid"]
+    self_runs = grid["runs"]
+    cells = []
+    for index, count in zip(self_runs[0::2], self_runs[1::2]):
+        cells.extend([None if index < 0 else grid["palette"][index]] * count)
+    return cells
+
+
+def grid_index(field, x, y, z):
+    ox, oy, oz = field["origin"]
+    side = 2 * field["radius"] + 1
+    return ((y - oy + field["below"]) * side + (z - oz + field["radius"])) \
+        * side + (x - ox + field["radius"])
+
+
+@unittest.skipUnless(shutil.which("javac") and shutil.which("java"),
+                     "needs a JDK to compile the mod's helper")
+class GridJavaTests(_Harness):
+    """The grid: every cell of the box, air included, with fluids named --
+    for digging, where a cell must never be guessed."""
+
+    def every_cell(self, special=None, skip=()):
+        special = special or {}
+        lines = ["origin 0 64 0"]
+        for y in range(59, 68):
+            for z in range(-4, 5):
+                for x in range(-4, 5):
+                    if (x, y, z) in skip:
+                        continue
+                    name, solid, fluid = special.get(
+                        (x, y, z),
+                        ("minecraft:stone", "true", "-") if y < 64
+                        else ("air", "false", "-"))
+                    lines.append(f"cell {x} {y} {z} {name} {solid} {fluid}")
+        return lines
+
+    def field(self, *lines):
+        return json.loads(self.ask(*lines, "json")[-1])
+
+    def test_every_cell_is_in_the_grid(self):
+        field = self.field(*self.every_cell())
+        cells = decode_grid(field)
+        self.assertEqual(len(cells), 9 * 9 * 9)
+        self.assertTrue(field["complete"])
+        self.assertEqual(cells[grid_index(field, 0, 63, 0)],
+                         ["minecraft:stone", True, None])
+        self.assertEqual(cells[grid_index(field, 2, 65, -3)],
+                         ["minecraft:air", False, None])
+
+    def test_fluids_are_named(self):
+        field = self.field(*self.every_cell({
+            (1, 60, 0): ("minecraft:lava", "false", "minecraft:lava"),
+            (2, 61, 0): ("minecraft:water", "false",
+                         "minecraft:flowing_water"),
+            (3, 62, 0): ("minecraft:oak_stairs", "true", "minecraft:water"),
+        }))
+        cells = decode_grid(field)
+        self.assertEqual(cells[grid_index(field, 1, 60, 0)][2],
+                         "minecraft:lava")
+        self.assertEqual(cells[grid_index(field, 2, 61, 0)][2],
+                         "minecraft:flowing_water")
+        self.assertEqual(cells[grid_index(field, 3, 62, 0)],
+                         ["minecraft:oak_stairs", True, "minecraft:water"],
+                         "a waterlogged block carries its water")
+
+    def test_a_cell_not_reported_is_unknown_and_the_grid_incomplete(self):
+        field = self.field(*self.every_cell(skip={(4, 59, 4)}))
+        self.assertFalse(field["complete"])
+        self.assertIsNone(decode_grid(field)[grid_index(field, 4, 59, 4)])
+
+    def test_the_grid_stays_small(self):
+        """Underground it is a few runs; the worst case, every cell
+        different from the one before, is still a few kilobytes."""
+        plain = self.ask(*self.every_cell(), "measure")[-1]
+        checker = {}
+        for y in range(59, 68):
+            for z in range(-4, 5):
+                for x in range(-4, 5):
+                    if (x + y + z) % 2:
+                        checker[(x, y, z)] = ("minecraft:dirt", "true", "-")
+                    else:
+                        checker[(x, y, z)] = ("minecraft:stone", "true", "-")
+        worst = self.ask(*self.every_cell(checker), "measure")[-1]
+        self.assertLess(int(plain), 1500, plain)
+        self.assertLess(int(worst), 12000, worst)
 
 
 class ReaderTests(unittest.TestCase):

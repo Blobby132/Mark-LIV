@@ -9,6 +9,9 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.material.Fluid;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
@@ -156,7 +159,16 @@ public class MarkLivBridge implements ClientModInitializer {
      * the ones Jarvis needs.
      */
     private static final String[] FEATURES = {
-            "gui", "near_blocks", "item_names", "tree_up", "mob_categories"};
+            "gui", "near_blocks", "item_names", "tree_up", "mob_categories",
+            "singleplayer", "ores", "near_grid"};
+
+    /**
+     * The ore finder (see OreScan). Runs only in a single-player world --
+     * on a server, finding ore inside rock is x-ray -- and starts again
+     * when the player changes world or dimension.
+     */
+    private OreScan oreScan = new OreScan();
+    private Object oreScanLevel = null;
 
     private Path target;
     private Path temp;
@@ -336,6 +348,22 @@ public class MarkLivBridge implements ClientModInitializer {
         out.raw("notable_blocks", terrain.notable);
         out.raw("near_blocks", terrain.near);
 
+        // The client runs its own integrated server: a single-player world
+        // (or one opened to LAN from it). Anything else is a server.
+        boolean single = client.hasSingleplayerServer();
+        out.raw("singleplayer", Boolean.toString(single));
+        String ores = null;
+        if (single) {
+            if (oreScanLevel != level) {
+                oreScan = new OreScan();
+                oreScanLevel = level;
+            }
+            oreScan.step(feet.getX(), feet.getY(), feet.getZ(),
+                         System.currentTimeMillis(), new LevelOres(level));
+            ores = oreScan.json();
+        }
+        out.raw("ores", ores == null ? "null" : ores);
+
         return out.close();
     }
 
@@ -346,6 +374,93 @@ public class MarkLivBridge implements ClientModInitializer {
             quoted[i] = Json.quote(FEATURES[i]);
         }
         return Json.array(quoted);
+    }
+
+    /** Registry names of fluids, by fluid type: water, flowing_water... */
+    private final IdentityHashMap<Fluid, String> fluidNames =
+            new IdentityHashMap<>();
+
+    private String fluidName(FluidState fluid) {
+        if (fluid.isEmpty()) {
+            return null;
+        }
+        return fluidNames.computeIfAbsent(fluid.getType(),
+                type -> BuiltInRegistries.FLUID.getKey(type).toString());
+    }
+
+    private boolean isOre(BlockState state) {
+        return !state.isAir() && "ore".equals(infoOf(state)[1]);
+    }
+
+    /**
+     * OreScan's view of the level: chunk sections for the scan (so a
+     * section's palette can rule it out, and its cells are read without
+     * looking the chunk up again for each), the level for the few
+     * neighbour checks. Read only, on the game's thread.
+     */
+    private final class LevelOres implements OreScan.World {
+        private final net.minecraft.world.level.Level level;
+        private final BlockPos.MutableBlockPos cursor =
+                new BlockPos.MutableBlockPos();
+        private long cachedKey = Long.MIN_VALUE;
+        private LevelChunkSection cached = null;
+
+        LevelOres(net.minecraft.world.level.Level level) {
+            this.level = level;
+        }
+
+        @Override
+        public boolean loaded(int chunkX, int chunkZ) {
+            return level.hasChunk(chunkX, chunkZ);
+        }
+
+        @Override
+        public boolean mayHaveOre(int chunkX, int sectionY, int chunkZ) {
+            LevelChunkSection section = section(chunkX, sectionY, chunkZ);
+            return section != null && !section.hasOnlyAir()
+                    && section.maybeHas(MarkLivBridge.this::isOre);
+        }
+
+        @Override
+        public String oreAt(int x, int y, int z) {
+            LevelChunkSection section = section(x >> 4, y >> 4, z >> 4);
+            if (section == null) {
+                return null;
+            }
+            BlockState state = section.getBlockState(x & 15, y & 15, z & 15);
+            return isOre(state) ? infoOf(state)[0] : null;
+        }
+
+        @Override
+        public boolean open(int x, int y, int z) {
+            BlockState state = level.getBlockState(cursor.set(x, y, z));
+            return state.isAir() || !state.getFluidState().isEmpty();
+        }
+
+        @Override
+        public boolean fluid(int x, int y, int z) {
+            return !level.getBlockState(cursor.set(x, y, z)).getFluidState()
+                    .isEmpty();
+        }
+
+        private LevelChunkSection section(int chunkX, int sectionY,
+                                          int chunkZ) {
+            long key = ((long) chunkX & 0x3FFFFFL) << 42
+                    | ((long) chunkZ & 0x3FFFFFL) << 20
+                    | ((long) sectionY & 0xFFFFFL);
+            if (key == cachedKey) {
+                return cached;
+            }
+            cachedKey = key;
+            int index = level.getSectionIndexFromSectionY(sectionY);
+            if (index < 0 || index >= level.getSectionsCount()
+                    || !level.hasChunk(chunkX, chunkZ)) {
+                cached = null;
+            } else {
+                cached = level.getChunk(chunkX, chunkZ).getSection(index);
+            }
+            return cached;
+        }
     }
 
     /** The three products of one pass over the scan volume. */
@@ -440,6 +555,7 @@ public class MarkLivBridge implements ClientModInitializer {
         int last = length - 1;              // index of dy = -SCAN_DOWN
         int feetIndex = top;                // index of dy = 0
         String[] names = new String[length];
+        String[] fluids = new String[length];
         String[] kinds = new String[length];
         boolean[] air = new boolean[length];
         boolean[] collides = new boolean[length];
@@ -454,6 +570,8 @@ public class MarkLivBridge implements ClientModInitializer {
                     cursor.set(x, originY + top - i, z);
                     BlockState state = level.getBlockState(cursor);
                     air[i] = state.isAir();
+                    fluids[i] = air[i] ? null
+                            : fluidName(state.getFluidState());
                     boolean noCollision = air[i] || state
                             .getCollisionShape(level, cursor).isEmpty();
                     collides[i] = !noCollision;
@@ -504,12 +622,23 @@ public class MarkLivBridge implements ClientModInitializer {
 
                 if (Math.abs(dx) <= NearBlocks.RADIUS
                         && Math.abs(dz) <= NearBlocks.RADIUS) {
+                    // An unloaded chunk reads as air; its cells are left
+                    // unknown in the grid rather than reported as air.
+                    boolean loaded = level.hasChunk(x >> 4, z >> 4);
                     for (int dy = -NearBlocks.BELOW; dy <= NearBlocks.ABOVE;
                             dy++) {
                         int i = top - dy;
-                        if (i >= 0 && i < length && !air[i]) {
+                        if (i < 0 || i >= length) {
+                            continue;
+                        }
+                        if (!air[i]) {
                             near.offer(x, originY + dy, z, names[i],
                                        collides[i]);
+                        }
+                        if (loaded) {
+                            near.cell(x, originY + dy, z,
+                                      air[i] ? null : names[i], collides[i],
+                                      fluids[i]);
                         }
                     }
                 }

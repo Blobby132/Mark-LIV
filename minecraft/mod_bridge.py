@@ -85,6 +85,9 @@ FEATURES = {
     "tree_up": "seeing the top of a tree",
     "item_names": "knowing what a dropped item is",
     "mob_categories": "telling hostile mobs from the rest",
+    "singleplayer": "telling a single-player world from a server",
+    "ores": "finding ore",
+    "near_grid": "digging (every block around and below you)",
 }
 """What this Jarvis needs from the mod, by the name the mod lists it under
 in its "features" field, and what goes without it -- in words, for saying so.

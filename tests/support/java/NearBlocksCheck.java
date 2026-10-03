@@ -6,8 +6,10 @@ import java.io.InputStreamReader;
 /**
  * Drives {@link NearBlocks} for tests/bridge/test_bridge_near_blocks.py. One
  * command per line: {@code inbox dx dy dz}, {@code origin x y z} (starts a
- * new snapshot), {@code offer x y z name solid}, {@code json} (prints the
- * field) and {@code measure} (prints its length in bytes).
+ * new snapshot), {@code offer x y z name solid}, {@code cell x y z name
+ * solid fluid} (one grid cell; {@code air} for no block, {@code -} for no
+ * fluid), {@code json} (prints the field) and {@code measure} (prints its
+ * length in bytes).
  */
 final class NearBlocksCheck {
 
@@ -28,6 +30,11 @@ final class NearBlocksCheck {
                 case "offer" -> near.offer(Integer.parseInt(p[1]),
                         Integer.parseInt(p[2]), Integer.parseInt(p[3]), p[4],
                         Boolean.parseBoolean(p[5]));
+                case "cell" -> near.cell(Integer.parseInt(p[1]),
+                        Integer.parseInt(p[2]), Integer.parseInt(p[3]),
+                        p[4].equals("air") ? null : p[4],
+                        Boolean.parseBoolean(p[5]),
+                        p[6].equals("-") ? null : p[6]);
                 case "json" -> System.out.println(near.json());
                 case "measure" -> System.out.println(
                         near.json().getBytes("UTF-8").length);

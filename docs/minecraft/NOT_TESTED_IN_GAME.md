@@ -31,6 +31,9 @@ round, **R-O** the ore-finding and digging round.
 | The nearest notable blocks of each kind, not the first 64 found | `Nearest.java` | `tests/bridge/test_bridge_nearest.py` (`NearestCheck.java`) | committed after the last run (0060ef0) |
 | The one list of logs and hazards (crimson and warped stems, dripstone, portals, sculk, tripwire) | `Kinds.java`, `minecraft/navigation.py` | `tests/minecraft/test_minecraft_block_names.py` | R-A (C10) |
 | The terrain scan's cost (collision computed once per block, names cached) — never timed | `ColumnScan.java` | `tests/bridge/test_bridge_scan_cost.py` | R-A (C11) |
+| `ores`: the nearest ore within 24 sideways, 32 down, 16 up, buried ones included; `exposed` and `fluid_near`; 16 of a kind, 64 in all, 16 KB; sections whose palette has no ore skipped; at most one pass a second, spread over the 5 Hz snapshots. Cost measured only in the harness (0.3 ms a step on average with array reads standing in for the game's) | `OreScan.java`, `MarkLivBridge.java` (`LevelOres`) | `tests/bridge/test_bridge_ore_scan.py` (`OreScanCheck.java`) | R-O |
+| `singleplayer` (`Minecraft.hasSingleplayerServer`); the ore scan does not run when it is false | `MarkLivBridge.java` | nothing: needs a real game | R-O |
+| `near_blocks` from five below the feet to three above, with a `grid` of every cell (palette and runs), fluids named, `complete` when no cell is in an unloaded chunk | `NearBlocks.java`, `MarkLivBridge.java` | `tests/bridge/test_bridge_near_blocks.py` | R-O |
 | `features`: the list of what the jar reports, sent in a menu too; a jar without it, or missing a name Jarvis needs, counted as outdated | `MarkLivBridge.java` (`FEATURES`), `minecraft/mod_bridge.py` | `tests/bridge/test_bridge_features.py` | R-F |
 
 ## Screens and crafting

@@ -6,8 +6,8 @@ ends. Each phase is one or more commits on `claude/trusting-curie-tjgwfd`.
 | Phase | What | State |
 |---|---|---|
 | 0 | Screen open/close judged on a reading newer than the key | done |
-| 1a | Mod: `singleplayer`, `ores`, deeper `near_blocks` with fluids | next |
-| 1b | Python: `state.ores`, `state.singleplayer`, `find_ores` (read-only) | |
+| 1a | Mod: `singleplayer`, `ores`, deeper `near_blocks` with fluids | done |
+| 1b | Python: `state.ores`, `state.singleplayer`, `find_ores` (read-only) | next |
 | 2 | `minecraft/digging.py`: the planner and its eight hard rules | |
 | 3 | `dig_to` skill | |
 | 4 | `mine_ore` and the tool text | |
