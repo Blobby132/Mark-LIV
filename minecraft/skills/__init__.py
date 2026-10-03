@@ -21,9 +21,10 @@ WHERE THINGS ARE
         craft        craft_item
         place_build  place_block, place_block_at, build_line, build_blueprint
         combat       flee, fight
+        dig          dig_to
 
     Each imports only from the ones above it in that list (craft also from
-    place_build), so there is no import cycle. docs/ARCHITECTURE.md maps
+    place_build, dig only from collect), so there is no import cycle. docs/ARCHITECTURE.md maps
     them and the safety layers around them.
 
 SCOPE, ON PURPOSE
@@ -75,6 +76,7 @@ from minecraft.skills.place_build import (
 )
 from minecraft.skills.craft import CraftItem
 from minecraft.skills.combat import Fight, Flee
+from minecraft.skills.dig import DigTo
 
 
 # ── Registry ─────────────────────────────────────────────────────────────────
@@ -99,6 +101,7 @@ BUILTIN_SKILLS = {
     "navigate_to": NavigateTo,
     "aim_at_block": AimAtBlock,
     "mine_block": _mine_block,
+    "dig_to": DigTo,
 }
 
 
@@ -124,11 +127,11 @@ def available() -> tuple:
 # Named here rather than in prose so the tool description, the status report
 # and the manual check all quote the same list.
 NOT_YET_POSSIBLE = {
-    "find_iron": "the scan now reports ores it can see, so iron already "
-                 "exposed in a cave wall within the scan radius is findable. "
-                 "What is missing is getting to iron that is NOT exposed, "
-                 "which means digging a shaft, lighting it, and not falling "
-                 "into lava — none of which is built.",
+    "find_iron": "find_ores lists buried ore (single-player only) and "
+                 "dig_to digs a staircase to a cell under hard rules, but "
+                 "choosing the ore, digging to it and taking the whole vein "
+                 "in one request is not built yet; and a long tunnel is "
+                 "not lit.",
     "attack_players_or_animals": "attack only ever hits a mob the game "
                                  "calls hostile: never a player, a pet, a "
                                  "villager or an animal. That is deliberate, "
@@ -152,10 +155,11 @@ NOT_YET_POSSIBLE = {
                             "planning to the edge of what is visible, "
                             "re-scanning, and planning again — that loop is "
                             "not built.",
-    "dig_or_bridge_a_route": "the pathfinder only walks. It will not mine "
-                             "through an obstacle or place blocks over a "
-                             "gap, so a destination that needs either comes "
-                             "back as unreachable rather than as a plan.",
+    "bridge_a_route": "the pathfinder only walks. It never places blocks "
+                      "over a gap, and it never digs on its own: navigate_to "
+                      "does not mine through an obstacle. Digging happens "
+                      "only when asked (dig_to), in a single-player world, "
+                      "as a staircase under hard rules.",
 }
 
 NOW_POSSIBLE_WITH_THE_BRIDGE = (
@@ -179,7 +183,7 @@ __all__ = [
     "Skill", "WalkForward", "Survey", "FindBlock", "BreakBlock",
     "PlaceBlock", "PlaceBlockAt", "BuildLine", "BuildBlueprint",
     "CollectLogs", "CollectBlocks", "AimAtBlock", "NavigateTo", "EatFood",
-    "CraftItem", "Flee", "Fight",
+    "CraftItem", "Flee", "Fight", "DigTo",
     # Constants used outside the package.
     "MIN_USEFUL_MINE_S", "LOG_BLOCKS", "FOODS", "NOT_YET_POSSIBLE",
     "NOW_POSSIBLE_WITH_THE_BRIDGE",

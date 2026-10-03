@@ -142,14 +142,17 @@ anything other than the zombie was hit.
 
 ## i. Ore (single-player only)
 
-This part only reads until the digging steps are added. Stand on open
-ground over stone, in the single-player test world.
+In the single-player test world. i1-i3 only read; i4 digs a short tunnel
+into a hill. F12 stops it at any moment.
 
 | # | Check | Pass | Fail |
 |---|---|---|---|
 | i1 | "Find iron ore." It lists iron ore nearest first, each with coordinates, how far, how many blocks below your feet, exposed or buried, and whether water or lava is near. Nothing is pressed and no session is needed. | ☐ | ☐ |
 | i2 | Pick one it called **exposed** within sight, perhaps in a cave wall or on a cliff. Walk to it and look at it with F3 open: `Targeted Block` is that ore at those coordinates. | ☐ | ☐ |
 | i3 | "Find diamond ore" (or any ore it did not list in i1): it says the scan lists none within the radius. It does not make one up. | ☐ | ☐ |
+| i4 | Face a hill of plain stone or dirt with a stone pickaxe in the hotbar and F3 open. Note your feet's `XYZ`; ask it to dig a level tunnel five blocks into the hill ("dig to x+5, same y, z" -- say the numbers). Before it starts it says where and how deep. It digs two blocks high, one block at a time, picks up what drops, and ends five blocks in, with F3's `XYZ` matching. | ☐ | ☐ |
+| i5 | During i4: it never broke the block you stood on, never dug straight down, and the slot it selected went back afterwards. | ☐ | ☐ |
 
-**If it fails, write down:** the step, Jarvis's exact words, and for i2 the
-coordinates it gave and what F3 showed there.
+**If it fails, write down:** the step, Jarvis's exact words, the task result
+text with all its step lines, and for i2 and i4 the coordinates it gave and
+what F3 showed there.

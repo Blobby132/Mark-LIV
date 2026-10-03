@@ -658,7 +658,7 @@ class TestSkills(unittest.TestCase):
 
     def test_the_things_it_cannot_do_are_named_rather_than_attempted(self):
         for name in ("pillar_up_or_bridge", "return_to_base",
-                     "long_distance_travel", "dig_or_bridge_a_route"):
+                     "long_distance_travel", "bridge_a_route"):
             with self.subTest(skill=name):
                 self.assertIn(name, skills.NOT_YET_POSSIBLE)
                 self.assertNotIn(name, skills.available())

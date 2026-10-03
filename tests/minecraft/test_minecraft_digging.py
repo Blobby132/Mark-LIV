@@ -338,6 +338,24 @@ class R8AbortTests(unittest.TestCase):
             self.assertEqual(digging.abort_reason(
                 reading(), reading(cells=cells), done), "")
 
+    def test_something_fell_into_a_cell_just_swung_at(self):
+        """The swing broke the stone, gravel fell into the gap, and the
+        reading after shows gravel where stone was: a cave-in, even though
+        the cell was never seen as air."""
+        cells = put(rock(), (1, 60, 0), block("gravel"))
+        done = progress()
+        done.swung[(1, 60, 0)] = "stone"
+        why = digging.abort_reason(reading(), reading(cells=cells), done)
+        self.assertIn("fell into", why)
+
+    def test_a_swing_seen_to_clear_is_counted_once(self):
+        cells = hollow(rock(), (1, 60, 0))
+        done = progress()
+        done.swung[(1, 60, 0)] = "stone"
+        self.assertEqual(done.settle(cells), 1)
+        self.assertEqual(done.settle(cells), 0)
+        self.assertEqual((done.broken, done.cleared), (1, {(1, 60, 0)}))
+
     def test_a_fall(self):
         why = digging.abort_reason(reading(), reading(position=(1.5, 57.0,
                                                                 0.5)),

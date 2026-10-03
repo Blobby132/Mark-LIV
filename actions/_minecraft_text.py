@@ -69,7 +69,7 @@ TOOL_DESCRIPTION = (
     "break_block, place_block, collect_logs, fell_tree, collect_blocks, "
     "craft_item, place_block_at, build_line, build_blueprint, "
     "navigate_to, flee, fight, eat_food, aim_at_block, "
-    "mine_block. The mining tasks (break_block, collect_logs, fell_tree, "
+    "mine_block, dig_to. The mining tasks (break_block, collect_logs, fell_tree, "
     "collect_blocks, mine_block) take up the best tool in the HOTBAR first and put the "
     "slot back afterwards. When the tool that harvests the block -- or "
     "one much faster -- is only in the main inventory, they first move "
@@ -202,7 +202,18 @@ TOOL_DESCRIPTION = (
     "and puts the held slot back afterwards. With no food on the hotbar "
     "it moves food from the main inventory into the hotbar first, the "
     "same way; if it says it could not (an old mod, creative mode, a "
-    "mob close by), relay why and ask the user to move it.\n"
+    "mob close by), relay why and ask the user to move it. "
+    "dig_to digs a staircase until the feet are at x, y, z -- ONLY when "
+    "the user asks to dig, and only in a single-player world. At most one "
+    "block down (or up) per block across, never straight down, never the "
+    "block underfoot; only natural stone, earth and ore; it stops before "
+    "breaking anything beside water or lava, within 3 of lava, or under "
+    "sand or gravel; at most 40 blocks, 16 below and 32 away from where "
+    "it began; and it stops at once if the user is hurt, fluid comes "
+    "near, a block falls in, or the player falls. If it opens into a "
+    "cave it stops there and says so. Before calling it, tell the user "
+    "where it will dig and how deep. A task digs a few stairs; if the "
+    "report says to ask again, call dig_to with the same x, y, z.\n"
     "AT DUSK OR NIGHT: when look_around says it is getting dark or "
     "night, or a task result notes it with a hostile mob about, tell "
     "the user before anything else and offer to build a shelter "
@@ -297,13 +308,14 @@ TOOL_PARAMETERS = {
                             "craft_item | place_block_at | build_line | "
                             "build_blueprint | navigate_to | flee | "
                             "fight | eat_food | aim_at_block | "
-                            "mine_block."),
+                            "mine_block | dig_to."),
         },
         "x": {
             "type": "INTEGER",
             "description": ("For run_task navigate_to, aim_at_block, "
-                            "mine_block, place_block_at and build_line "
-                            "(the first cell): the block's "
+                            "mine_block, place_block_at, build_line "
+                            "(the first cell) and dig_to (the cell to "
+                            "stand in at the end): the block's "
                             "x. Use a coordinate look_around or "
                             "read_state actually reported, or one "
                             "worked out from it; do not invent one."),
@@ -311,14 +323,14 @@ TOOL_PARAMETERS = {
         "y": {
             "type": "INTEGER",
             "description": ("For run_task aim_at_block, mine_block, "
-                            "place_block_at and build_line: the "
+                            "place_block_at, build_line and dig_to: the "
                             "block's y."),
         },
         "z": {
             "type": "INTEGER",
             "description": ("For run_task navigate_to, aim_at_block, "
-                            "mine_block, place_block_at and build_line: "
-                            "the block's z. Needs x as well."),
+                            "mine_block, place_block_at, build_line and "
+                            "dig_to: the block's z. Needs x as well."),
         },
         "target": {
             "type": "STRING",

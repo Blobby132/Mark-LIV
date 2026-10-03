@@ -105,7 +105,9 @@ GRANT_SUMMARY = (
     "when you name it), select hotbar slots, open the "
     "inventory and move items inside the inventory and crafting-table "
     "screens (one click at a time, each only when the game reports the "
-    "pointer over the slot meant), and interact with blocks and entities"
+    "pointer over the slot meant), interact with blocks and entities, "
+    "and -- when you ask, in a single-player world only -- dig a staircase "
+    "tunnel through natural stone, earth and ore under hard safety rules"
 )
 """What the confirmation banner says the grant covers, in the user's words.
 

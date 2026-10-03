@@ -551,6 +551,59 @@ def arrived_at(goal, within: float = 1.5) -> Expectation:
                        fields=("position",), predicate=predicate)
 
 
+_AIR_NAMES = frozenset({"air", "cave_air", "void_air"})
+
+
+def _cell(position):
+    try:
+        return (int(position[0]), int(position[1]), int(position[2]))
+    except (TypeError, IndexError, ValueError):
+        return None
+
+
+def cell_cleared(position, name: str | None = None) -> Expectation:
+    """The near_blocks grid shows the cell as air after the swing.
+
+    The grid lists every cell around the player, air included, so this is
+    the block itself -- not the crosshair, which moves with the mouse, and
+    not the terrain lists, which do not hold a block inside the rock."""
+    where = _cell(position)
+    what = " ".join(str(name or "the block").split("_"))
+
+    def predicate(before, after):
+        cells = getattr(after.near, "cells", None)
+        if cells is None:
+            return None, ("the bridge sends no near_blocks grid, so I cannot "
+                          "see that cell.")
+        entry = cells.get(where)
+        if entry is None:
+            return None, f"{where} is outside what the bridge reports now."
+        if entry[0] in _AIR_NAMES and entry[2] is None:
+            return True, f"{where} is air now."
+        return False, f"{where} is still {' '.join(entry[0].split('_'))}."
+
+    return Expectation(name="cell_cleared", goal=f"clear {what} at {where}",
+                       fields=("near",), predicate=predicate)
+
+
+def in_cell(position) -> Expectation:
+    """Standing in this block: the feet's block coordinate is the cell."""
+    where = _cell(position)
+
+    def predicate(before, after):
+        try:
+            feet = (math.floor(after.position[0]), math.floor(after.position[1]),
+                    math.floor(after.position[2]))
+        except Exception:
+            return False, "the position was not a usable (x, y, z)."
+        if feet == where:
+            return True, f"standing in {where}."
+        return False, f"standing in {feet}, not {where}."
+
+    return Expectation(name="in_cell", goal=f"step into {where}",
+                       fields=("position",), predicate=predicate)
+
+
 def block_gone(position, name: str | None = None) -> Expectation:
     """A block that the scan reported at a coordinate is no longer there.
 

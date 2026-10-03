@@ -451,6 +451,12 @@ def _mc_guard(params: dict) -> dict:
             f"I never right-click with a bucket, flint and steel, TNT or a "
             f"spawn egg to open something, and I pour lava or water or "
             f"start a fire only when you name the item. "
+            f"When you ask me to dig, and only in a single-player world, "
+            f"I dig a staircase through natural stone, earth and ore: never "
+            f"the block under you, never beside water or lava or within "
+            f"three blocks of lava, never under sand or gravel, and at most "
+            f"40 blocks, 16 down and 32 across a dig, stopping at once if "
+            f"you are hurt or anything moves that should not. "
             f"Inside screens I only ever click in "
             f"your inventory and a crafting table -- never a chest, a "
             f"furnace or the creative inventory -- and only when the game "
@@ -515,6 +521,7 @@ _TASK_NEEDS = {
     "collect_logs": ("tree_up", "item_names"),
     "fell_tree": ("tree_up", "item_names"),
     "collect_blocks": ("item_names",),
+    "dig_to": ("singleplayer", "near_grid"),
 }
 """The mod's features each task depends on (mod_bridge.FEATURES), besides
 mob_categories, which every task needs: the danger watch between steps sees
@@ -859,7 +866,7 @@ def _run_task(controller, params: dict, player=None, speak=None) -> str:
         if key in params:
             options[key] = params[key]
     if name in ("aim_at_block", "mine_block", "place_block_at",
-                "build_line"):
+                "build_line", "dig_to"):
         block = _block_from(params)
         if isinstance(block, str):
             return block

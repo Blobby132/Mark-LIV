@@ -156,6 +156,23 @@ class Progress:
     broken: int = 0
     cleared: set = field(default_factory=set)
     last_direction: str | None = None
+    # Cells swung at and not yet seen to go: cell -> the block that was
+    # there. A later reading settles each one -- air: cleared and counted;
+    # a different block: something fell in (R8).
+    swung: dict = field(default_factory=dict)
+
+    def settle(self, cells) -> int:
+        """Move swung cells the reading shows as air into `cleared`, and
+        count them. Returns how many."""
+        settled = 0
+        for cell in list(self.swung):
+            if is_air(cells.get(cell)):
+                del self.swung[cell]
+                if cell not in self.cleared:
+                    self.cleared.add(cell)
+                    self.broken += 1
+                    settled += 1
+        return settled
 
 
 def feet_of(position) -> tuple:
@@ -447,11 +464,19 @@ def _r8_fluid(cells, feet):
 
 
 def _r8_cave_in(cells, progress):
+    """A block where this dig made air -- or a different block in a cell
+    swung at than the one that was there: it fell in."""
     for cell in sorted(progress.cleared):
         entry = cells.get(cell)
         if entry is not None and not is_air(entry):
             return (f"{' '.join(entry[0].split('_'))} appeared at "
                     f"{_words(cell)}, a cell I had cleared -- a cave-in")
+    for cell, was in sorted(progress.swung.items()):
+        entry = cells.get(cell)
+        if entry is not None and not is_air(entry) and entry[0] != was:
+            return (f"{' '.join(entry[0].split('_'))} fell into "
+                    f"{_words(cell)}, where I had just broken the "
+                    f"{' '.join(str(was).split('_'))} -- a cave-in")
     return ""
 
 

@@ -103,7 +103,7 @@ its own; a layer is the longest chain of imports beneath it:
 | 3 | `task_runner` |
 | 4 | `skills.hotbar` `skills.navigate` |
 | 5 | `skills.collect` `skills.combat` `skills.eat` `skills.place_build` |
-| 6 | `skills.collect_blocks` `skills.collect_logs` `skills.craft` |
+| 6 | `skills.collect_blocks` `skills.collect_logs` `skills.craft` `skills.dig` |
 | 7 | `skills.aim` |
 | 8 | `skills` (the registry) |
 
@@ -131,10 +131,11 @@ its imports put it in.
 | `craft.py` | `craft_item` | |
 | `place_build.py` | `place_block`, `place_block_at`, `build_line`, `build_blueprint` | The blueprint memory that lets "carry on" resume. |
 | `combat.py` | `flee`, `fight` | `NEVER_MELEE`, the start-health floor, the weapon choice. |
+| `dig.py` | `dig_to` | A staircase from `digging.py`'s plans: every rule re-checked before every swing, R8 between every step, the dig's progress kept so asking again carries on. Imports from `collect` (the tool before each swing). |
 | `__init__.py` | — | The registry (`BUILTIN_SKILLS`, `create`, `available`), `NOT_YET_POSSIBLE`, and the public names in `__all__`. Anything else is imported from its submodule. |
 
 Each module imports only from those above it in the table (craft also from
-place_build), so there is no import cycle. The registry is a fixed table in
+place_build; dig only from collect), so there is no import cycle. The registry is a fixed table in
 source: nothing can add a skill at runtime.
 
 A skill is `plan(state, step_index, history) -> Step | None`. It describes
