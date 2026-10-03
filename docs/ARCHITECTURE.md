@@ -353,7 +353,11 @@ imports.
 **A new mod field.** In the mod's source, an additive optional field
 under schema `/4` (`markliv.minecraft.state/4`) -- never a new version,
 since the reader rejects versions it does not know, and never anything
-that writes to the game. Read it in `minecraft/mod_bridge.py` into
+that writes to the game. Add its name to `FEATURES` in
+`MarkLivBridge.java`, and, if Jarvis needs it, to `FEATURES` in
+`minecraft/mod_bridge.py` with what goes without it: that list, not the
+schema, is how an older `/4` jar is recognised and named. Read it in
+`minecraft/mod_bridge.py` into
 `WorldState` (`minecraft/state.py`) with its provenance. Rebuild
 `mods/markliv-bridge-1.0.0.jar`; `test_bridge_jar_is_current.py` keeps
 the jar and the source in step. Tests in `tests/bridge/`, with the Java

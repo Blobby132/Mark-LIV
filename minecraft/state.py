@@ -291,6 +291,12 @@ class WorldState:
     # Every block in a small box around the player (B4d), from the bridge.
     near: NearSnapshot | None = None
 
+    # What the bridge mod says it reports ("gui", "tree_up", ...), from its
+    # own "features" list. () is a mod from before the list; None is a source
+    # that keeps no such list (the F3 reader, a simulated world). Not a game
+    # observation, so not in _FIELDS: it says what the fields can hold.
+    features: tuple | None = None
+
     # Provenance — never None, because "where did this come from" always has
     # an answer even when every value is missing.
     source: str = "none"
@@ -357,6 +363,12 @@ class WorldState:
     def unknown_fields(self) -> tuple:
         return tuple(name for name in self._FIELDS
                      if getattr(self, name) is None)
+
+    def lacks(self, feature: str) -> bool:
+        """True when the bridge mod is known not to report `feature`: so a
+        None in its fields means "this jar cannot say", not "there is none".
+        False for a source that keeps no feature list."""
+        return self.features is not None and feature not in self.features
 
     @property
     def is_empty(self) -> bool:

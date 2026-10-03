@@ -146,6 +146,18 @@ public class MarkLivBridge implements ClientModInitializer {
 
     private static final String SCHEMA = "markliv.minecraft.state/4";
 
+    /**
+     * What this build reports, by name, sent as "features" so the reader can
+     * tell an older jar from this one. The schema number cannot: the screen
+     * fields (gui), near_blocks, the names of dropped items, the taller tree
+     * scan and the mob categories were all added under /4, so an older /4 jar
+     * looked current and crafting failed without a word about why. Add a name
+     * here whenever a field is added; minecraft/mod_bridge.py FEATURES lists
+     * the ones Jarvis needs.
+     */
+    private static final String[] FEATURES = {
+            "gui", "near_blocks", "item_names", "tree_up", "mob_categories"};
+
     private Path target;
     private Path temp;
     private boolean warned = false;
@@ -253,6 +265,7 @@ public class MarkLivBridge implements ClientModInitializer {
     private String snapshot(Minecraft client) {
         Json out = new Json();
         out.raw("schema", Json.quote(SCHEMA));
+        out.raw("features", featuresJson());
         out.raw("written_at_ms", Long.toString(System.currentTimeMillis()));
 
         var player = client.player;
@@ -324,6 +337,15 @@ public class MarkLivBridge implements ClientModInitializer {
         out.raw("near_blocks", terrain.near);
 
         return out.close();
+    }
+
+    /** FEATURES as a JSON array of strings. Sent in a menu too. */
+    private static String featuresJson() {
+        String[] quoted = new String[FEATURES.length];
+        for (int i = 0; i < FEATURES.length; i++) {
+            quoted[i] = Json.quote(FEATURES[i]);
+        }
+        return Json.array(quoted);
     }
 
     /** The three products of one pass over the scan volume. */

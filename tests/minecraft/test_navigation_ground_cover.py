@@ -381,9 +381,9 @@ class OutdatedJarTests(unittest.TestCase):
     wonder why a tree has "no walkable route"."""
 
     @staticmethod
-    def source(schema):
+    def source(schema, features=()):
         text = json.dumps({"schema": schema, "written_at_ms": NOW_MS,
-                           "in_game": True})
+                           "in_game": True, "features": list(features)})
         return ModBridgeStateSource(path="(test)", reader=lambda: text,
                                     clock=lambda: NOW_MS / 1000.0)
 
@@ -396,8 +396,10 @@ class OutdatedJarTests(unittest.TestCase):
         self.assertIn("install_mod.bat", label)
 
     def test_the_current_jar_is_not(self):
+        """The current jar also lists its features (test_bridge_features)."""
         from actions import minecraft as mc_actions
-        source = self.source(NEW)
+        from minecraft.mod_bridge import REQUIRED_FEATURES
+        source = self.source(NEW, REQUIRED_FEATURES)
         self.assertFalse(source.outdated())
         self.assertNotIn("OLDER", mc_actions._source_label(source))
 

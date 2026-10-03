@@ -78,6 +78,23 @@ rather than to "no bridge at all". Reading it is safe precisely because the
 missing fields become None, which the provenance rule marks unknown -- the
 reader never has to guess what an older mod meant."""
 
+FEATURES = {
+    "gui": "crafting and screens",
+    "near_blocks": "building checks",
+    "tree_up": "seeing the top of a tree",
+    "item_names": "knowing what a dropped item is",
+    "mob_categories": "telling hostile mobs from the rest",
+}
+"""What this Jarvis needs from the mod, by the name the mod lists it under
+in its "features" field, and what goes without it -- in words, for saying so.
+
+The schema number could not carry this: these were all added under /4, so a
+/4 jar from before them looked current, and craft_item failed with "I cannot
+see the game's screens" with nothing pointing at the jar. Must be a subset of
+FEATURES in MarkLivBridge.java (tests/bridge/test_bridge_features.py)."""
+
+REQUIRED_FEATURES = tuple(FEATURES)
+
 MAX_AGE_SECONDS = 3.0
 """How old a reading may be before it is treated as no reading at all.
 
@@ -225,10 +242,31 @@ class ModBridgeStateSource:
         payload = self._payload()
         return None if payload is None else payload.get("schema")
 
+    def features(self):
+        """What the running mod says it reports, or None if it cannot be
+        read. An empty set is a jar from before the list: it reports none of
+        the features named in FEATURES, whatever its schema says."""
+        payload = self._payload()
+        return None if payload is None else _feature_set(
+            payload.get("features"))
+
+    def missing_features(self) -> tuple:
+        """The REQUIRED_FEATURES the running mod does not report, in order.
+        Empty when it reports them all -- or when nothing can be read, which
+        is "not running" and is said in its own words elsewhere."""
+        have = self.features()
+        if have is None:
+            return ()
+        return tuple(name for name in REQUIRED_FEATURES if name not in have)
+
     def outdated(self) -> bool:
-        """Is a jar older than this code expects loaded?"""
+        """Is a jar older than this code expects loaded? Yes when its schema
+        is older, and also when it does not list every feature this code
+        needs -- a jar from before the list lists none."""
         found = self.schema()
-        return found is not None and found != SCHEMA
+        if found is None:
+            return False
+        return found != SCHEMA or bool(self.missing_features())
 
     def read(self) -> WorldState:
         """One reading. Never raises: every failure becomes an empty state
@@ -349,6 +387,7 @@ class ModBridgeStateSource:
             carried=_carried(payload.get("carried")),
             game_mode=_text(payload.get("game_mode")),
             near=_near(payload.get("near_blocks")),
+            features=tuple(sorted(_feature_set(payload.get("features")))),
             on_ground=(payload["on_ground"]
                        if isinstance(payload.get("on_ground"), bool) else None),
             scan_radius=_integer((payload.get("scan") or {}).get("radius")
@@ -585,6 +624,16 @@ def _floor_under(block):
     return NearbyBlock(x=block.x, y=block.y - depth, z=block.z,
                        name="ground", solid=None, clearance=clearance,
                        cover=block.name)
+
+
+def _feature_set(value) -> frozenset:
+    """The mod's "features" list as a set of names. Anything that is not a
+    list of strings counts as no list: a jar that cannot say what it reports
+    is treated as reporting none of it."""
+    if not isinstance(value, list) \
+            or not all(isinstance(v, str) for v in value):
+        return frozenset()
+    return frozenset(value)
 
 
 def _surface(value, schema):

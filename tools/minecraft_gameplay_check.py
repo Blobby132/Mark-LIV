@@ -53,7 +53,7 @@ from minecraft import perception                              # noqa: E402
 from minecraft import skills                                  # noqa: E402
 from minecraft import verification as verify                  # noqa: E402
 from minecraft.controller import MinecraftController          # noqa: E402
-from minecraft.mod_bridge import ModBridgeStateSource         # noqa: E402
+from minecraft.mod_bridge import SCHEMA, ModBridgeStateSource  # noqa: E402
 from minecraft.observation import Observer                    # noqa: E402
 from minecraft.task_runner import TaskRunner                  # noqa: E402
 
@@ -171,11 +171,16 @@ def section_a(rig: Rig) -> bool:
     print(f"  Head clearance:         {'reported' if has_clearance else 'MISSING'}")
     print(f"  Mouse sensitivity:      {state.mouse_sensitivity}")
     print(f"  On the ground:          {state.on_ground}")
-    sees_floors = not rig.bridge.outdated()
+    # The floor came with schema /4; everything added under /4 since is
+    # in the mod's feature list.
+    sees_floors = rig.bridge.schema() == SCHEMA
     print(f"  Ground under trees:     "
           f"{'seen' if sees_floors else 'NOT SEEN (older jar)'}")
+    missing = rig.bridge.missing_features()
+    if missing:
+        print(f"  Missing features:       {', '.join(missing)} (older jar)")
     ok = local.usable and has_clearance and state.mouse_sensitivity is not None \
-        and sees_floors
+        and sees_floors and not missing
     record("bridge is the current version", PASS if ok else FAIL,
            "" if ok else "an older jar is loaded — install_mod.bat, then "
                          "restart Minecraft")

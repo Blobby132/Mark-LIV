@@ -234,7 +234,7 @@ def main() -> int:
     print(f"\n{RULE}\n  IS THE MOD UP TO DATE?\n{RULE}")
     has_clearance = any(b.clearance is not None for b in (state.surface or ()))
     has_sensitivity = state.mouse_sensitivity is not None
-    sees_floors = not source.outdated()
+    sees_floors = source.schema() == SCHEMA       # the floor came with /4
     print(f"  Head clearance reported:   {'yes' if has_clearance else 'NO'}")
     print(f"  Ground under trees:        {'yes' if sees_floors else 'NO'}")
     print(f"  Mouse sensitivity:         "

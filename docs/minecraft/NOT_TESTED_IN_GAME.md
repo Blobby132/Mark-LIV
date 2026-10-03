@@ -15,7 +15,8 @@ game, and so is every jar built since: **the current
 
 The "From" column is the report that listed it as unverified (or the commit, where it came after the last run without a report saying so): **R-A** the
 A/N/C round, **R-D** the danger-stop round, **R-B** the B round (screens,
-building, survival), **R-1** the items 1–7 round.
+building, survival), **R-1** the items 1–7 round, **R-F** the feature-list
+round.
 
 ## The bridge mod (Java)
 
@@ -30,6 +31,7 @@ building, survival), **R-1** the items 1–7 round.
 | The nearest notable blocks of each kind, not the first 64 found | `Nearest.java` | `tests/bridge/test_bridge_nearest.py` (`NearestCheck.java`) | committed after the last run (0060ef0) |
 | The one list of logs and hazards (crimson and warped stems, dripstone, portals, sculk, tripwire) | `Kinds.java`, `minecraft/navigation.py` | `tests/minecraft/test_minecraft_block_names.py` | R-A (C10) |
 | The terrain scan's cost (collision computed once per block, names cached) — never timed | `ColumnScan.java` | `tests/bridge/test_bridge_scan_cost.py` | R-A (C11) |
+| `features`: the list of what the jar reports, sent in a menu too; a jar without it, or missing a name Jarvis needs, counted as outdated | `MarkLivBridge.java` (`FEATURES`), `minecraft/mod_bridge.py` | `tests/bridge/test_bridge_features.py` | R-F |
 
 ## Screens and crafting
 
