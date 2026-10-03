@@ -161,7 +161,8 @@ class DigTo(_HoldsTheRightTool):
     _broke_now: int = 0
     _reason: str = ""
     _arrived: bool = False
-    _opening: dict | None = None
+    _resuming: dict | None = None   # the opening the last ask stopped at
+    _through: tuple | None = None   # an opening this ask went on through
     _started: bool = False
 
     # ── what it says ─────────────────────────────────────────────────────
@@ -191,13 +192,24 @@ class DigTo(_HoldsTheRightTool):
                            f"{digging.steps_left(feet, self._goal)} stair(s) "
                            f"from {_words(self._goal)}")
             counts += "."
+        through = self._through_words()
         if self._arrived:
-            return f"I dug down to {_words(self._goal)}.{counts}"
+            return f"I dug down to {_words(self._goal)}.{through}{counts}"
         if self._reason:
-            return f"{self._reason}{counts}"
+            return f"{self._reason}{through}{counts}"
         return (f"I have not reached "
                 f"{_words(self._goal or (self.x, self.y, self.z))} yet -- ask "
-                f"again to carry on.{counts}")
+                f"again to carry on.{through}{counts}")
+
+    def _through_words(self) -> str:
+        if self._through is None:
+            return ""
+        return (f" I went on through the opening at {_words(self._through)} "
+                f"on foot, as asked.")
+
+    def _again_words(self) -> str:
+        """What asking for this dig once more is, in the tool's words."""
+        return f"dig_to {_words(self._goal)} again"
 
     # ── the loop ─────────────────────────────────────────────────────────
 
@@ -238,6 +250,7 @@ class DigTo(_HoldsTheRightTool):
             problem = self._begin(state)
             if problem:
                 return self._stop(problem)
+            self._resuming = self._progress.opening
         if self._finished():
             return None
         self._learn(history)
@@ -285,7 +298,7 @@ class DigTo(_HoldsTheRightTool):
             if plan.status == "done":
                 return self._arrive(state, cells, feet)
             if plan.status == "opening":
-                return self._stop(self._opening_text(plan.opening))
+                return self._at_opening(state, cells, feet, plan.opening)
             if plan.status == "refused":
                 return self._refused(f"I stopped digging -- {plan.why}.")
             self._stair, self._stair_from = plan.step, feet
@@ -296,7 +309,7 @@ class DigTo(_HoldsTheRightTool):
         checked, problem = digging.check_step(cells, self._stair_from, stair,
                                               self._progress)
         if checked == "opening":
-            return self._stop(self._opening_text(problem))
+            return self._at_opening(state, cells, feet, problem)
         if checked is None:
             return self._refused(f"I stopped digging -- "
                                  f"{problem.describe()}.")
@@ -429,18 +442,68 @@ class DigTo(_HoldsTheRightTool):
                     note=f"step {checked.direction}{down}{up} into "
                          f"{_words(to)}")
 
-    def _opening_text(self, opening) -> str:
+    def _at_opening(self, state, cells, feet, opening):
+        """R6: a stair reached air the dig did not make. Stop and say so --
+        unless this ask came after stopping at this same opening: then go
+        on through it on foot if it can be walked (every other rule still
+        applies to each stair), or refuse plainly if it cannot."""
+        last, self._resuming = self._resuming, None
+        if last is not None and tuple(opening["at"]) in digging.pocket(
+                cells, self._progress, last["at"]):
+            if not opening["walkable"]:
+                self._progress.opening = opening
+                return self._stop(self._unsafe_text(opening))
+            if self._go_through(opening):
+                self._stair = None
+                return self._next(state, cells, feet)
+        self._progress.opening = opening
+        return self._stop(self._opening_text(opening))
+
+    def _go_through(self, opening) -> bool:
+        """Take the opening as open air from now on: the dig walks through
+        it, and the next opening it meets is a new one."""
+        self._progress.accepted.add(tuple(opening["at"]))
+        self._progress.opening = None
+        self._through = tuple(opening["at"])
+        return True
+
+    def _where(self, opening) -> str:
         at = opening["at"]
+        floor_y = opening.get("to", at)[1]
+        return (f"opening at {_words(at)} "
+                f"({digging.level_words(self._progress.start, floor_y)})")
+
+    @staticmethod
+    def _drop_words(opening) -> str:
+        drop = opening["drop"]
+        if drop is None:
+            return "a drop I cannot see the bottom of"
+        if drop > digging.MAX_SAFE_DROP:
+            return f"a drop of more than {digging.MAX_SAFE_DROP}"
+        if not opening["floor_solid"]:
+            return ("no solid floor (water, lava or something soft where "
+                    "the floor should be)")
+        return f"a drop of {drop}"
+
+    def _opening_text(self, opening) -> str:
+        head = (f"I stopped digging: {self._where(opening)} -- air I did not "
+                f"dig and do not know to be open, so it may be a cave.")
         if opening["walkable"]:
-            ground = ("its floor is solid, a drop of "
-                      f"{opening['drop']}" if opening["drop"]
-                      else "its floor is solid and level")
-            return (f"I stopped digging: the tunnel opened into a cave at "
-                    f"{_words(at)}; {ground}, so it can be walked from here.")
-        drop = ("a drop I cannot see the bottom of" if opening["drop"] is None
-                else f"a drop of {opening['drop']}")
-        return (f"I stopped digging: the tunnel opened into a cave at "
-                f"{_words(at)}, with {drop} -- I will not walk into it.")
+            ground = ("Its floor is solid and level" if not opening["drop"]
+                      else f"Its floor is solid, {opening['drop']} down")
+            return (f"{head} {ground}, so it can be walked. If you want to "
+                    f"go on, {self._again_words()} takes me on through it on "
+                    f"foot, every other rule still applying, and I stop "
+                    f"again at the next opening.")
+        return (f"{head} It has {self._drop_words(opening)} -- I will not "
+                f"walk into it, and asking for the same dig once more will "
+                f"not take me through it unless it is made safe.")
+
+    def _unsafe_text(self, opening) -> str:
+        return (f"I did not go on: the {self._where(opening)} is still not "
+                f"safe to walk into -- it has {self._drop_words(opening)}. I "
+                f"will not go through it: choose another goal, or make it "
+                f"safe first.")
 
 
 @dataclass
@@ -526,14 +589,18 @@ class MineOre(DigTo):
                     + "; ".join(f"{_words(c)} -- {why}" for c, why in first)
                     + ".")
         lying = self._lying()
+        through = self._through_words()
         if self._done:
-            return f"{took}{self._gained()}{left}{lying}{counts}"
+            return f"{took}{self._gained()}{left}{lying}{through}{counts}"
         if self._reason:
             before = (f" Before that: {took}{self._gained()}" if mined
                       else "")
-            return f"{self._reason}{self._offer}{before}{counts}"
+            return f"{self._reason}{self._offer}{before}{through}{counts}"
         return (f"I have not finished -- ask again to carry on. So far: "
                 f"{took}{self._gained()}{counts}")
+
+    def _again_words(self) -> str:
+        return f"mine_ore for {self._what()} again"
 
     def _lying(self) -> str:
         if self._last is None or self._mine is None:

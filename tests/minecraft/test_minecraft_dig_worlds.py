@@ -181,9 +181,9 @@ class HardRuleTests(_Worlds):
         skill, result, w = self.with_and_without(
             "_r6_opening", worlds.cave_opening, "dig_to",
             lambda w: bool(cave & w.visited), runs=2, x=6, y=60, z=0)
-        self.assertIn("opened into a cave at (3, 61, 0)",
+        self.assertIn("opening at (3, 61, 0) (level with where I started)",
                       said(skill, result))
-        self.assertIn("can be walked from here", said(skill, result))
+        self.assertIn("can be walked", said(skill, result))
 
     def test_r7_lava_three_away_and_another_ore_offered(self):
         lava = [(3, 54, 2), (3, 54, 3)]
@@ -240,6 +240,116 @@ class OpenAirTests(_Worlds):
         sky = worlds.flat_grass()
         skill, _ = run(sky, "dig_to", x=2, y=0, z=0)
         self.assertIs(skill._progress.surface, True)
+
+
+class OpeningResumeTests(_Worlds):
+    """After "opening ... it can be walked", asking for the same dig again
+    used to hit the same stop with 0 steps. Now a walkable opening is gone
+    through on foot, every other rule still applying, and the dig stops
+    again only at the next new opening; one that cannot be walked is
+    refused plainly. Each stop says where, how far below the start, and
+    what asking again will do."""
+
+    def once(self, w, task="dig_to", **options):
+        nav.reset_calibration()
+        aiming_mod.SHARED.reset()
+        skill = skills.create(task, **options)
+        result = TaskRunner(w, w, sleeper=lambda _s: None).run(
+            skill, max_steps=45)
+        return skill, result
+
+    def until_stopped(self, w, goal, runs=4):
+        """Carry on through step limits (not through openings)."""
+        for _ in range(runs):
+            skill, result = self.once(w, x=goal[0], y=goal[1], z=goal[2])
+            if "ask again to carry on" not in skill.done_reason:
+                return skill, result
+        return skill, result
+
+    def test_the_stop_says_where_and_what_comes_next(self):
+        w = worlds.cave_opening()
+        skill, result = self.once(w, x=6, y=60, z=0)
+        self.assertTrue(skill.failed)
+        self.assertTrue(skill.done_reason.startswith(
+            "I stopped digging: opening at (3, 61, 0) (level with where I "
+            "started)"), skill.done_reason)
+        self.assertIn("can be walked", skill.done_reason)
+        self.assertIn("dig_to (6, 60, 0) again", skill.done_reason)
+        self.assertIn("on through it on foot", skill.done_reason)
+        self.assertIn("the next opening", skill.done_reason)
+        self.assertNotIn("ask again", skill.done_reason)
+
+    def test_asking_again_goes_through_on_foot(self):
+        w = worlds.cave_opening()
+        first, _ = self.once(w, x=6, y=60, z=0)
+        self.assertIn("opening at (3, 61, 0)", first.done_reason)
+        broken_before = len(w.broken)
+        skill, result = self.until_stopped(w, (6, 60, 0))
+        self.assertFalse(skill.failed, said(skill, result))
+        self.assertEqual(w.feet(), (6, 60, 0))
+        self.assertIn("I went on through the opening at (3, 61, 0) on foot",
+                      skill.done_reason)
+        cave = {(x, y, z) for x in (3, 4) for y in (60, 61) for z in (0, 1)}
+        self.assertEqual(cave & set(broken(w)[broken_before:]), set())
+        self.assertTrue({(5, 60, 0), (6, 60, 0)} <= set(broken(w)))
+
+    def test_it_stops_again_at_the_next_opening(self):
+        w = worlds.two_caves()
+        first, _ = self.once(w, x=11, y=60, z=0)
+        self.assertIn("opening at (3, 61, 0)", first.done_reason)
+        second, _ = self.until_stopped(w, (11, 60, 0))
+        self.assertTrue(second.failed)
+        self.assertIn("opening at (8, 61, 0)", second.done_reason)
+        self.assertIn("I went on through the opening at (3, 61, 0) on foot",
+                      second.done_reason)
+        self.assertEqual(w.feet(), (7, 60, 0))
+        third, _ = self.until_stopped(w, (11, 60, 0))
+        self.assertFalse(third.failed, third.done_reason)
+        self.assertEqual(w.feet(), (11, 60, 0))
+
+    def test_an_unwalkable_opening_is_refused_plainly(self):
+        w = worlds.deep_cave()
+        first, _ = self.once(w, x=6, y=60, z=0)
+        self.assertIn("opening at (3, 61, 0)", first.done_reason)
+        self.assertIn("a drop of more than 3", first.done_reason)
+        self.assertIn("I will not walk into it", first.done_reason)
+        where, broken_before = w.feet(), len(w.broken)
+        again, result = self.once(w, x=6, y=60, z=0)
+        self.assertTrue(again.failed)
+        self.assertTrue(again.done_reason.startswith(
+            "I did not go on: the opening at (3, 61, 0)"), again.done_reason)
+        self.assertIn("still not safe to walk into", again.done_reason)
+        self.assertIn("a drop of more than 3", again.done_reason)
+        self.assertEqual(result.steps_taken, 0)
+        self.assertEqual((w.feet(), len(w.broken)), (where, broken_before))
+
+    def test_an_opening_below_the_start_says_how_far(self):
+        w = worlds.flat_grass(hollow_at=((3, -3, 0), (3, -2, 0)))
+        skill, result = self.until_stopped(w, (6, -6, 0))
+        self.assertTrue(skill.done_reason.startswith(
+            "I stopped digging: opening at (3, -2, 0) (3 blocks below where "
+            "I started)"), skill.done_reason)
+
+    def test_mine_ore_goes_through_too(self):
+        w = worlds.cave_opening()
+        w.cells[(7, 60, 0)] = block("iron_ore")
+        first, _ = self.once(w, "mine_ore", ore="iron")
+        self.assertIn("opening at (3, 61, 0)", first.done_reason)
+        self.assertIn("mine_ore for iron ore again", first.done_reason)
+        again, result = self.once(w, "mine_ore", ore="iron")
+        self.assertFalse(again.failed, said(again, result))
+        self.assertEqual(w.count("raw_iron"), 1)
+
+    def test_without_going_through_it_stays_stuck(self):
+        """The fix removed: asking again meets the same stop, as in the
+        real run."""
+        w = worlds.cave_opening()
+        self.once(w, x=6, y=60, z=0)
+        with mock.patch.object(dig_mod.DigTo, "_go_through",
+                               lambda self, *a: None):
+            again, result = self.once(w, x=6, y=60, z=0)
+        self.assertIn("opening at (3, 61, 0)", again.done_reason)
+        self.assertEqual(result.steps_taken, 0)
 
 
 class OreWorldTests(_Worlds):

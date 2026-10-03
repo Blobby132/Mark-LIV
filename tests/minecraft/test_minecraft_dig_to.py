@@ -145,12 +145,17 @@ class DigToTests(unittest.TestCase):
         self.assertIn("cave-in", skill.done_reason)
 
     def test_a_cave_opening(self):
+        """The first ask stops at it; asking again goes on through it on
+        foot (it can be walked) -- it used to stop there again, for ever."""
         w = world(hollow({}, (3, 60, 0), (3, 61, 0), (4, 60, 0), (4, 61, 0)))
-        skill, _result = dig(w, (6, 60, 0), runs=2)
+        skill, _result = dig(w, (6, 60, 0), runs=1)
         self.assertTrue(skill.failed)
         self.assertIn("cave", skill.done_reason)
         self.assertIn("(3, 61, 0)", skill.done_reason)
         self.assertLessEqual(w.feet()[0], 2)
+        again, _result = dig(w, (6, 60, 0), runs=3)
+        self.assertFalse(again.failed, again.done_reason)
+        self.assertEqual(w.feet(), (6, 60, 0))
 
     # ── R8 while it digs ─────────────────────────────────────────────────
 
