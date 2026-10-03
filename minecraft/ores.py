@@ -7,9 +7,10 @@ Pure logic over a WorldState: no input, no reads of its own. find_ores
 WHY SINGLE-PLAYER ONLY
     The scan lists ore buried in rock, which the player cannot see. On a
     server that is x-ray: against the rules of most servers, and a reason to
-    be banned. The mod only scans when the client runs its own world, and
-    this refuses unless the reading says so -- a reading that does not say
-    (an older jar) is refused too, not assumed.
+    be banned. The mod only scans when the client runs its own world and
+    has not opened it to LAN -- LAN worlds count as multiplayer -- and this
+    refuses unless the reading says so: a reading that does not say (an
+    older jar) is refused too, not assumed.
 
 NOTHING IS PROMISED THAT WAS NOT LISTED
     Every ore named comes from the scan's list, with its coordinates. When the
@@ -70,8 +71,9 @@ def refusal(state) -> str:
     single = getattr(state, "singleplayer", None)
     if single is False:
         return ("I only look for ore in a single-player world. This is a "
-                "server, and finding ore inside rock on a server is x-ray "
-                "-- against the rules on most of them.")
+                "server or a world opened to LAN -- LAN worlds count as "
+                "multiplayer -- and finding ore inside rock there is x-ray, "
+                "against the rules on most servers.")
     if single is not True:
         return ("I only look for ore in a single-player world, and the "
                 "installed mod does not say whether this is one (it is "

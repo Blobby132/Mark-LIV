@@ -53,6 +53,16 @@ final class OreScan {
     /** Cells read per step, scan and finishing alike. */
     static final int SLICE_CELLS = 16_384;
 
+    /**
+     * Is this a single-player world, where the scan may run? Only when the
+     * client runs its own integrated server and has not opened it to LAN:
+     * a LAN world has other players, so it counts as multiplayer, and
+     * finding ore inside rock there is x-ray.
+     */
+    static boolean singleplayer(boolean integratedServer, boolean published) {
+        return integratedServer && !published;
+    }
+
     /** What the scan needs to know about the world. */
     interface World {
         /** Is the chunk at chunk coordinates loaded? */

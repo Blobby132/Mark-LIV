@@ -208,7 +208,8 @@ def feature_rows(payload: dict, state) -> list:
     single = payload.get("singleplayer")
     row("singleplayer", PRESENT if isinstance(single, bool) else MISSING,
         "" if not isinstance(single, bool)
-        else ("a single-player world" if single else "a server"))
+        else ("a single-player world" if single
+              else "a server, or a world opened to LAN"))
     ores = payload.get("ores")
     if isinstance(ores, dict):
         listed = ores.get("ores") if isinstance(ores.get("ores"), list) \

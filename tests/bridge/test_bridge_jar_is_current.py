@@ -61,6 +61,13 @@ class CommittedJarTests(unittest.TestCase):
         self.assertEqual(missing, [],
                          f"the committed jar predates these fields: {missing}")
 
+    def test_the_jar_does_not_call_a_lan_world_single_player(self):
+        """Rebuilt after the bridge began asking whether the world is open
+        to LAN: the class calls isPublished."""
+        self.assertIn(b"isPublished", _class_bytes(),
+                      "the committed jar still calls a LAN world "
+                      "single-player")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

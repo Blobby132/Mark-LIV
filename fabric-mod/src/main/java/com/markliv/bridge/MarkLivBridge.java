@@ -2,6 +2,7 @@ package com.markliv.bridge;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
@@ -348,9 +349,12 @@ public class MarkLivBridge implements ClientModInitializer {
         out.raw("notable_blocks", terrain.notable);
         out.raw("near_blocks", terrain.near);
 
-        // The client runs its own integrated server: a single-player world
-        // (or one opened to LAN from it). Anything else is a server.
-        boolean single = client.hasSingleplayerServer();
+        // The client runs its own integrated server and has not opened it to
+        // LAN: a single-player world. A LAN world, or any other server, is
+        // multiplayer.
+        IntegratedServer server = client.getSingleplayerServer();
+        boolean single = OreScan.singleplayer(
+                server != null, server != null && server.isPublished());
         out.raw("singleplayer", Boolean.toString(single));
         String ores = null;
         if (single) {

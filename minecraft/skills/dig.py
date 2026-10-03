@@ -216,8 +216,9 @@ class DigTo(_HoldsTheRightTool):
         self._goal = goal
         if getattr(state, "singleplayer", None) is not True:
             return ("I only dig in a single-player world, and this one is "
-                    "not, or the installed mod does not say. Nothing was "
-                    "broken.")
+                    "not (a server, or a world opened to LAN -- LAN worlds "
+                    "count as multiplayer), or the installed mod does not "
+                    "say. Nothing was broken.")
         problem = _grid_problem(state)
         if problem:
             return problem

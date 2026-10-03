@@ -28,6 +28,8 @@ import java.util.Set;
  *       published; prints the steps it took and the most cells one step
  *       read</li>
  *   <li>{@code json} -- the published field</li>
+ *   <li>{@code single server published} -- {@link OreScan#singleplayer}
+ *       for 0/1 each: prints true or false</li>
  *   <li>{@code time x y z steps} -- runs that many steps 200 ms apart and
  *       prints the average and largest step in milliseconds, the cells
  *       read per pass, and the passes finished</li>
@@ -195,6 +197,8 @@ final class OreScanCheck {
                     System.out.println(steps + " " + most);
                 }
                 case "json" -> System.out.println(scan.json());
+                case "single" -> System.out.println(OreScan.singleplayer(
+                        p[1].equals("1"), p[2].equals("1")));
                 case "time" -> {
                     int steps = i(p[4]);
                     long now = 5_000_000L;

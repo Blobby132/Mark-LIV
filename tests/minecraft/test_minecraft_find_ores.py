@@ -145,6 +145,49 @@ class GridReaderTests(unittest.TestCase):
         self.assertEqual(near.block_at((0, 63, 0)).name, "stone")
 
 
+class LanWorldTests(unittest.TestCase):
+    """The mod says singleplayer false for a server and, now, for a world
+    opened to LAN. Every ore and dig tool refuses such a reading, and says
+    that LAN worlds count as multiplayer."""
+
+    def setUp(self):
+        import actions.minecraft as adapter
+        self.adapter = adapter
+        self.data = payload(singleplayer=False, ores=None)
+        controller = MinecraftController(
+            backend=FakeInputBackend(), locator=FakeLocator(),
+            process_module=FakeProcess(), start_watchers=False,
+            focus_wait_s=0)
+        self.bridge = ModBridgeStateSource(
+            path="(test)", reader=lambda: json.dumps(self.data),
+            clock=time.time)
+        adapter._reset_for_tests(controller=controller,
+                                 state_source=self.bridge)
+        self.addCleanup(adapter._reset_for_tests)
+
+    def test_find_ores(self):
+        answer = self.adapter.minecraft_control({"action": "find_ores"})
+        self.assertIn("LAN worlds count as multiplayer", answer)
+        self.assertNotIn(" at (", answer)
+
+    def test_mine_ore_s_plan(self):
+        text = self.adapter._mine_ore_plan(self.bridge.read(),
+                                           {"ore": "iron"})
+        self.assertNotIn("Plan:", text)
+        self.assertIn("LAN worlds count as multiplayer", text)
+
+    def test_the_dig_skills(self):
+        from minecraft import skills
+        for name, options in (("dig_to", dict(x=3, y=60, z=0)),
+                              ("mine_ore", dict(ore="iron"))):
+            with self.subTest(task=name):
+                skill = skills.create(name, **options)
+                self.assertIsNone(skill.plan(self.bridge.read(), 0, ()))
+                self.assertTrue(skill.failed)
+                self.assertIn("LAN worlds count as multiplayer",
+                              skill.done_reason)
+
+
 class FindOresTests(unittest.TestCase):
 
     def setUp(self):

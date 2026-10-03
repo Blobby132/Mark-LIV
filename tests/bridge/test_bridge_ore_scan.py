@@ -60,6 +60,13 @@ class OreScanTests(unittest.TestCase):
             input="\n".join(lines) + "\n", capture_output=True, text=True,
             check=True).stdout.splitlines()
 
+    def test_a_world_opened_to_lan_is_not_single_player(self):
+        """OreScan.singleplayer(integrated server, published): only a world
+        the client runs for itself and has not opened to LAN."""
+        out = self.ask("single 1 0", "single 1 1", "single 0 0",
+                       "single 0 1")
+        self.assertEqual(out, ["true", "false", "false", "false"])
+
     def scan(self, *setup):
         out = self.ask(WORLD, *setup, f"run {FEET}", "json")
         return json.loads(out[-1]), out[:-1]
@@ -176,6 +183,19 @@ class OreScanTests(unittest.TestCase):
         self.assertLess(float(average), 2.0,
                         f"average {average} ms, worst {worst} ms, "
                         f"{cells} cells a pass")
+
+class SingleplayerSourceTests(unittest.TestCase):
+    """What the bridge asks before it calls a world single-player: a world
+    opened to LAN still has the integrated server, so
+    hasSingleplayerServer() alone said yes to it."""
+
+    def test_the_bridge_asks_whether_the_world_is_published(self):
+        source = (SRC / "MarkLivBridge.java").read_text(encoding="utf-8")
+        self.assertIn("getSingleplayerServer()", source)
+        self.assertIn("isPublished()", source)
+        self.assertIn("OreScan.singleplayer(", source)
+        self.assertNotIn("hasSingleplayerServer()", source,
+                         "true for a LAN world too")
 
 
 if __name__ == "__main__":

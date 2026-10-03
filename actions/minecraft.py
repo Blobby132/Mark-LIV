@@ -454,7 +454,7 @@ def _mc_guard(params: dict) -> dict:
             f"spawn egg to open something, and I pour lava or water or "
             f"start a fire only when you name the item. "
             f"When you ask me to dig or to mine ore, and only in a "
-            f"single-player world, "
+            f"single-player world not opened to LAN, "
             f"I dig a staircase through natural stone, earth and ore: never "
             f"the block under you, never beside water or lava or within "
             f"three blocks of lava, never under sand or gravel, never onto "
