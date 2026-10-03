@@ -75,6 +75,7 @@ widen what the session allows.
 | `building.py` | Which cell may take a block, and the face to click. |
 | `gui.py` | When a click inside a screen may happen (the click gate). Imports only heapq, math, dataclasses. |
 | `recipes.py` | The recipes `craft_item` knows. Data. |
+| `digging.py` | Where a staircase may be dug: the next one to three cells to clear and the floor to keep, from the cells the mod reported (never an unknown one), or a refusal naming the hard rule (R1-R7); `abort_reason` (R8). Imports only math and dataclasses. |
 | `ores.py` | What the mod's ore scan lists, filtered and put in words for `find_ores`; refuses outside a single-player world. Imports only math and dataclasses. |
 | `danger.py` | Should a task stop for health or a mob; the dusk note. |
 | `verification.py` | Did that step actually work? |
@@ -96,7 +97,7 @@ its own; a layer is the longest chain of imports beneath it:
 
 | Layer | Modules |
 |---|---|
-| 0 | `aiming` `building` `capabilities` `danger` `emergency` `errors` `gui` `ledger` `mining` `ores` `process` `recipes` `session` `state` |
+| 0 | `aiming` `building` `capabilities` `danger` `digging` `emergency` `errors` `gui` `ledger` `mining` `ores` `process` `recipes` `session` `state` |
 | 1 | `action_spec` `debug_overlay` `input_backend` `mod_bridge` `navigation` `perception` `task_slot` `verification` `window` |
 | 2 | `controller` `observation` `progress` `stuck` `skills.base` |
 | 3 | `task_runner` |
@@ -106,7 +107,7 @@ its own; a layer is the longest chain of imports beneath it:
 | 7 | `skills.aim` |
 | 8 | `skills` (the registry) |
 
-The 29 top-level modules stay in one folder, on purpose. Grouped by role
+The 30 top-level modules stay in one folder, on purpose. Grouped by role
 -- control, perception, rules, tasks, as the tables above do -- the groups
 would import each other in a circle: `controller` uses `gui` (the click
 gate, a rule), `verification` (a rule) reads `state` (perception), and
@@ -284,7 +285,8 @@ walks into it:
 | `tests/support/` | What several tests share; nothing here is a test |
 
 `tests/support/` holds the simulated worlds (`sim_world.py`, `mob_world.py`,
-`regression_worlds.py`, `gui_world.py`, `build_world.py`), fakes
+`regression_worlds.py`, `gui_world.py`, `build_world.py`, and the rock and
+caves digging is tested in, `dig_world.py`), fakes
 (`fakes.py`), payload and fixture data (`bridge_payloads.py`,
 `held_items.py`, `voice_paths.py`), the Java harness the bridge tests
 compile against the mod's source (`java/`), and `paths.py`, which says
